@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
 // Config holds application configuration
@@ -13,6 +14,12 @@ type Config struct {
 	HistorySyncDaysLimit uint32 // HISTORY_SYNC_DAYS_LIMIT env var
 	HistorySyncSizeMB    uint32 // HISTORY_SYNC_SIZE_MB env var
 	StorageQuotaMB       uint32 // STORAGE_QUOTA_MB env var
+
+	// Presence ping configuration
+	// PRESENCE_PING_ENABLED=false disables presence broadcasts to contacts (default true)
+	// PRESENCE_PING_INTERVAL sets how often to ping (default 20m; reduce below 25m risks bot fingerprinting)
+	PresencePingEnabled  bool
+	PresencePingInterval time.Duration
 }
 
 // NewConfig creates a new configuration with default values
@@ -23,6 +30,9 @@ func NewConfig() *Config {
 		HistorySyncDaysLimit: 365,   // 1 year default
 		HistorySyncSizeMB:    5000,  // 5GB default
 		StorageQuotaMB:       10240, // 10GB default
+		// Presence ping defaults
+		PresencePingEnabled:  true,
+		PresencePingInterval: 20 * time.Minute,
 	}
 
 	// Override with environment variables if set
@@ -47,6 +57,16 @@ func NewConfig() *Config {
 	if quota := os.Getenv("STORAGE_QUOTA_MB"); quota != "" {
 		if q, err := strconv.ParseUint(quota, 10, 32); err == nil {
 			cfg.StorageQuotaMB = uint32(q)
+		}
+	}
+
+	if enabled := os.Getenv("PRESENCE_PING_ENABLED"); enabled == "false" {
+		cfg.PresencePingEnabled = false
+	}
+
+	if interval := os.Getenv("PRESENCE_PING_INTERVAL"); interval != "" {
+		if d, err := time.ParseDuration(interval); err == nil && d > 0 {
+			cfg.PresencePingInterval = d
 		}
 	}
 

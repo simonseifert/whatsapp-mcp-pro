@@ -49,6 +49,10 @@ type Client struct {
 	pairingExpiry     time.Time
 	pairingComplete   bool
 	pairingError      error
+
+	// Called just before AutoReconnect circuit breaker gives up (30 consecutive failures).
+	// Use to fire an out-of-band alert before the process exits via watchdog.
+	circuitBreakerCallback func()
 }
 
 // NewClient creates a new WhatsApp client with default configuration.
@@ -84,7 +88,8 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 	logger.Infof("HistorySyncConfig: days=%d, size=%dMB, quota=%dMB",
 		cfg.HistorySyncDaysLimit, cfg.HistorySyncSizeMB, cfg.StorageQuotaMB)
 
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	// WAL mode: same as messages.db — allows concurrent readers alongside the bridge writer.
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000", dbLog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
 	}
@@ -123,15 +128,25 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 		antiban:   antibanInterceptor,
 	}
 
+	// Persist retry receipts across restarts — prevents message dedup failures after crashes.
+	client.UseRetryMessageStore = true
+
+	// Send normal delivery receipts even when not explicitly marked online.
+	client.SetForceActiveDeliveryReceipts(true)
+
 	// Explicit auto-reconnect with failure circuit breaker
 	client.EnableAutoReconnect = true
 	client.AutoReconnectHook = func(failure error) bool {
 		c.connMu.Lock()
 		c.autoReconnectErrors++
 		count := c.autoReconnectErrors
+		cb := c.circuitBreakerCallback
 		c.connMu.Unlock()
 		if count >= 30 {
 			logger.Errorf("AutoReconnect: %d consecutive failures, giving up (watchdog will restart)", count)
+			if cb != nil {
+				cb()
+			}
 			return false
 		}
 		logger.Warnf("AutoReconnect: attempt %d (%v)", count, failure)
@@ -139,6 +154,14 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 	}
 
 	return c, nil
+}
+
+// SetCircuitBreakerCallback registers a function called just before AutoReconnect gives up
+// (30 consecutive failures). Use to fire an out-of-band alert before the watchdog exits.
+func (c *Client) SetCircuitBreakerCallback(fn func()) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	c.circuitBreakerCallback = fn
 }
 
 // Connect establishes connection to WhatsApp servers.
@@ -175,19 +198,28 @@ func (c *Client) Connect() error {
 			return fmt.Errorf("timeout waiting for QR code scan")
 		}
 	} else {
-		// Already logged in, just connect
-		err := c.Client.Connect()
-		if err != nil {
+		// Already paired — wait for the Connected event instead of sleeping.
+		connCh := make(chan struct{}, 1)
+		handlerID := c.AddEventHandler(func(evt interface{}) {
+			if _, ok := evt.(*events.Connected); ok {
+				select {
+				case connCh <- struct{}{}:
+				default:
+				}
+			}
+		})
+		defer c.RemoveEventHandler(handlerID)
+
+		if err := c.Client.Connect(); err != nil {
 			return fmt.Errorf("failed to connect: %v", err)
 		}
-		connected <- true
-	}
 
-	// Wait a moment for connection to stabilize
-	time.Sleep(2 * time.Second)
-
-	if !c.IsConnected() {
-		return fmt.Errorf("failed to establish stable connection")
+		select {
+		case <-connCh:
+			// Connected event received — handlerID cleaned up by defer
+		case <-time.After(30 * time.Second):
+			return fmt.Errorf("timed out waiting for WhatsApp connection")
+		}
 	}
 
 	c.logger.Infof("✓ Connected to WhatsApp!")

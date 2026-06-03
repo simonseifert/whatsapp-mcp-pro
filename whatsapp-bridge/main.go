@@ -16,6 +16,7 @@ import (
 	"whatsapp-bridge/internal/api"
 	"whatsapp-bridge/internal/config"
 	"whatsapp-bridge/internal/database"
+	localTypes "whatsapp-bridge/internal/types"
 	"whatsapp-bridge/internal/webhook"
 	"whatsapp-bridge/internal/whatsapp"
 )
@@ -71,6 +72,21 @@ func isCallFromMe(client *whatsapp.Client, from types.JID, resolvedFrom types.JI
 	return false
 }
 
+// fireConnectionEvent broadcasts a connection state change to all configured webhooks.
+func fireConnectionEvent(wm *webhook.Manager, client *whatsapp.Client, eventType, reason string) {
+	jid := ""
+	if client.Store.ID != nil {
+		jid = client.Store.ID.String()
+	}
+	wm.DeliverConnectionEvent(&localTypes.ConnectionEventPayload{
+		EventType:    eventType,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+		JID:          jid,
+		NeedsPairing: client.Store.ID == nil,
+		Reason:       reason,
+	})
+}
+
 func main() {
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
@@ -115,6 +131,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Fire a connection webhook just before AutoReconnect gives up, so external monitors
+	// get an out-of-band alert before the watchdog exits the process.
+	client.SetCircuitBreakerCallback(func() {
+		fireConnectionEvent(webhookManager, client, "circuit_breaker_exhausted", "30 consecutive reconnect failures")
+	})
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -132,13 +154,13 @@ func main() {
 			_, _, discAt, _ := client.ConnectionState()
 			client.MarkConnected()
 			client.Antiban().RecordEvent(antiban.EventConnected)
-			// Send presence to keep session active and receive real-time messages
 			if err := client.SetPresence("available"); err != nil {
 				logger.Warnf("Failed to set presence: %v", err)
 			} else {
 				logger.Infof("✓ Presence set to available")
 			}
 			logger.Infof("✓ Connected to WhatsApp")
+			go fireConnectionEvent(webhookManager, client, "connected", "")
 
 			// If we were disconnected for >30s, attempt best-effort history backfill
 			// for recently active chats to recover any messages missed during the gap.
@@ -180,15 +202,25 @@ func main() {
 
 		case *events.LoggedOut:
 			client.Antiban().RecordEvent(antiban.EventLoggedOut)
-			logger.Warnf("✗ Device logged out - please scan QR code to log in again")
+			logger.Warnf("✗ Device logged out - credentials wiped, re-pairing required (open http://localhost:8090)")
+			// MarkDisconnected so the watchdog triggers and Docker restarts the container,
+			// which will display a fresh QR / pairing code.
+			client.MarkDisconnected()
+			go fireConnectionEvent(webhookManager, client, "logged_out", "session revoked by WhatsApp server")
 
 		case *events.PairSuccess:
 			logger.Infof("✓ Phone pairing successful!")
 			client.HandlePairingSuccess()
+			go fireConnectionEvent(webhookManager, client, "pair_success", "")
 
 		case *events.PairError:
 			logger.Errorf("✗ Phone pairing failed: %v", v.Error)
 			client.HandlePairingError(v.Error)
+			errMsg := ""
+			if v.Error != nil {
+				errMsg = v.Error.Error()
+			}
+			go fireConnectionEvent(webhookManager, client, "pair_error", errMsg)
 
 		case *events.KeepAliveTimeout:
 			client.Antiban().RecordEvent(antiban.EventKeepAliveTimeout)
@@ -208,7 +240,11 @@ func main() {
 			logger.Infof("✓ KeepAlive restored after timeout")
 
 		case *events.StreamReplaced:
-			logger.Warnf("⚠ Stream replaced — another device may have taken over this session")
+			// Another process has taken over this session (e.g. duplicate docker-compose up).
+			// Exit immediately — two processes sharing one WhatsApp session causes split-brain.
+			logger.Errorf("✗ Stream replaced — another process took this session, exiting")
+			client.MarkDisconnected()
+			os.Exit(1)
 
 		case *events.StreamError:
 			client.Antiban().RecordEvent(antiban.EventStreamError)
@@ -218,6 +254,7 @@ func main() {
 			client.MarkDisconnected()
 			client.Antiban().RecordEvent(antiban.EventDisconnected)
 			logger.Warnf("⚠ Disconnected from WhatsApp - attempting reconnect")
+			go fireConnectionEvent(webhookManager, client, "disconnected", "")
 
 		case *events.CallOffer:
 			resolvedJID := resolveCallJID(client, logger, v.From)
@@ -361,20 +398,26 @@ func main() {
 		}
 	}()
 
-	// Periodic presence ping every 3 min to keep WhatsApp session active
-	go func() {
-		ticker := time.NewTicker(3 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			if client.IsConnected() {
-				if err := client.SetPresence("available"); err != nil {
-					logger.Debugf("Presence ping failed: %v", err)
-				} else {
-					logger.Debugf("Presence ping sent")
+	// Periodic presence ping to keep the WhatsApp session active.
+	// Controlled by PRESENCE_PING_ENABLED and PRESENCE_PING_INTERVAL env vars.
+	// Default: enabled, every 20 minutes. Disable if you don't want to appear online to contacts.
+	if cfg.PresencePingEnabled {
+		go func() {
+			ticker := time.NewTicker(cfg.PresencePingInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				if client.IsConnected() {
+					if err := client.SetPresence("available"); err != nil {
+						logger.Debugf("Presence ping failed: %v", err)
+					} else {
+						logger.Debugf("Presence ping sent (interval: %v)", cfg.PresencePingInterval)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	} else {
+		logger.Infof("Presence ping disabled (PRESENCE_PING_ENABLED=false)")
+	}
 
 	// Start REST API server with webhook support (BEFORE connecting to avoid blocking)
 	server := api.NewServer(client, messageStore, webhookManager, cfg.APIPort)

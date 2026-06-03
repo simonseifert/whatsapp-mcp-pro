@@ -156,6 +156,50 @@ func (wm *Manager) matchesString(text, pattern, matchType string) bool {
 	}
 }
 
+// DeliverConnectionEvent broadcasts a connection state change to all enabled webhooks.
+// Unlike message webhooks, these are not trigger-filtered — any webhook that is enabled
+// receives connection events so operators can monitor bridge health out-of-band.
+func (wm *Manager) DeliverConnectionEvent(payload *types.ConnectionEventPayload) {
+	wm.mutex.RLock()
+	configs := make([]*types.WebhookConfig, len(wm.configs))
+	copy(configs, wm.configs)
+	wm.mutex.RUnlock()
+
+	if len(configs) == 0 {
+		return
+	}
+
+	// Build a synthetic WebhookPayload wrapping the connection event.
+	systemTrigger := types.WebhookTrigger{TriggerType: "system", TriggerValue: payload.EventType, MatchType: "exact", Enabled: true}
+	for _, config := range configs {
+		if !config.Enabled {
+			continue
+		}
+		wp := &types.WebhookPayload{
+			EventType: payload.EventType,
+			Timestamp: payload.Timestamp,
+			WebhookConfig: types.WebhookConfigInfo{
+				ID:   config.ID,
+				Name: config.Name,
+			},
+			Trigger: types.WebhookTriggerInfo{
+				Type:      "system",
+				Value:     payload.EventType,
+				MatchType: "exact",
+			},
+			Metadata: types.WebhookMetadata{DeliveryAttempt: 1},
+		}
+		// Embed connection details in the message field so existing payload schema is preserved.
+		wp.Message = types.WebhookMessageInfo{
+			Content: payload.EventType,
+			Sender:  payload.JID,
+		}
+		localConfig := config
+		localTrigger := systemTrigger
+		go wm.delivery.DeliverWebhook(localConfig, wp, "system-"+payload.EventType, "", &localTrigger)
+	}
+}
+
 // ProcessMessage processes a message and sends webhooks if triggers match
 func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatName string) {
 	startTime := time.Now()

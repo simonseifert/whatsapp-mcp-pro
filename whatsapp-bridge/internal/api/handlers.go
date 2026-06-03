@@ -1635,11 +1635,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	connected := s.client.IsConnected()
+	needsPairing := s.client.Store.ID == nil
 	startedAt, lastConn, discAt, reconnErrs := s.client.ConnectionState()
 
 	resp := map[string]interface{}{
-		"connected":      connected,
-		"uptime":         time.Since(startedAt).Round(time.Second).String(),
+		"connected":     connected,
+		"needs_pairing": needsPairing, // true when Store.ID == nil: QR or pairing code required
+		"uptime":        time.Since(startedAt).Round(time.Second).String(),
 		"reconnect_errs": reconnErrs,
 	}
 	if !lastConn.IsZero() {
@@ -1696,6 +1698,7 @@ func (s *Server) handleConnectionStatus(w http.ResponseWriter, r *http.Request) 
 		Success:             true,
 		Connected:           connected,
 		Linked:              linked,
+		NeedsPairing:        !linked,
 		Uptime:              time.Since(startedAt).Round(time.Second).String(),
 		AutoReconnectErrors: reconnErrs,
 	}

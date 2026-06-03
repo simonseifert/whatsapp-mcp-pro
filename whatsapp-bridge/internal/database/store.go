@@ -20,8 +20,9 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
-	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	// WAL mode: allows concurrent readers + one writer, preventing SQLITE_BUSY when
+	// the MCP server and bridge access the same file simultaneously.
+	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}

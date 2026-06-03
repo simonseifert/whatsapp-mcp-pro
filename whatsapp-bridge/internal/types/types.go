@@ -499,11 +499,23 @@ type ConnectionStatusResponse struct {
 	Success             bool   `json:"success"`
 	Connected           bool   `json:"connected"`
 	Linked              bool   `json:"linked"`                     // Device has valid session
+	NeedsPairing        bool   `json:"needs_pairing"`              // True when Store.ID == nil (QR/code scan required)
 	JID                 string `json:"jid,omitempty"`              // WhatsApp ID if linked
 	Uptime              string `json:"uptime,omitempty"`           // Process uptime
 	LastConnected       string `json:"last_connected,omitempty"`   // ISO-8601 timestamp
 	DisconnectedFor     string `json:"disconnected_for,omitempty"` // Duration string
 	AutoReconnectErrors int    `json:"auto_reconnect_errors,omitempty"`
+}
+
+// ConnectionEventPayload is the webhook payload for connection state changes.
+// Delivered to all enabled webhooks regardless of trigger configuration.
+type ConnectionEventPayload struct {
+	EventType   string `json:"event_type"`            // connected, disconnected, logged_out, pair_success, pair_error, circuit_breaker_exhausted
+	Timestamp   string `json:"timestamp"`             // ISO-8601
+	JID         string `json:"jid,omitempty"`         // own JID when available
+	NeedsPairing bool  `json:"needs_pairing"`         // true when re-pairing required
+	Reason      string `json:"reason,omitempty"`      // for disconnected/logged_out events
+	Details     string `json:"details,omitempty"`     // additional context
 }
 
 // SyncStatusResponse returns current message sync state
