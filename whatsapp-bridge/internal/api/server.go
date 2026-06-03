@@ -17,36 +17,30 @@ type Server struct {
 	messageStore   *database.MessageStore
 	webhookManager *webhook.Manager
 	port           int
+	bindHost       string
 }
 
 // NewServer creates a new API server with the given dependencies.
-//
-// Parameters:
-//   - client: WhatsApp client for sending messages and interacting with WhatsApp
-//   - messageStore: Database for message history and webhook configurations
-//   - webhookManager: Manager for webhook trigger matching and delivery
-//   - port: TCP port to listen on (e.g., 8080)
-func NewServer(client *whatsapp.Client, messageStore *database.MessageStore, webhookManager *webhook.Manager, port int) *Server {
+func NewServer(client *whatsapp.Client, messageStore *database.MessageStore, webhookManager *webhook.Manager, port int, bindHost string) *Server {
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
+	}
 	return &Server{
 		client:         client,
 		messageStore:   messageStore,
 		webhookManager: webhookManager,
 		port:           port,
+		bindHost:       bindHost,
 	}
 }
 
 // Start launches the HTTP server in a background goroutine.
-// The server listens on the configured port and serves the REST API.
-// This method returns immediately; use a blocking mechanism in main().
 func (s *Server) Start() {
-	// Register handlers
 	s.registerHandlers()
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", s.port)
+	serverAddr := fmt.Sprintf("%s:%d", s.bindHost, s.port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
-	// Run server in a goroutine so it doesn't block
 	go func() {
 		if err := http.ListenAndServe(serverAddr, nil); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)

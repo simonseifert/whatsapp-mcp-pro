@@ -420,7 +420,7 @@ func main() {
 	}
 
 	// Start REST API server with webhook support (BEFORE connecting to avoid blocking)
-	server := api.NewServer(client, messageStore, webhookManager, cfg.APIPort)
+	server := api.NewServer(client, messageStore, webhookManager, cfg.APIPort, cfg.APIBindHost)
 	server.Start()
 	fmt.Println("✓ REST API server started on port " + fmt.Sprintf("%d", cfg.APIPort))
 
