@@ -69,7 +69,7 @@ Add to your MCP config (`claude_desktop_config.json` or Cursor settings):
 
 ## MCP Tools
 
-Version `0.2.0` exposes the full curated MCP surface by default for compatibility. Users who want a leaner agent context can opt into smaller toolsets.
+Version `0.3.0` exposes the full curated MCP surface by default for compatibility. Users who want a leaner agent context can opt into smaller toolsets.
 
 Default toolsets:
 
@@ -225,7 +225,64 @@ docker-compose up -d whatsapp-bridge
 | MCP Server | 8081 | Streamable HTTP transport |
 | Web UI | 8090 | Chat, contacts, and webhook management |
 
+## Configuration
+
+Environment variables for the bridge (set in `.env` or `docker-compose.yaml`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `API_KEY` | *(required)* | Bearer token for all authenticated API calls |
+| `PRESENCE_PING_ENABLED` | `true` | Set `false` to stop broadcasting "online" to contacts |
+| `PRESENCE_PING_INTERVAL` | `20m` | How often to ping presence. Accepts Go duration strings (`20m`, `1h`). Keep ≥20m to avoid bot fingerprinting |
+| `HISTORY_SYNC_DAYS_LIMIT` | `365` | Days of history to sync on first link |
+| `HISTORY_SYNC_SIZE_MB` | `5000` | Max history sync size |
+| `STORAGE_QUOTA_MB` | `10240` | Device storage quota |
+| `API_PORT` | `8080` | Bridge HTTP port (internal) |
+
+## Quick Commands
+
+After running `setup.ps1` once, use the Makefile for day-to-day operations:
+
+```bash
+make status          # check connection state (connected, needs_pairing, jid)
+make pair PHONE=+60123456789   # pair via 8-digit phone code — no QR scan needed
+make pairing-status  # check pairing code progress
+make reconnect       # force reconnect (no re-pairing)
+make logs            # tail bridge logs
+make sync-venv       # re-sync Python venv (fix missing module errors)
+make open-ui         # open web UI in browser (QR scan, webhooks, contacts)
+```
+
+## Session Reliability
+
+**Session lifetime rules** (WhatsApp-enforced, cannot be changed):
+- Primary phone must connect to WhatsApp at least every **14 days**
+- The bridge companion device must be active at least every **30 days**
+- WebSocket idle disconnects after ~30 min (auto-reconnects, no re-pairing needed)
+
+**What causes permanent logout** (requires re-scanning QR):
+- Phone offline >14 days
+- Manual unlink from phone (Settings → Linked Devices)
+- WhatsApp detects suspicious activity / protocol fingerprinting
+- WhatsApp app update that forces re-authentication
+
+**Account risk:** This is a third-party bridge using an unofficial API. Use a **dedicated non-personal number**. WhatsApp has been aggressively detecting and banning automation tools since 2025. For business-critical use, the [WhatsApp Business API](https://developers.facebook.com/docs/whatsapp/cloud-api) is the only compliant path.
+
+**If the bridge goes unhealthy** (needs re-pairing):
+
+```bash
+make status          # check: needs_pairing=true means re-pair required
+make pair PHONE=+60123456789   # preferred: 8-digit code, no QR scan
+# or: open http://127.0.0.1:8090 and scan QR
+```
+
+You can also configure a webhook to receive `logged_out` events so you're alerted immediately when the session is revoked.
+
 ## Troubleshooting
+
+### Bridge needs re-pairing after restart
+
+The bridge stores credentials in `store/whatsapp.db`. If that file exists but the bridge still shows QR, WhatsApp revoked the session server-side (check your phone → Settings → Linked Devices). Re-pair using `make pair PHONE=+60...` or open `http://127.0.0.1:8090`.
 
 ### Messages Not Delivering
 
@@ -240,8 +297,29 @@ docker-compose logs --tail=10 whatsapp-bridge
 ### QR Code Issues
 
 ```bash
+# Option 1: phone number code (no QR scan needed)
+make pair PHONE=+60123456789
+
+# Option 2: scan QR via web UI
+open http://127.0.0.1:8090
+
+# Option 3: terminal QR
 docker-compose logs -f whatsapp-bridge
-# Scan QR with WhatsApp mobile app
+```
+
+### MCP server fails to start (missing module)
+
+```bash
+make sync-venv   # re-runs uv sync in whatsapp-mcp-server/
+```
+
+### Check bridge health
+
+```bash
+curl http://127.0.0.1:8180/api/health
+# connected: true/false
+# needs_pairing: true means QR/code scan required (not just a reconnect)
+# disconnected_for: how long it's been offline
 ```
 
 ## Credits
