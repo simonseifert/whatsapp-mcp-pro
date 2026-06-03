@@ -8,7 +8,8 @@ import (
 
 // Config holds application configuration
 type Config struct {
-	APIPort int
+	APIPort     int
+	APIBindHost string // API_BIND_HOST: default 127.0.0.1 (safe for local dev); set 0.0.0.0 in Docker
 
 	// History sync configuration (Phase 4)
 	HistorySyncDaysLimit uint32 // HISTORY_SYNC_DAYS_LIMIT env var
@@ -25,7 +26,8 @@ type Config struct {
 // NewConfig creates a new configuration with default values
 func NewConfig() *Config {
 	cfg := &Config{
-		APIPort: 8080,
+		APIPort:     8080,
+		APIBindHost: "127.0.0.1",
 		// History sync defaults
 		HistorySyncDaysLimit: 365,   // 1 year default
 		HistorySyncSizeMB:    5000,  // 5GB default
@@ -40,6 +42,10 @@ func NewConfig() *Config {
 		if p, err := strconv.Atoi(port); err == nil {
 			cfg.APIPort = p
 		}
+	}
+
+	if bindHost := os.Getenv("API_BIND_HOST"); bindHost != "" {
+		cfg.APIBindHost = bindHost
 	}
 
 	if days := os.Getenv("HISTORY_SYNC_DAYS_LIMIT"); days != "" {
