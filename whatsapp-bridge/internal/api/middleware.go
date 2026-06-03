@@ -23,9 +23,10 @@ var (
 // getAllowedOrigins returns the list of allowed CORS origins
 func getAllowedOrigins() map[string]bool {
 	origins := map[string]bool{
-		"http://localhost:8089": true, // Webhook UI
-		"http://localhost:8082": true, // Gradio UI
-		"http://localhost:8090": true, // Pairing UI
+		"http://localhost:8089":   true, // Webhook UI (localhost)
+		"http://localhost:8090":   true, // Pairing UI (localhost)
+		"http://127.0.0.1:8089":  true, // Webhook UI (IP — browsers use IP when accessed via 127.0.0.1)
+		"http://127.0.0.1:8090":  true, // Pairing UI (IP)
 	}
 
 	// Allow additional origins from env var (comma-separated)
