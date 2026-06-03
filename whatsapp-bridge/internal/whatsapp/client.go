@@ -195,6 +195,7 @@ func (c *Client) Connect() error {
 		case <-connected:
 			fmt.Println("\nSuccessfully connected and authenticated!")
 		case <-time.After(3 * time.Minute):
+			c.MarkDisconnected() // triggers watchdog to restart container
 			return fmt.Errorf("timeout waiting for QR code scan")
 		}
 	} else {
@@ -218,6 +219,7 @@ func (c *Client) Connect() error {
 		case <-connCh:
 			// Connected event received — handlerID cleaned up by defer
 		case <-time.After(30 * time.Second):
+			c.MarkDisconnected() // triggers watchdog to restart container
 			return fmt.Errorf("timed out waiting for WhatsApp connection")
 		}
 	}
