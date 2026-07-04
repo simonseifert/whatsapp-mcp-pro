@@ -7,6 +7,7 @@ DEFAULT_TOOLS = {
     "list_chats",
     "get_chat",
     "get_message_context",
+    "get_direct_chat_by_contact",
     "send_message",
     "send_file",
     "send_audio_message",
