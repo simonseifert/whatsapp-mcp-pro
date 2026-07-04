@@ -77,6 +77,8 @@ ALL_TOOLSETS = {
     "presence",
     "account_admin",
     "newsletter",
+    "audio",
+    "recall",
 }
 DEFAULT_TOOLSETS = set(ALL_TOOLSETS)
 ENABLED_TOOLSETS = {
@@ -772,6 +774,171 @@ def resource_sync_status() -> str:
     """Bridge sync statistics — message/chat counts, DB size, last sync time."""
     data = _bridge_get("/sync-status")
     return json.dumps(data)
+
+
+# ----- Pro: local voice transcription (mlx-whisper) ------------------------
+
+_WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+
+
+@tool("audio", "Transcribe Voice Message", read_only=True, open_world=False)
+def transcribe_audio(
+    message_id: str,
+    chat_jid: str,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Download a WhatsApp voice/audio message and transcribe it locally with mlx-whisper.
+
+    Runs entirely on-device (Apple Silicon, mlx). First call per model triggers a one-time
+    Hugging Face download (~1.5 GB for large-v3-turbo) cached under ~/.cache/huggingface.
+
+    Args:
+        message_id: The ID of the message containing the audio
+        chat_jid: The JID of the chat containing the message
+        language: Optional ISO-639-1 code (e.g. "en", "hr", "de"). Auto-detected if omitted.
+
+    Returns:
+        Dict with success, text, language, file_path, and message on failure.
+    """
+    file_path = whatsapp_download_media(message_id, chat_jid)
+    if not file_path:
+        return {"success": False, "message": "Failed to download media"}
+
+    try:
+        import mlx_whisper
+    except ImportError as e:
+        return {
+            "success": False,
+            "message": f"mlx-whisper not installed: {e}. Run `uv sync` in whatsapp-mcp-server.",
+            "file_path": file_path,
+        }
+
+    try:
+        result = mlx_whisper.transcribe(
+            file_path,
+            path_or_hf_repo=_WHISPER_MODEL,
+            language=language,
+        )
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Transcription failed: {e}",
+            "file_path": file_path,
+        }
+
+    return {
+        "success": True,
+        "text": (result.get("text") or "").strip(),
+        "language": result.get("language"),
+        "file_path": file_path,
+    }
+
+
+@tool("audio", "Transcribe Audio File", read_only=True, open_world=False)
+def transcribe_audio_file(
+    file_path: str,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Transcribe an arbitrary local audio file with mlx-whisper.
+
+    Args:
+        file_path: Absolute path to an audio file (ogg/opus/mp3/wav/m4a/etc.)
+        language: Optional ISO-639-1 code. Auto-detected if omitted.
+
+    Returns:
+        Dict with success, text, language, and message on failure.
+    """
+    try:
+        import mlx_whisper
+    except ImportError as e:
+        return {
+            "success": False,
+            "message": f"mlx-whisper not installed: {e}. Run `uv sync` in whatsapp-mcp-server.",
+        }
+
+    try:
+        result = mlx_whisper.transcribe(
+            file_path,
+            path_or_hf_repo=_WHISPER_MODEL,
+            language=language,
+        )
+    except Exception as e:
+        return {"success": False, "message": f"Transcription failed: {e}"}
+
+    return {
+        "success": True,
+        "text": (result.get("text") or "").strip(),
+        "language": result.get("language"),
+    }
+
+
+# ----- Pro: semantic recall over message history --------------------------
+
+from lib.recall import (  # noqa: E402  (intentional bottom-of-file import)
+    index_status as _recall_index_status,
+    recall as _recall,
+)
+
+
+@tool("recall", "Semantic Recall", read_only=True, open_world=False)
+def recall(
+    query: str,
+    chat_jid: str | None = None,
+    sender: str | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    is_from_me: bool | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Semantic search over your WhatsApp message history.
+
+    Returns the most semantically similar messages to your query, regardless of
+    exact word match. Multilingual — works across Croatian, English, German,
+    Italian, French, Spanish, etc. Voice notes whose transcripts are stored as
+    `content` are searchable too.
+
+    Useful for questions like:
+      - "What did Rahul say about F15 stickiness six weeks ago?"
+      - "Find the message where Mama mentioned the doctor's appointment"
+      - "When did we agree to use Vercel?"
+
+    Args:
+        query: Natural-language query, any language.
+        chat_jid: Optional, restrict to one chat (e.g. "385981847383@s.whatsapp.net").
+        sender: Optional sender JID/LID, restrict to one author.
+        after: Optional ISO-8601 datetime; only messages with timestamp >= this.
+        before: Optional ISO-8601 datetime; only messages with timestamp <= this.
+        is_from_me: True for outgoing only, False for incoming only, None for both.
+        limit: Max results to return (default 10).
+
+    Returns:
+        Dict with `results` (ranked matches incl. similarity score) and
+        `index_status` showing how far the background indexer has gotten.
+
+    Note:
+        Under the shared HTTP server (serve_http.py) a periodic ticker keeps the
+        index warm. In stdio mode the first call starts indexing on demand and
+        may return partial results while it catches up; the embedding model
+        (~470 MB) downloads once to ~/.cache/huggingface.
+    """
+    return _recall(
+        query=query,
+        chat_jid=chat_jid,
+        sender=sender,
+        after=after,
+        before=before,
+        is_from_me=is_from_me,
+        limit=limit,
+    )
+
+
+@tool("recall", "Recall Index Status", read_only=True, open_world=False)
+def recall_index_status() -> dict[str, Any]:
+    """Show how many messages have been embedded for `recall` so far.
+
+    Returns dict with `embedded`, `total`, `remaining`, `status`, `model`.
+    """
+    return _recall_index_status()
 
 
 if __name__ == "__main__":
