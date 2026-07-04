@@ -29,8 +29,6 @@ import threading
 import time
 from typing import Any
 
-import numpy as np
-
 from .utils import MESSAGES_DB_PATH, logger
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -71,7 +69,7 @@ def _get_model():
     return _model
 
 
-def _embed(texts: list[str]) -> np.ndarray:
+def _embed(texts: list[str]) -> np.ndarray:  # noqa: F821 (lazy numpy)
     global _last_model_use
     model = _get_model()
     _last_model_use = time.monotonic()
@@ -191,6 +189,8 @@ def _index_pending() -> None:
             if not rows:
                 break
 
+            import numpy as np
+
             texts = [r[2] for r in rows]
             try:
                 embeddings = _embed(texts)
@@ -303,6 +303,8 @@ def recall(
         Dict with `results` (list of matches with similarity score) and
         `index_status` (so the caller can see if indexing is still in flight).
     """
+    import numpy as np
+
     _ensure_indexer_running()
     qvec = _embed([query])[0]
 
