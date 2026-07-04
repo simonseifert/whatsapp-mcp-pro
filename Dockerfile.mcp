@@ -1,0 +1,41 @@
+# Dockerfile for WhatsApp MCP Server
+FROM python:3.13 AS runtime
+
+WORKDIR /app
+
+# Copy the Python Gradio project files
+COPY ./whatsapp-mcp-server /app/whatsapp-mcp-server
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security (UID 1000 to match common host user)
+ARG UID=1000
+ARG GID=1000
+RUN groupadd -g ${GID} appuser && useradd -l -u ${UID} -g appuser appuser
+
+# Set up Python environment and install dependencies
+RUN python3 -m pip install --upgrade pip uv
+
+# Install dependencies from requirements.txt
+WORKDIR /app/whatsapp-mcp-server
+COPY ./whatsapp-mcp-server/requirements.txt /app/whatsapp-mcp-server/requirements.txt
+RUN pip install -r requirements.txt
+
+# Create directories and entrypoint script
+RUN mkdir -p /app/store /app/media \
+    && printf '#!/bin/bash\ncd /app/whatsapp-mcp-server\npython gradio-main.py\n' > /app/entrypoint-mcp.sh \
+    && chmod +x /app/entrypoint-mcp.sh \
+    && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose ports for MCP server and Gradio UI
+EXPOSE 8081
+EXPOSE 8082
+
+ENTRYPOINT ["/app/entrypoint-mcp.sh"]

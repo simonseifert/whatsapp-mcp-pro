@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}, time %{time_total}s\\\\n\" http://localhost:8080/health)",
+      "Bash(curl -sS --max-time 5 http://localhost:8080/health)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 3 http://localhost:8180/health)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 3 http://localhost:8080/)",
+      "Bash(curl -sS --max-time 3 http://localhost:8080/)",
+      "Bash(sqlite3 *)",
+      "Bash(tmux capture-pane *)",
+      "Bash(dig +short +time=2 +tries=1 web.whatsapp.com)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}, dns %{time_namelookup}s, total %{time_total}s\\\\n\" --max-time 5 https://web.whatsapp.com/)",
+      "Bash(ps *)"
+    ]
+  }
+}
