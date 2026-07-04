@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import requests as _requests
-
-from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
+
+from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
 
 # Phase 2: Group Management
 from whatsapp import add_group_members as whatsapp_add_group_members
@@ -80,7 +80,8 @@ ALL_TOOLSETS = {
     "audio",
     "recall",
 }
-DEFAULT_TOOLSETS = set(ALL_TOOLSETS)
+# Pro toolsets are opt-in: default surface matches upstream curated set.
+DEFAULT_TOOLSETS = set(ALL_TOOLSETS) - {"audio", "recall"}
 ENABLED_TOOLSETS = {
     part.strip().lower()
     for part in os.getenv("WHATSAPP_MCP_TOOLSETS", ",".join(sorted(DEFAULT_TOOLSETS))).split(",")
@@ -874,10 +875,8 @@ def transcribe_audio_file(
 
 # ----- Pro: semantic recall over message history --------------------------
 
-from lib.recall import (  # noqa: E402  (intentional bottom-of-file import)
-    index_status as _recall_index_status,
-    recall as _recall,
-)
+from lib.recall import index_status as _recall_index_status  # noqa: E402
+from lib.recall import recall as _recall  # noqa: E402
 
 
 @tool("recall", "Semantic Recall", read_only=True, open_world=False)

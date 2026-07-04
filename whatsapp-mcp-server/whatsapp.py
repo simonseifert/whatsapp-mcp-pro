@@ -31,7 +31,6 @@ import audio
 from lib.bridge import _get_headers
 from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH
 
-
 # Use environment variable for bridge host, default to localhost:8080 for development
 # BRIDGE_HOST can be "hostname" (uses :8080) or "hostname:port" (uses specified port)
 _bridge_host = os.getenv("BRIDGE_HOST", "localhost:8080")

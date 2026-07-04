@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pro = [
+    "sentence-transformers>=3.0.0",
+    "mlx-whisper>=0.4.0; platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
 dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
