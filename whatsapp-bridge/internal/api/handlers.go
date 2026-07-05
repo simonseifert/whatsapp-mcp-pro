@@ -46,6 +46,11 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !recipientAllowed(req.Recipient) {
+		SendJSONError(w, "Recipient not in SEND_ALLOWED_JIDS allowlist", http.StatusForbidden)
+		return
+	}
+
 	if req.Message == "" && req.MediaPath == "" {
 		SendJSONError(w, "Message or media path is required", http.StatusBadRequest)
 		return

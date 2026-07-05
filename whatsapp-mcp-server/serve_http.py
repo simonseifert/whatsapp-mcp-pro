@@ -5,10 +5,18 @@ per-Claude-session `ssh m1 uv run main.py` stdio spawns. Those leaked: the
 stdio server does not exit on stdin EOF, so every finished session orphaned
 a python here (82 of them = 44 GB = the 2026-07-03 jetsam storm + panic).
 
+Scoped access: if WA_MCP_FULL_TOKEN / WA_MCP_READONLY_TOKEN are set (.env),
+requests need `Authorization: Bearer <token>`. The read-only token can only
+call tools whose annotations declare readOnlyHint=true; everything else gets
+a JSON-RPC error. With no tokens configured, auth is off (tailnet-only bind
+remains the outer wall).
+
 Clients connect via Claude Code MCP config:
     type=http, url=http://100.78.169.70:8082/mcp
+    (+ header Authorization: Bearer <token> when tokens are configured)
 """
 
+import json
 import os
 
 if __name__ == "__main__":
@@ -17,21 +25,101 @@ if __name__ == "__main__":
     # everything. Must be set before main is imported.
     os.environ.setdefault("WHATSAPP_MCP_TOOLSETS", "all")
 
+    import uvicorn
     from mcp.server.transport_security import TransportSecuritySettings
 
     from lib.recall import start_periodic_indexing
     from main import mcp
 
-    # Bind to the Tailscale IP only: reachable from the tailnet, not the LAN.
-    # If Tailscale isn't up yet at boot the bind fails and launchd retries.
-    mcp.settings.host = os.environ.get("MCP_HOST", "100.78.169.70")
-    mcp.settings.port = int(os.environ.get("MCP_PORT", "8082"))
+    host = os.environ.get("MCP_HOST", "100.78.169.70")
+    port = int(os.environ.get("MCP_PORT", "8082"))
+
+    mcp.settings.host = host
+    mcp.settings.port = port
     # The SDK's DNS-rebinding protection only allows localhost Hosts by
     # default; without this, tailnet clients get 421 Misdirected Request.
     mcp.settings.transport_security = TransportSecuritySettings(
-        allowed_hosts=[f"{mcp.settings.host}:{mcp.settings.port}"],
-        allowed_origins=[f"http://{mcp.settings.host}:{mcp.settings.port}"],
+        allowed_hosts=[f"{host}:{port}"],
+        allowed_origins=[f"http://{host}:{port}"],
     )
+
+    tokens = {}
+    if os.environ.get("WA_MCP_FULL_TOKEN"):
+        tokens[os.environ["WA_MCP_FULL_TOKEN"]] = "full"
+    if os.environ.get("WA_MCP_READONLY_TOKEN"):
+        tokens[os.environ["WA_MCP_READONLY_TOKEN"]] = "readonly"
+
+    readonly_tools = {
+        t.name
+        for t in mcp._tool_manager.list_tools()
+        if t.annotations is not None and t.annotations.readOnlyHint
+    }
+
+    class ScopedAuth:
+        """Pure ASGI middleware: bearer-token auth + read-only tool gating."""
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http" or not tokens:
+                return await self.app(scope, receive, send)
+            headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+            token = headers.get("authorization", "").removeprefix("Bearer ").strip()
+            role = tokens.get(token)
+            if role is None:
+                return await self._reply(send, 401, {"error": "unauthorized"})
+            if role == "full" or scope.get("method") != "POST":
+                return await self.app(scope, receive, send)
+
+            chunks, more = [], True
+            while more:
+                msg = await receive()
+                chunks.append(msg.get("body", b""))
+                more = msg.get("more_body", False)
+            body = b"".join(chunks)
+
+            try:
+                rpc = json.loads(body)
+            except Exception:
+                rpc = {}
+            if (
+                isinstance(rpc, dict)
+                and rpc.get("method") == "tools/call"
+                and rpc.get("params", {}).get("name") not in readonly_tools
+            ):
+                return await self._reply(
+                    send,
+                    200,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": rpc.get("id"),
+                        "error": {
+                            "code": -32001,
+                            "message": "read-only token: this tool is not read-only",
+                        },
+                    },
+                )
+
+            async def replay():
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            return await self.app(scope, replay, send)
+
+        @staticmethod
+        async def _reply(send, status, payload):
+            data = json.dumps(payload).encode()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": status,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": data})
+
     # Keep the recall index warm so first-call results are never partial.
     start_periodic_indexing(int(os.environ.get("RECALL_INDEX_INTERVAL", "600")))
-    mcp.run(transport="streamable-http")
+
+    app = ScopedAuth(mcp.streamable_http_app())
+    uvicorn.run(app, host=host, port=port, log_level="warning")
