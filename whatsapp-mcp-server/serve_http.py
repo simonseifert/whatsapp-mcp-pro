@@ -123,6 +123,13 @@ if __name__ == "__main__":
             )
             await send({"type": "http.response.body", "body": data})
 
+    # Optional: transcribe fresh voice notes in the background so recall
+    # covers what people said, not just what they typed.
+    if os.environ.get("AUTO_TRANSCRIBE_VOICE", "").lower() in {"1", "true", "yes"}:
+        from lib.transcribe import start_auto_transcribe
+
+        start_auto_transcribe(int(os.environ.get("AUTO_TRANSCRIBE_INTERVAL", "180")))
+
     # Keep the recall index warm so first-call results are never partial.
     start_periodic_indexing(int(os.environ.get("RECALL_INDEX_INTERVAL", "600")))
 
