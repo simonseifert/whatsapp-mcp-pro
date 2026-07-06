@@ -1,353 +1,93 @@
-# WhatsApp MCP Extended
+# whatsapp-mcp-pro
 
-An extended Model Context Protocol (MCP) server for WhatsApp with a toolset-gated, agent-facing surface for messaging, search, media, group management, webhooks, presence, and more.
+**AI-augmented WhatsApp for Claude and MCP agents — with semantic memory, local voice transcription, a shared multi-session server, and a self-hosted web client that costs zero extra device slots.**
 
-> Built on [AdamRussak/whatsapp-mcp](https://github.com/AdamRussak/whatsapp-mcp) (webhooks, containers) which forked [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) (original). Extended with reactions, message editing, polls, group management, presence, newsletters, and more.
+Forked from [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) (itself descended from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp)), tracking upstream closely and adding a "pro" layer on top.
 
-![WhatsApp MCP](./example-use.png)
+## Why this fork exists
 
-## What's New (vs Original)
+Every WhatsApp MCP gives you send/read tools. This one also answers questions like *"what did we agree about the deadline six weeks ago?"* — across 17,000 messages, in any language, including what was said in voice notes. As far as we know, **semantic recall and on-device voice transcription exist in no other WhatsApp MCP server.**
 
-| Feature | Original | Extended |
-|---------|----------|----------|
-| MCP Tools | 12 | **26 default / 15 lean** |
-| Reactions | - | ✅ |
-| Edit/Delete Messages | - | ✅ |
-| Group Management | - | ✅ |
-| Polls | - | ✅ |
-| History Sync | - | ✅ |
-| Presence/Online Status | - | ✅ |
-| Newsletters | - | ✅ |
-| Webhooks | - | ✅ |
-| Custom Nicknames | - | ✅ |
+| Pro feature | What it does |
+|---|---|
+| **`recall`** — semantic search | Multilingual embedding search over your full message history (paraphrase-multilingual-MiniLM, 50+ languages). Vector store lives inside the bridge's SQLite; background indexer keeps it warm; the model auto-unloads after 15 min idle so a small always-on box stays small. |
+| **`transcribe_audio`** — local voice-note transcription | mlx-whisper (large-v3-turbo) on Apple Silicon. No audio leaves your machine. |
+| **Shared HTTP server** (`serve_http.py`) | One always-on streamable-HTTP MCP serving *all* your Claude sessions. Kills the per-session stdio-spawn pattern that leaks orphaned processes (we learned this the hard way: 82 orphans, 44 GB RAM, one kernel panic). |
+| **Scoped bearer tokens** | A full token for trusted agents, a read-only token for dashboards/automations. Read-only can only call tools annotated `readOnlyHint=true` — enforced server-side. |
+| **`wa-client/`** — self-hosted web client | A WhatsApp-Web-style chat UI that rides the bridge's device session. **Zero additional linked-device slots**, unlimited browsers. Real-time push (webhook → SSE), inline media, keyword + semantic search, file sending, **scheduled messages**. |
+| **Send allowlist** | `SEND_ALLOWED_JIDS` limits which chats the bridge will ever send to. Safety gate for automation. |
+
+Everything upstream ships is here too: 27 curated tools (31 with the pro toolsets), toolset gating, HMAC-signed webhooks with trigger filters, group management, polls, newsletters, presence, opt-in anti-ban protection with humanized send pacing, auto-download of media before CDN links expire.
 
 ## Architecture
 
 ```
-┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
-│   whatsapp-bridge   │     │   whatsapp-mcp      │     │   whatsapp-web-ui   │
-│   (Go + whatsmeow)  │◄────│   (Python + MCP)    │     │   (HTML/JS SPA)     │
-│   Port: 8080        │     │   Port: 8081        │     │   Port: 8090        │
-└─────────────────────┘     └─────────────────────┘     └─────────────────────┘
-         │                           │
-         ▼                           ▼
-    ┌─────────────────────────────────────┐
-    │           SQLite (store/)           │
-    │  messages.db │ whatsapp.db          │
-    └─────────────────────────────────────┘
+                     ┌────────────────────────────────────────────┐
+                     │                 your machine               │
+ WhatsApp servers ◄──┤ whatsapp-bridge (Go, whatsmeow)            │
+                     │   REST :8080 · SQLite store · webhooks     │
+                     │      ▲                ▲                    │
+                     │      │ REST           │ REST + webhook     │
+                     │ whatsapp-mcp-server   wa-client            │
+                     │  (Python FastMCP)      (chat web UI :8084) │
+                     │   stdio  or  :8082     SSE push, schedule  │
+                     └──────┬─────────────────────────────────────┘
+                            │ streamable HTTP (+ bearer token)
+                  Claude Code / Desktop / any MCP client, N sessions
 ```
 
-## Quick Start
+- **whatsapp-bridge** — Go daemon on [whatsmeow](https://github.com/tulir/whatsmeow). Pairs as a linked device (QR once), stores history in SQLite, exposes REST + webhooks. Binds 127.0.0.1 by default.
+- **whatsapp-mcp-server** — Python FastMCP. Run per-client via stdio, or (recommended) as the shared HTTP server.
+- **wa-client** — the chat web UI. Optional but excellent.
+- **whatsapp-web-ui** — upstream's Next.js admin panel (pairing, webhook management). Not a chat client.
 
-### Docker (Recommended)
+## Quickstart
 
 ```bash
-git clone https://github.com/felixisaac/whatsapp-mcp-extended
-cd whatsapp-mcp-extended
+# 1. Bridge: build and pair (QR in terminal, scan with your phone)
+cd whatsapp-bridge && go build -o whatsapp-bridge . && ./whatsapp-bridge
 
-docker network create n8n_n8n_traefik_network
-docker-compose up -d
+# 2. MCP server deps
+cd ../whatsapp-mcp-server && uv sync            # + `uv sync --extra pro` for recall/transcription
 
-# Scan QR code to authenticate
-docker-compose logs -f whatsapp-bridge
+# 3a. Claude Code, per-session stdio (simple)
+claude mcp add whatsapp -- uv --directory /path/to/whatsapp-mcp-server run main.py
+
+# 3b. OR the shared HTTP server (one process, many sessions)
+MCP_HOST=0.0.0.0 MCP_PORT=8082 .venv/bin/python serve_http.py
+claude mcp add -t http whatsapp http://<host>:8082/mcp \
+  --header "Authorization: Bearer <WA_MCP_FULL_TOKEN>"
+
+# 4. Optional: the web client
+WA_WEB_HOST=<host> .venv/bin/python ../wa-client/app.py   # then open http://<host>:8084
 ```
 
-### Claude Desktop / Cursor Integration
+Pro toolsets are opt-in: set `WHATSAPP_MCP_TOOLSETS=all` (the shared server does this automatically). See `.env.example` for bridge options (`API_KEY`, `ANTIBAN_*`, `SEND_ALLOWED_JIDS`, `DISABLE_SSRF_CHECK` for localhost webhooks).
 
-Add to your MCP config (`claude_desktop_config.json` or Cursor settings):
+## wa-client: unlimited "WhatsApp Web", one device slot
 
-```json
-{
-  "mcpServers": {
-    "whatsapp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/whatsapp-mcp-extended/whatsapp-mcp-server", "python", "main.py"]
-    }
-  }
-}
-```
+WhatsApp caps you at 4 linked devices. The bridge takes one slot — and `wa-client` rides that same session, so every browser/phone/tablet you open it in is free. It reads history from the bridge's SQLite directly and sends through the bridge API, which also means full history from day one and search WhatsApp itself doesn't have (semantic, via `recall`).
 
-## MCP Tools
+Features: real-time push (bridge webhook → SSE, no polling), inline media, file upload, group sender colors, keyword + AI search, mark-read, and **scheduled sends** (⏰ in the composer; a queue on the server delivers even with no browser open).
 
-Version `0.3.0` exposes the full curated MCP surface by default for compatibility. Users who want a leaner agent context can opt into smaller toolsets.
+Deliberate limitations: no calls, no status posting (also a documented ban trigger — see below), media older than ~2 weeks may be expired upstream (mitigated by the bridge's auto-download-on-receipt).
 
-Default toolsets:
+**Security note:** wa-client has no login of its own. Bind it to 127.0.0.1 (default) or a VPN/tailnet address only. Never expose it to the internet.
 
-```bash
-WHATSAPP_MCP_TOOLSETS=all
-```
+## Account safety, honestly
 
-Lean recommended toolsets:
+This uses WhatsApp's linked-device protocol via whatsmeow — same as every unofficial WhatsApp tool. That violates WhatsApp's ToS and carries real ban risk; 2025-26 saw ban waves that hit even low-volume personal bots. Mitigations shipped here: opt-in anti-ban pacing (randomized delays + typing simulation), presence-ping hygiene, a send allowlist, and no support for the known high-risk behaviors (status posting from servers, cold bulk sends). Community consensus applies: prefer a dedicated number, reply-heavy usage on existing chats, residential IP. **No unofficial client is safe, only quiet.**
 
-```bash
-WHATSAPP_MCP_TOOLSETS=core,send,media
-```
+## Versioning / upstream relationship
 
-Toolsets:
+`main` tracks upstream's `main` plus the pro layer. Pro features are offered upstream as PRs ([#55](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/55) transcription, [#56](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/56) recall). Keep your bridge's whatsmeow fresh — stale builds eventually die with "405 Client outdated" (this is how the original repo's installs broke).
 
-| Toolset | Default | Tools |
-|---------|---------|-------|
-| `core` | Yes | Search/read tools, contact context, group info, profile picture |
-| `send` | Yes | `send_message`, `send_reaction`, `create_poll` |
-| `media` | Yes | `send_file`, `send_audio_message`, `download_media` |
-| `history` | No | `request_history` |
-| `contacts_write` | No | `manage_nickname` |
-| `message_admin` | No | `edit_message`, `delete_message`, `mark_read` |
-| `groups` | No | `manage_group` |
-| `presence` | No | `set_presence`, `subscribe_presence` |
-| `account_admin` | No | `get_blocklist`, `manage_blocklist` |
-| `newsletter` | No | `manage_newsletter` |
-
-You can also expose individual tools with `WHATSAPP_MCP_TOOLS=manage_group,delete_message`.
-
-Breaking change in `0.2.0`: older narrow tools are no longer exposed to the agent. Use the merged replacements below.
-
-Migration:
-
-| Prefer | Replaces |
-|--------|----------|
-| `get_contact_context` | `get_contact_details`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction` |
-| `manage_nickname` | `set_nickname`, `get_nickname`, `remove_nickname`, `list_nicknames` |
-| `manage_group` | `create_group`, `add_group_members`, `remove_group_members`, `promote_to_admin`, `demote_admin`, `leave_group`, `update_group` |
-| `get_blocklist`, `manage_blocklist` | `get_blocklist`, `block_user`, `unblock_user` |
-| `manage_newsletter` | `follow_newsletter`, `unfollow_newsletter`, `create_newsletter` |
-
-### Messaging
-| Tool | Description |
-|------|-------------|
-| `send_message` | Send text message |
-| `send_file` | Send image/video/document |
-| `send_audio_message` | Send voice message |
-| `download_media` | Download received media |
-| `send_reaction` | React to message with emoji |
-| `edit_message` | Edit sent message |
-| `delete_message` | Delete/revoke message |
-| `mark_read` | Mark messages as read (blue ticks) |
-
-### Chats & Messages
-| Tool | Description |
-|------|-------------|
-| `list_chats` | List all chats |
-| `get_chat` | Get chat by JID |
-| `list_messages` | Search messages with filters |
-| `get_message_context` | Get messages around a specific message |
-| `request_history` | Request older message history |
-
-### Contacts
-| Tool | Description |
-|------|-------------|
-| `search_contacts` | Search by name/phone |
-| `list_all_contacts` | List all contacts |
-| `get_contact_context` | Full contact info, related chats, and last interaction |
-| `manage_nickname` | Set/get/remove/list custom nicknames |
-
-### Groups
-| Tool | Description |
-|------|-------------|
-| `get_group_info` | Group metadata & participants |
-| `manage_group` | Create/update/leave groups and manage members/admins |
-| `create_poll` | Create poll in chat |
-
-### Presence & Profile
-| Tool | Description |
-|------|-------------|
-| `set_presence` | Set online/offline status |
-| `subscribe_presence` | Subscribe to contact's presence |
-| `get_profile_picture` | Get profile picture URL |
-| `get_blocklist` | List blocked users |
-| `manage_blocklist` | Block/unblock users |
-
-### Newsletters (Channels)
-| Tool | Description |
-|------|-------------|
-| `manage_newsletter` | Follow/unfollow/create channels |
-
-## API Design Philosophy
-
-Response data prioritizes **complete context with minimal interpretation**. See [METADATA_PHILOSOPHY.md](./docs/METADATA_PHILOSOPHY.md) for:
-
-- Why we include raw data instead of pre-computed signals
-- How we reduce token waste for consuming LLMs
-- Response structure examples (Messages, Chats, Contacts)
-- Design rules: raw facts, countable metrics, exclude nulls
-
-**TL;DR:** Get all contact info in one response instead of repeated queries. LLM infers tone, urgency, relationships from raw data + metrics.
-
-## Webhook System
-
-Real-time HTTP webhooks for incoming messages with:
-- **Triggers**: all, chat_jid, sender, keyword, media_type
-- **Matching**: exact, contains, regex
-- **Security**: HMAC-SHA256 signatures
-- **Retry**: Exponential backoff
-
-Access the web UI at `http://localhost:8090`
-
-## Development
-
-### Manual Setup
-
-```bash
-# Bridge (Go 1.25+)
-cd whatsapp-bridge && go run main.go
-
-# MCP Server (Python 3.11+)
-cd whatsapp-mcp-server && uv sync && uv run python main.py
-
-# Web UI
-cd whatsapp-web-ui && npm install && npm run dev
-```
-
-### Pre-build Checks
-
-```bash
-cd whatsapp-mcp-server
-uv run python check.py  # Catches errors before docker build
-```
-
-### Updating whatsmeow
-
-When you see `Client outdated (405)` errors:
-
-```bash
-cd whatsapp-bridge
-go get -u go.mau.fi/whatsmeow@latest
-go mod tidy
-docker-compose build whatsapp-bridge
-docker-compose up -d whatsapp-bridge
-```
-
-## Ports
-
-| Service | Port | Description |
-|---------|------|-------------|
-| Bridge API | 8080 (→8180) | REST API |
-| MCP Server | 8081 | Streamable HTTP transport |
-| Web UI | 8090 | Chat, contacts, and webhook management |
-
-## Configuration
-
-Environment variables for the bridge (set in `.env` or `docker-compose.yaml`):
-
-| Variable | Default | Description |
-|---|---|---|
-| `API_KEY` | *(required)* | Bearer token for all authenticated API calls |
-| `PRESENCE_PING_ENABLED` | `true` | Set `false` to stop broadcasting "online" to contacts |
-| `PRESENCE_PING_INTERVAL` | `20m` | How often to ping presence. Accepts Go duration strings (`20m`, `1h`). Keep ≥20m to avoid bot fingerprinting |
-| `HISTORY_SYNC_DAYS_LIMIT` | `365` | Days of history to sync on first link |
-| `HISTORY_SYNC_SIZE_MB` | `5000` | Max history sync size |
-| `STORAGE_QUOTA_MB` | `10240` | Device storage quota |
-| `API_PORT` | `8080` | Bridge HTTP port (internal) |
-
-## Quick Commands
-
-After running `setup.ps1` once, use the Makefile for day-to-day operations:
-
-```bash
-make status          # check connection state (connected, needs_pairing, jid)
-make pair PHONE=+60123456789   # pair via 8-digit phone code — no QR scan needed
-make pairing-status  # check pairing code progress
-make reconnect       # force reconnect (no re-pairing)
-make logs            # tail bridge logs
-make sync-venv       # re-sync Python venv (fix missing module errors)
-make open-ui         # open web UI in browser (QR scan, webhooks, contacts)
-```
-
-## Session Reliability
-
-**Session lifetime rules** (WhatsApp-enforced, cannot be changed):
-- Primary phone must connect to WhatsApp at least every **14 days**
-- The bridge companion device must be active at least every **30 days**
-- WebSocket idle disconnects after ~30 min (auto-reconnects, no re-pairing needed)
-
-**What causes permanent logout** (requires re-scanning QR):
-- Phone offline >14 days
-- Manual unlink from phone (Settings → Linked Devices)
-- WhatsApp detects suspicious activity / protocol fingerprinting
-- WhatsApp app update that forces re-authentication
-
-**Account risk:** This is a third-party bridge using an unofficial API. Use a **dedicated non-personal number**. WhatsApp has been aggressively detecting and banning automation tools since 2025. For business-critical use, the [WhatsApp Business API](https://developers.facebook.com/docs/whatsapp/cloud-api) is the only compliant path.
-
-**If the bridge goes unhealthy** (needs re-pairing):
-
-```bash
-make status          # check: needs_pairing=true means re-pair required
-make pair PHONE=+60123456789   # preferred: 8-digit code, no QR scan
-# or: open http://127.0.0.1:8090 and scan QR
-```
-
-You can also configure a webhook to receive `logged_out` events so you're alerted immediately when the session is revoked.
-
-## Troubleshooting
-
-### Bridge needs re-pairing after restart
-
-The bridge stores credentials in `store/whatsapp.db`. If that file exists but the bridge still shows QR, WhatsApp revoked the session server-side (check your phone → Settings → Linked Devices). Re-pair using `make pair PHONE=+60...` or open `http://127.0.0.1:8090`.
-
-### Messages Not Delivering
-
-If API returns success but messages show single checkmark:
-
-```bash
-docker-compose restart whatsapp-bridge
-docker-compose logs --tail=10 whatsapp-bridge
-# Should see: "✓ Connected to WhatsApp!"
-```
-
-### QR Code Issues
-
-```bash
-# Option 1: phone number code (no QR scan needed)
-make pair PHONE=+60123456789
-
-# Option 2: scan QR via web UI
-open http://127.0.0.1:8090
-
-# Option 3: terminal QR
-docker-compose logs -f whatsapp-bridge
-```
-
-### MCP server fails to start (missing module)
-
-```bash
-make sync-venv   # re-runs uv sync in whatsapp-mcp-server/
-```
-
-### Check bridge health
-
-```bash
-curl http://127.0.0.1:8180/api/health
-# connected: true/false
-# needs_pairing: true means QR/code scan required (not just a reconnect)
-# disconnected_for: how long it's been offline
-```
+See [ROADMAP.md](ROADMAP.md) for where this is going.
 
 ## Credits
 
-**Fork chain:**
-- [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) - Original MCP server (12 tools)
-- [AdamRussak/whatsapp-mcp](https://github.com/AdamRussak/whatsapp-mcp) - Added webhooks, container split, webhook UI
-- This repo - Added reactions, edit/delete, groups, polls, presence, newsletters, and a curated MCP tool surface
+- [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) — the actively maintained base this forks
+- [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) — the original
+- [tulir/whatsmeow](https://github.com/tulir/whatsmeow) — the engine underneath everything
 
-**Libraries:**
-- [whatsmeow](https://github.com/tulir/whatsmeow) - Go WhatsApp Web API
-- [FastMCP](https://github.com/jlowin/fastmcp) - Python MCP SDK
-
-### Community Acknowledgements
-
-Several forks independently solved real problems and their ideas have been incorporated into this repo. Credit where it's due:
-
-| Contributor | What they figured out |
-|---|---|
-| [simonseifert](https://github.com/simonseifert/whatsapp-mcp-extended-pro) | First to track the `direct_path` DB column needed for CDN fallback during media download; whatsmeow-native `Download()` approach in `/api/download`; correct DB path resolution across Docker/local environments; inline `Image` content blocks in `download_media` |
-| [laudite](https://github.com/laudite/whatsapp-mcp-extended) | Media captions were silently dropped for images/video/docs — fixed in `ExtractTextContent()`; quoted/reply context in webhook payloads; `@mention` auto-detection; `request_history` peer-message target bug (was sending to group JID instead of own device JID) |
-| [kasperpeulen](https://github.com/kasperpeulen/whatsapp-mcp-extended) | Contact name resolution priority chain (`FullName > PushName > FirstName > Business`) and the phone-number-cache bug; full call event pipeline (offer/accept/terminate/reject with duration); LID → phone JID resolution via `GetAltJID()` |
-| [Coriatel](https://github.com/Coriatel/whatsapp-mcp-extended) | First working `/api/download` implementation with manual HKDF/AES-CBC decryption |
-| [jedijashwa](https://github.com/jedijashwa/whatsapp-mcp-extended) | Reactions silently failing fix (wrong sender JID lookup); extended MIME type support for audio/document types |
-| [slarrain](https://github.com/slarrain/whatsapp-mcp-extended) | LID JID normalization — diagnosed the silent conversation-splitting bug where WhatsApp's new LID format caused messages to land in separate chat threads |
-
-If you've forked this repo and built something useful, open a PR or issue — good ideas deserve to flow upstream.
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file.
+MIT, same as upstream.
