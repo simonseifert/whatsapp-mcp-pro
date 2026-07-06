@@ -2,7 +2,7 @@ services:
   whatsapp-bridge:
     build:
       context: .
-      dockerfile: Dockerfile.bridge
+      dockerfile: docker/Dockerfile.bridge
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
@@ -36,7 +36,7 @@ services:
   whatsapp-mcp:
     build:
       context: .
-      dockerfile: Dockerfile.mcp
+      dockerfile: docker/Dockerfile.mcp
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
@@ -74,7 +74,7 @@ services:
   web-ui:
     build:
       context: .
-      dockerfile: Dockerfile.web-ui
+      dockerfile: docker/Dockerfile.web-ui
     deploy:
       resources:
         limits:
