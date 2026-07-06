@@ -96,7 +96,7 @@ examples in `scripts/` are macOS launchd, but any process manager works
 
 ## Account safety, honestly
 
-This uses WhatsApp's linked-device protocol via whatsmeow — same as every unofficial WhatsApp tool. That violates WhatsApp's ToS and carries real ban risk; 2025-26 saw ban waves that hit even low-volume personal bots. Mitigations shipped here: opt-in anti-ban pacing (randomized delays + typing simulation), presence-ping hygiene, a send allowlist, and no support for the known high-risk behaviors (status posting from servers, cold bulk sends). Community consensus applies: prefer a dedicated number, reply-heavy usage on existing chats, residential IP. **No unofficial client is safe, only quiet.**
+This uses WhatsApp's linked-device protocol via whatsmeow, same as Baileys and other protocol-level libraries (browser-automation tools like whatsapp-web.js carry a related but architecturally distinct risk surface: a real Chromium instance fingerprints differently than a custom protocol client). All of it violates WhatsApp's ToS and carries real ban risk; 2025-26 saw ban waves that hit even low-volume personal bots. Mitigations shipped here: opt-in anti-ban pacing (randomized delays + typing simulation), presence-ping hygiene, a send allowlist, and no support for the known high-risk behaviors (status posting from servers, cold bulk sends). Community consensus applies: prefer a dedicated number, reply-heavy usage on existing chats, residential IP. **No unofficial client is safe, only quiet.**
 
 ## Versioning / upstream relationship
 
