@@ -777,9 +777,7 @@ def resource_sync_status() -> str:
     return json.dumps(data)
 
 
-# ----- Pro: local voice transcription (mlx-whisper) ------------------------
-
-_WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+# ----- Pro: voice transcription (pluggable backends) -----------------------
 
 
 @tool("audio", "Transcribe Voice Message", read_only=True, open_world=False)
@@ -788,10 +786,11 @@ def transcribe_audio(
     chat_jid: str,
     language: str | None = None,
 ) -> dict[str, Any]:
-    """Download a WhatsApp voice/audio message and transcribe it locally with mlx-whisper.
+    """Download a WhatsApp voice/audio message and transcribe it to text.
 
-    Runs entirely on-device (Apple Silicon, mlx). First call per model triggers a one-time
-    Hugging Face download (~1.5 GB for large-v3-turbo) cached under ~/.cache/huggingface.
+    Uses the first available backend: mlx-whisper (Apple Silicon, local),
+    faster-whisper (any OS, local), or the Groq API (needs GROQ_API_KEY).
+    Override with WHISPER_BACKEND=mlx|faster-whisper|groq.
 
     Args:
         message_id: The ID of the message containing the audio
@@ -799,40 +798,16 @@ def transcribe_audio(
         language: Optional ISO-639-1 code (e.g. "en", "hr", "de"). Auto-detected if omitted.
 
     Returns:
-        Dict with success, text, language, file_path, and message on failure.
+        Dict with success, text, language, backend, file_path, and message on failure.
     """
     file_path = whatsapp_download_media(message_id, chat_jid)
     if not file_path:
         return {"success": False, "message": "Failed to download media"}
+    from lib.transcribe import transcribe_file
 
-    try:
-        import mlx_whisper
-    except ImportError as e:
-        return {
-            "success": False,
-            "message": f"mlx-whisper not installed: {e}. Run `uv sync` in whatsapp-mcp-server.",
-            "file_path": file_path,
-        }
-
-    try:
-        result = mlx_whisper.transcribe(
-            file_path,
-            path_or_hf_repo=_WHISPER_MODEL,
-            language=language,
-        )
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Transcription failed: {e}",
-            "file_path": file_path,
-        }
-
-    return {
-        "success": True,
-        "text": (result.get("text") or "").strip(),
-        "language": result.get("language"),
-        "file_path": file_path,
-    }
+    result = transcribe_file(file_path, language)
+    result.setdefault("file_path", file_path)
+    return result
 
 
 @tool("audio", "Transcribe Audio File", read_only=True, open_world=False)
@@ -840,37 +815,18 @@ def transcribe_audio_file(
     file_path: str,
     language: str | None = None,
 ) -> dict[str, Any]:
-    """Transcribe an arbitrary local audio file with mlx-whisper.
+    """Transcribe an arbitrary local audio file (any backend, see transcribe_audio).
 
     Args:
         file_path: Absolute path to an audio file (ogg/opus/mp3/wav/m4a/etc.)
         language: Optional ISO-639-1 code. Auto-detected if omitted.
 
     Returns:
-        Dict with success, text, language, and message on failure.
+        Dict with success, text, language, backend, and message on failure.
     """
-    try:
-        import mlx_whisper
-    except ImportError as e:
-        return {
-            "success": False,
-            "message": f"mlx-whisper not installed: {e}. Run `uv sync` in whatsapp-mcp-server.",
-        }
+    from lib.transcribe import transcribe_file
 
-    try:
-        result = mlx_whisper.transcribe(
-            file_path,
-            path_or_hf_repo=_WHISPER_MODEL,
-            language=language,
-        )
-    except Exception as e:
-        return {"success": False, "message": f"Transcription failed: {e}"}
-
-    return {
-        "success": True,
-        "text": (result.get("text") or "").strip(),
-        "language": result.get("language"),
-    }
+    return transcribe_file(file_path, language)
 
 
 # ----- Pro: semantic recall over message history --------------------------

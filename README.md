@@ -6,7 +6,7 @@ Forked from [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/wha
 
 ## Why this fork exists
 
-Every WhatsApp MCP gives you send/read tools. This one also answers questions like *"what did we agree about the deadline six weeks ago?"* — across 17,000 messages, in any language, including what was said in voice notes. As far as we know, **semantic recall and on-device voice transcription exist in no other WhatsApp MCP server.**
+Every WhatsApp MCP gives you send/read tools. This one also answers questions like *"what did we agree about the deadline six weeks ago?"* — across your full message history, in any language, including what was said in voice notes.
 
 | Pro feature | What it does |
 |---|---|
@@ -73,6 +73,26 @@ Features: real-time push (bridge webhook → SSE, no polling), inline media, fil
 Deliberate limitations: no calls, no status posting (also a documented ban trigger — see below), media older than ~2 weeks may be expired upstream (mitigated by the bridge's auto-download-on-receipt).
 
 **Security note:** wa-client has no login of its own. Bind it to 127.0.0.1 (default) or a VPN/tailnet address only. Never expose it to the internet.
+
+## Transcription backends and integrations
+
+Transcription is backend-pluggable (`WHISPER_BACKEND`, default `auto`):
+
+| Backend | Where it runs | Notes |
+|---|---|---|
+| `mlx` | Apple Silicon, fully local | mlx-whisper large-v3-turbo (~1.5 GB RAM) |
+| `faster-whisper` | any OS, CPU/GPU, fully local | `uv sync --extra pro-cpu` |
+| `groq` | Groq API | needs `GROQ_API_KEY`; near-zero RAM — ideal for small always-on boxes |
+
+Set `AUTO_TRANSCRIBE_VOICE=true` on the shared server and incoming voice notes
+are transcribed in the background and written into the message store — voice
+becomes searchable via `recall` and readable in wa-client. LLM integrations
+beyond speech (digests, summaries via Groq/DeepSeek/local models) are on the
+[roadmap](ROADMAP.md).
+
+The bridge (Go) and server (Python) run on macOS, Linux, and Windows; service
+examples in `scripts/` are macOS launchd, but any process manager works
+(systemd, NSSM). The only Apple-only piece is the optional mlx backend.
 
 ## Account safety, honestly
 
