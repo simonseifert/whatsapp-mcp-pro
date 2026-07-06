@@ -25,7 +25,7 @@ worth closing are listed below in value order.
 - [ ] **Presence policy decision** — the bridge pins presence "available" on every (re)connect (main.go), which suppresses WhatsApp push notifications on the paired phone and paints an always-online fingerprint. Options: mirror real activity (mautrix-style), make it configurable, or keep and document.
 - [ ] **Reply/quote in send_message** (upstream #57) — schema already stores quoted_* columns; expose reply_to in bridge send + MCP tool + wa-client swipe-to-reply
 - [ ] **Reactions in wa-client** (bridge endpoint exists; UI long-press → emoji row)
-- [ ] **Voice-note auto-transcription pipeline** — transcribe incoming voice notes in the background and store text into `content`, making voice searchable by `recall` (our two unique features composed; nobody has this)
+- [x] **Voice-note auto-transcription pipeline** (shipped 2026-07-06) — background loop transcribes incoming voice notes into `content`; recall indexes them; backend-pluggable (mlx / faster-whisper / Groq)
 - [ ] **Scheduled sends as MCP tools** (`schedule_message`, `list_scheduled`, `cancel_scheduled`) so agents can schedule, not just the web UI
 - [ ] **Upstream PRs**: tests fix (done in-fork), JID allowlist, scheduled sends — keep the fork mergeable and the upstream relationship warm
 - [ ] **Releases + tags** — cut v0.4.0-pro; stop shipping from `main` only

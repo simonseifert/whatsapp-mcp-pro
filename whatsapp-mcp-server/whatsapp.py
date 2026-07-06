@@ -1012,6 +1012,11 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
             result = response.json()
             if result.get("success", False):
                 path = result.get("path")
+                # The bridge returns paths relative to its own working dir;
+                # absolutize so callers (transcription, MCP clients) can open them.
+                if path and not os.path.isabs(path):
+                    bridge_root = os.path.dirname(os.path.dirname(MESSAGES_DB_PATH))
+                    path = os.path.join(bridge_root, path)
                 print(f"Media downloaded successfully: {path}")
                 return path
             else:
