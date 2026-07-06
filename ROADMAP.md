@@ -32,7 +32,7 @@ worth closing are listed below in value order.
 
 ## Mid-term
 
-- [ ] **go-security green**: bump Go toolchain directive; track whatsmeow monthly (stale = 405 death)
+- [x] **go-security green** (shipped 2026-07-06) — CI pinned an exact patch (1.25.10) that missed a stdlib security fix; floated to `1.25` so setup-go always grabs the latest patch. Same bug exists upstream (FelixIsaac) — worth a PR.
 - [ ] **Observability** (upstream #10/#11): Prometheus `/metrics` (messages/hr, webhook deliveries, send latency, recall index lag) + structured JSON logs
 - [ ] **MCP resources for live state** — sync status, index status, scheduled queue as MCP resources instead of tool calls
 - [ ] **wa-client PWA** — manifest + service worker so it installs as a phone "app"; push notifications via the existing ntfy channel
