@@ -20,6 +20,9 @@ worth closing are listed below in value order.
 
 ## Next (high value, low risk)
 
+- [ ] **Media-retry path for expired media** — the bridge returns CDN 404/410 verbatim; whatsmeow supports the retry dance (`SendMediaRetryReceipt` → `events.MediaRetry` → fresh DirectPath, phone must be online). Without it, media older than ~2 weeks is permanently lost to transcription/recall/wa-client. Highest-value fix from the July 2026 whatsmeow study (docs-reference/whatsmeow).
+- [ ] **LID/PN JID normalization audit** — WhatsApp is migrating chats to `@lid` JIDs; the same contact can split into two chat rows (and two recall identities). Map via whatsmeow's `SenderAlt`/`StoreLIDPNMapping` before deriving `chat_jid`.
+- [ ] **Presence policy decision** — the bridge pins presence "available" on every (re)connect (main.go), which suppresses WhatsApp push notifications on the paired phone and paints an always-online fingerprint. Options: mirror real activity (mautrix-style), make it configurable, or keep and document.
 - [ ] **Reply/quote in send_message** (upstream #57) — schema already stores quoted_* columns; expose reply_to in bridge send + MCP tool + wa-client swipe-to-reply
 - [ ] **Reactions in wa-client** (bridge endpoint exists; UI long-press → emoji row)
 - [ ] **Voice-note auto-transcription pipeline** — transcribe incoming voice notes in the background and store text into `content`, making voice searchable by `recall` (our two unique features composed; nobody has this)

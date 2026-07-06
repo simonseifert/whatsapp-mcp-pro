@@ -45,7 +45,7 @@ docker-compose up -d <service>   # restart with new image
 
 ### Development
 ```bash
-# Bridge (Go 1.24+)
+# Bridge (Go 1.25+)
 cd whatsapp-bridge && go run main.go
 cd whatsapp-bridge && go test ./...
 
