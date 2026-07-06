@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>WhatsApp · M1</title>
+<style>
+  :root{
+    --bg:#0b141a; --sidebar:#111b21; --panel:#202c33; --border:#222d34;
+    --bubble-in:#202c33; --bubble-out:#005c4b; --accent:#00a884;
+    --text:#e9edef; --dim:#8696a0; --danger:#f15c6d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--text);overflow:hidden}
+  #app{display:flex;height:100dvh}
+
+  /* ---------- sidebar ---------- */
+  #sidebar{width:380px;min-width:300px;background:var(--sidebar);border-right:1px solid var(--border);
+           display:flex;flex-direction:column}
+  #side-head{padding:14px 16px 10px;display:flex;flex-direction:column;gap:10px}
+  #side-title{font-size:19px;font-weight:600;display:flex;align-items:center;gap:8px}
+  #side-title .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent)}
+  #searchrow{display:flex;gap:8px}
+  #search{flex:1;background:var(--panel);border:none;border-radius:8px;padding:8px 12px;
+          color:var(--text);font-size:14px;outline:none}
+  #search::placeholder{color:var(--dim)}
+  #semantic-toggle,#sched-toggle{background:var(--panel);border:none;border-radius:8px;padding:0 12px;color:var(--dim);
+          font-size:13px;cursor:pointer;white-space:nowrap}
+  #semantic-toggle.on{color:#04120e;background:var(--accent);font-weight:600}
+  #sched-panel{display:none;flex:1;overflow-y:auto}
+  .sched-item{padding:10px 16px;border-bottom:1px solid rgba(134,150,160,.08)}
+  .sched-meta{display:flex;justify-content:space-between;font-size:12px;color:var(--accent);margin-bottom:3px}
+  .sched-del{background:none;border:none;color:var(--danger);cursor:pointer;font-size:13px}
+  .sched-msg{font-size:13px;color:var(--text)}
+  .sched-err{color:var(--danger);font-size:11.5px;margin-top:2px}
+  #sched-pop{position:absolute;bottom:64px;right:80px;background:var(--panel);border:1px solid var(--border);
+          border-radius:12px;padding:14px;display:none;z-index:8;flex-direction:column;gap:10px}
+  #sched-pop input{background:#2a3942;border:none;border-radius:8px;padding:8px 10px;color:var(--text);font:inherit;
+          color-scheme:dark}
+  #sched-pop .row{display:flex;gap:8px;justify-content:flex-end}
+  #sched-pop button{border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
+  #sched-confirm{background:var(--accent);color:#06120e;font-weight:600}
+  #sched-cancel{background:none;color:var(--dim)}
+  #chatlist,#results{flex:1;overflow-y:auto}
+  .chat-item{display:flex;gap:12px;padding:10px 14px;cursor:pointer;align-items:center}
+  .chat-item:hover{background:#1a252c}
+  .chat-item.active{background:#2a3942}
+  .avatar{width:44px;height:44px;border-radius:50%;background:#364147;color:#cfd9de;flex-shrink:0;
+          display:flex;align-items:center;justify-content:center;font-weight:600;font-size:16px}
+  .chat-mid{flex:1;min-width:0;border-bottom:1px solid rgba(134,150,160,.08);padding-bottom:10px}
+  .chat-row1{display:flex;justify-content:space-between;gap:8px}
+  .chat-name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chat-time{color:var(--dim);font-size:12px;flex-shrink:0}
+  .chat-preview{color:var(--dim);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .result-item{padding:10px 16px;cursor:pointer;border-bottom:1px solid rgba(134,150,160,.08)}
+  .result-item:hover{background:#1a252c}
+  .result-meta{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:3px}
+  .result-snippet{font-size:13.5px;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .sim-badge{color:var(--accent)}
+  #results-note{padding:10px 16px;color:var(--dim);font-size:13px}
+
+  /* ---------- chat pane ---------- */
+  #main{flex:1;display:flex;flex-direction:column;min-width:0;
+        background:var(--bg) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140" opacity="0.035"><circle cx="20" cy="20" r="1.6" fill="white"/><circle cx="90" cy="60" r="1.2" fill="white"/><circle cx="45" cy="110" r="1.4" fill="white"/><circle cx="120" cy="115" r="1.1" fill="white"/></svg>')}
+  #empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--dim);gap:10px}
+  #empty .big{font-size:44px;opacity:.4}
+  #chat-head{display:none;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);
+             border-bottom:1px solid var(--border)}
+  #back{display:none;background:none;border:none;color:var(--dim);font-size:20px;cursor:pointer;padding:4px}
+  #chat-title{font-weight:500}
+  #chat-sub{font-size:12px;color:var(--dim)}
+  #head-actions{margin-left:auto;display:flex;gap:8px}
+  .hbtn{background:none;border:1px solid var(--border);color:var(--dim);border-radius:8px;
+        padding:5px 10px;font-size:12.5px;cursor:pointer}
+  .hbtn:hover{color:var(--text);border-color:var(--dim)}
+  #msgs{flex:1;overflow-y:auto;padding:14px 8%;display:none;flex-direction:column;gap:3px}
+  #load-older{align-self:center;margin-bottom:10px;background:var(--panel);color:var(--dim);border:none;
+              border-radius:14px;padding:6px 14px;font-size:12.5px;cursor:pointer;display:none}
+  .day-sep{align-self:center;background:#182229;color:var(--dim);font-size:12px;border-radius:8px;
+           padding:5px 12px;margin:12px 0 6px}
+  .msg{max-width:66%;padding:6px 9px 8px;border-radius:8px;position:relative;word-wrap:break-word;white-space:pre-wrap}
+  .msg.in{background:var(--bubble-in);align-self:flex-start;border-top-left-radius:0}
+  .msg.out{background:var(--bubble-out);align-self:flex-end;border-top-right-radius:0}
+  .msg .sender{font-size:12.5px;font-weight:600;margin-bottom:2px}
+  .msg .meta{font-size:11px;color:rgba(233,237,239,.55);text-align:right;margin-top:3px;user-select:none}
+  .msg img,.msg video{max-width:320px;max-height:360px;border-radius:6px;display:block;margin-top:4px}
+  .msg audio{margin-top:4px;max-width:280px}
+  .media-chip{display:inline-flex;align-items:center;gap:8px;background:rgba(0,0,0,.18);border-radius:8px;
+              padding:8px 12px;margin-top:4px;font-size:13px;color:var(--dim);cursor:pointer;border:none}
+  .media-chip:hover{color:var(--text)}
+  #composer{display:none;gap:10px;padding:10px 16px;background:var(--panel);align-items:flex-end}
+  #attach{background:none;border:none;font-size:21px;color:var(--dim);cursor:pointer;padding:6px 2px}
+  #attach:hover{color:var(--text)}
+  #input{flex:1;background:#2a3942;border:none;border-radius:10px;padding:11px 14px;color:var(--text);
+         font:inherit;resize:none;max-height:130px;outline:none}
+  #send{background:var(--accent);border:none;border-radius:50%;width:42px;height:42px;font-size:18px;
+        color:#06120e;cursor:pointer;flex-shrink:0}
+  #send:disabled{opacity:.4;cursor:default}
+  #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#182229;color:var(--text);
+         border:1px solid var(--border);border-radius:10px;padding:10px 18px;font-size:13.5px;display:none;z-index:9}
+  #toast.err{border-color:var(--danger);color:var(--danger)}
+
+  @media (max-width:820px){
+    #sidebar{width:100%;min-width:0}
+    body.chat-open #sidebar{display:none}
+    #main{display:none}
+    body.chat-open #main{display:flex}
+    #back{display:block}
+    #msgs{padding:14px 4%}
+    .msg{max-width:85%}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div id="side-head">
+      <div id="side-title"><span class="dot"></span>WhatsApp <span style="color:var(--dim);font-weight:400;font-size:13px">on M1 · bridge session</span></div>
+      <div id="searchrow">
+        <input id="search" placeholder="Search chats or messages…" autocomplete="off">
+        <button id="semantic-toggle" title="Semantic search via recall (embedding-based)">AI</button>
+        <button id="sched-toggle" title="Scheduled messages">⏰</button>
+      </div>
+    </div>
+    <div id="chatlist"></div>
+    <div id="results" style="display:none"></div>
+    <div id="sched-panel"></div>
+  </div>
+  <div id="main">
+    <div id="empty"><div class="big">💬</div><div>Select a chat to start</div>
+      <div style="font-size:12.5px;max-width:340px;text-align:center">Full history since the bridge paired · sends via your existing linked device, no extra device slot used</div></div>
+    <div id="chat-head">
+      <button id="back">←</button>
+      <div class="avatar" id="chat-avatar" style="width:38px;height:38px;font-size:14px"></div>
+      <div><div id="chat-title"></div><div id="chat-sub"></div></div>
+      <div id="head-actions"><button class="hbtn" id="mark-read">Mark read</button></div>
+    </div>
+    <div id="msgs"><button id="load-older">Load older messages</button></div>
+    <div id="composer">
+      <input type="file" id="file" style="display:none">
+      <button id="attach" title="Send a file">📎</button>
+      <textarea id="input" rows="1" placeholder="Type a message"></textarea>
+      <button id="clock" title="Schedule this message" style="background:none;border:none;font-size:19px;color:var(--dim);cursor:pointer;padding:6px 2px">⏰</button>
+      <button id="send" title="Send">➤</button>
+    </div>
+    <div id="sched-pop">
+      <div style="font-size:13px;color:var(--dim)">Send this message at:</div>
+      <input type="datetime-local" id="sched-time">
+      <div class="row"><button id="sched-cancel">Cancel</button><button id="sched-confirm">Schedule</button></div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let chats = [], currentJid = null, maxRowid = 0, semantic = false, oldestTs = null;
+
+const esc = t => (t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const phoneOf = jid => (jid || '').split('@')[0].split(':')[0];
+const isGroup = jid => (jid || '').endsWith('@g.us');
+const nameOf = c => c.name || '+' + phoneOf(c.jid);
+const initials = n => n.replace(/[^\p{L}\p{N} +]/gu,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase() || '?';
+const senderColor = s => `hsl(${[...(s||'')].reduce((a,c)=>a+c.charCodeAt(0),0)%360} 55% 62%)`;
+
+function fmtTime(ts){ const d = new Date(ts); return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
+function fmtDay(ts){
+  const d = new Date(ts), now = new Date();
+  if (d.toDateString() === now.toDateString()) return 'Today';
+  const y = new Date(now); y.setDate(y.getDate()-1);
+  if (d.toDateString() === y.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], {day:'numeric', month:'short', year:'numeric'});
+}
+function fmtListTime(ts){
+  const d = new Date(ts), now = new Date();
+  return d.toDateString() === now.toDateString() ? fmtTime(ts) : d.toLocaleDateString([], {day:'2-digit', month:'2-digit'});
+}
+function toast(msg, err){
+  const t = $('#toast'); t.textContent = msg; t.className = err ? 'err' : ''; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3500);
+}
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
+  return r.json();
+}
+
+/* ---------- chat list ---------- */
+function previewOf(c){
+  let p = c.last_content || (c.last_media_type ? '📎 ' + c.last_media_type : '');
+  let who = c.last_from_me ? 'You: ' : (isGroup(c.jid) && c.last_sender_name ? c.last_sender_name + ': ' : '');
+  return who + p;
+}
+function renderChats(){
+  $('#chatlist').innerHTML = chats.map(c => `
+    <div class="chat-item ${c.jid===currentJid?'active':''}" data-jid="${esc(c.jid)}">
+      <div class="avatar">${esc(initials(nameOf(c)))}</div>
+      <div class="chat-mid">
+        <div class="chat-row1"><span class="chat-name">${esc(nameOf(c))}</span>
+          <span class="chat-time">${c.last_message_time ? fmtListTime(c.last_message_time) : ''}</span></div>
+        <div class="chat-preview">${esc(previewOf(c))}</div>
+      </div>
+    </div>`).join('');
+  document.querySelectorAll('.chat-item').forEach(el => el.onclick = () => openChat(el.dataset.jid));
+}
+async function loadChats(){
+  const d = await api('/api/chats');
+  chats = d.chats; maxRowid = Math.max(maxRowid, d.max_rowid); renderChats();
+}
+
+/* ---------- messages ---------- */
+function bubbleHTML(m){
+  const mine = !!m.is_from_me;
+  let sender = '';
+  if (!mine && isGroup(m.chat_jid)){
+    const s = m.sender_name || '+' + phoneOf(m.sender);
+    sender = `<div class="sender" style="color:${senderColor(s)}">${esc(s)}</div>`;
+  }
+  let body = m.content ? esc(m.content) : '';
+  let mediaHTML = '';
+  if (m.media_type){
+    mediaHTML = `<button class="media-chip" data-mid="${esc(m.id)}" data-jid="${esc(m.chat_jid)}"
+      data-type="${esc(m.media_type)}">⬇ ${esc(m.media_type)}${m.filename ? ' · ' + esc(m.filename) : ''}</button>`;
+  }
+  return `<div class="msg ${mine?'out':'in'}" data-rowid="${m.rowid}" data-id="${esc(m.id)}">${sender}${body}${mediaHTML}
+    <div class="meta">${fmtTime(m.timestamp)}</div></div>`;
+}
+function appendMessages(list, prepend=false){
+  const box = $('#msgs');
+  let html = '', lastDay = prepend ? null : box.dataset.lastDay;
+  if (prepend) lastDay = null;
+  for (const m of list){
+    const day = fmtDay(m.timestamp);
+    if (day !== lastDay){ html += `<div class="day-sep">${day}</div>`; lastDay = day; }
+    html += bubbleHTML(m);
+  }
+  if (prepend){
+    $('#load-older').insertAdjacentHTML('afterend', html);
+  } else {
+    box.insertAdjacentHTML('beforeend', html);
+    box.dataset.lastDay = lastDay;
+  }
+  box.querySelectorAll('.media-chip:not([data-bound])').forEach(b => { b.dataset.bound = 1; b.onclick = () => loadMedia(b); });
+}
+async function openChat(jid){
+  currentJid = jid; oldestTs = null;
+  const c = chats.find(x => x.jid === jid) || {jid};
+  document.body.classList.add('chat-open');
+  $('#empty').style.display = 'none';
+  $('#chat-head').style.display = 'flex';
+  $('#msgs').style.display = 'flex';
+  $('#composer').style.display = 'flex';
+  $('#chat-title').textContent = nameOf(c);
+  $('#chat-avatar').textContent = initials(nameOf(c));
+  $('#chat-sub').textContent = isGroup(jid) ? 'group · ' + jid : '+' + phoneOf(jid);
+  const box = $('#msgs');
+  [...box.children].forEach(el => { if (el.id !== 'load-older') el.remove(); });
+  box.dataset.lastDay = '';
+  renderChats();
+  const d = await api('/api/messages?chat_jid=' + encodeURIComponent(jid));
+  if (d.messages.length){ oldestTs = d.messages[0].timestamp; }
+  $('#load-older').style.display = d.messages.length >= 60 ? 'block' : 'none';
+  appendMessages(d.messages);
+  box.scrollTop = box.scrollHeight;
+  $('#input').focus();
+}
+$('#load-older').onclick = async () => {
+  if (!oldestTs) return;
+  const box = $('#msgs'), keep = box.scrollHeight;
+  const d = await api('/api/messages?chat_jid=' + encodeURIComponent(currentJid) + '&before=' + encodeURIComponent(oldestTs));
+  if (d.messages.length){ oldestTs = d.messages[0].timestamp; appendMessages(d.messages, true); }
+  if (d.messages.length < 60) $('#load-older').style.display = 'none';
+  box.scrollTop = box.scrollHeight - keep;
+};
+$('#back').onclick = () => document.body.classList.remove('chat-open');
+
+/* ---------- media ---------- */
+async function loadMedia(btn){
+  btn.textContent = '⏳ loading…'; btn.disabled = true;
+  const url = '/api/media?message_id=' + encodeURIComponent(btn.dataset.mid) + '&chat_jid=' + encodeURIComponent(btn.dataset.jid);
+  const r = await fetch(url);
+  if (!r.ok){ btn.textContent = '✕ expired or unavailable'; btn.title = 'WhatsApp media links expire after ~2 weeks'; return; }
+  const blob = await r.blob(), src = URL.createObjectURL(blob), t = btn.dataset.type;
+  let el;
+  if (t === 'image') el = Object.assign(document.createElement('img'), {src});
+  else if (t === 'audio' || t === 'ptt') { el = Object.assign(document.createElement('audio'), {src, controls:true}); }
+  else if (t === 'video') { el = Object.assign(document.createElement('video'), {src, controls:true}); }
+  else { el = Object.assign(document.createElement('a'), {href:src, download:'file', textContent:'📄 open file', style:'color:var(--accent)'}); }
+  btn.replaceWith(el);
+}
+
+/* ---------- send ---------- */
+async function sendText(){
+  const inp = $('#input'), text = inp.value.trim();
+  if (!text || !currentJid) return;
+  $('#send').disabled = true;
+  try{
+    const d = await api('/api/send', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({recipient: currentJid, message: text})});
+    if (d.success === false) throw new Error(d.error || d.message || 'send failed');
+    inp.value = ''; inp.style.height = 'auto';
+    setTimeout(poll, 700);
+  } catch(e){ toast('Send failed: ' + e.message, true); }
+  $('#send').disabled = false; inp.focus();
+}
+$('#send').onclick = sendText;
+$('#input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }
+});
+$('#input').addEventListener('input', function(){ this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 130) + 'px'; });
+$('#attach').onclick = () => $('#file').click();
+$('#file').onchange = async function(){
+  if (!this.files.length || !currentJid) return;
+  const fd = new FormData();
+  fd.append('recipient', currentJid); fd.append('file', this.files[0]);
+  toast('Uploading ' + this.files[0].name + '…');
+  try{
+    const d = await api('/api/sendfile', {method:'POST', body: fd});
+    if (d.success === false) throw new Error(d.error || d.message || 'send failed');
+    toast('File sent'); setTimeout(poll, 700);
+  } catch(e){ toast('File send failed: ' + e.message, true); }
+  this.value = '';
+};
+$('#mark-read').onclick = async () => {
+  if (!currentJid) return;
+  const ids = [...document.querySelectorAll('.msg.in[data-id]')].slice(-50).map(el => el.dataset.id).filter(Boolean);
+  if (!ids.length){ toast('Nothing to mark'); return; }
+  try{
+    const d = await api('/api/read', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({chat_jid: currentJid, message_ids: ids})});
+    if (d.success === false) throw new Error(d.error || d.message || 'failed');
+    toast('Marked as read');
+  } catch(e){ toast('Mark read failed: ' + e.message, true); }
+};
+
+/* ---------- scheduled sends ---------- */
+const schedPop = $('#sched-pop'), schedPanel = $('#sched-panel');
+$('#clock').onclick = () => {
+  if (!currentJid || !$('#input').value.trim()){ toast('Type a message first, then hit ⏰', true); return; }
+  // default: one hour from now, rendered in local time for datetime-local
+  const d = new Date(Date.now() + 3600e3 - new Date().getTimezoneOffset() * 60e3);
+  $('#sched-time').value = d.toISOString().slice(0, 16);
+  schedPop.style.display = 'flex';
+};
+$('#sched-cancel').onclick = () => schedPop.style.display = 'none';
+$('#sched-confirm').onclick = async () => {
+  const text = $('#input').value.trim(), when = $('#sched-time').value;
+  if (!text || !when) return;
+  const c = chats.find(x => x.jid === currentJid) || {};
+  try{
+    const d = await api('/api/schedule', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({recipient: currentJid, recipient_name: nameOf(c), message: text, send_at: when})});
+    if (d.success === false) throw new Error(d.error || 'failed');
+    $('#input').value = ''; $('#input').style.height = 'auto';
+    schedPop.style.display = 'none';
+    toast('Scheduled for ' + new Date(when).toLocaleString([], {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}));
+  } catch(e){ toast('Schedule failed: ' + e.message, true); }
+};
+let schedOpen = false;
+$('#sched-toggle').onclick = () => { schedOpen = !schedOpen; renderSchedPanel(); };
+async function renderSchedPanel(){
+  $('#chatlist').style.display = schedOpen ? 'none' : 'block';
+  $('#results').style.display = 'none';
+  schedPanel.style.display = schedOpen ? 'block' : 'none';
+  if (!schedOpen) return;
+  const d = await api('/api/schedule');
+  schedPanel.innerHTML = d.scheduled.length ? d.scheduled.map(s => `
+    <div class="sched-item">
+      <div class="sched-meta"><span>${esc(s.recipient_name || s.recipient)} · ${esc(s.send_at)}</span>
+        <button class="sched-del" data-id="${s.id}" title="Cancel">✕</button></div>
+      <div class="sched-msg">${esc(s.message)}</div>
+      ${s.status === 'error' ? '<div class="sched-err">failed: ' + esc(s.error || '?') + '</div>' : ''}
+    </div>`).join('') : '<div id="results-note">Nothing scheduled. Type a message and hit ⏰ next to send.</div>';
+  schedPanel.querySelectorAll('.sched-del').forEach(b => b.onclick = async () => {
+    await fetch('/api/schedule?id=' + b.dataset.id, {method:'DELETE'}); renderSchedPanel();
+  });
+}
+
+/* ---------- polling ---------- */
+async function poll(){
+  try{
+    const d = await api('/api/updates?since=' + maxRowid);
+    if (d.messages.length){
+      maxRowid = d.max_rowid;
+      let refreshList = false;
+      for (const m of d.messages){
+        const c = chats.find(x => x.jid === m.chat_jid);
+        if (c){
+          c.last_message_time = m.timestamp; c.last_content = m.content;
+          c.last_media_type = m.media_type; c.last_from_me = m.is_from_me; c.last_sender_name = m.sender_name;
+          chats.sort((a,b) => (b.last_message_time||'').localeCompare(a.last_message_time||''));
+        } else refreshList = true;
+        if (m.chat_jid === currentJid){
+          const box = $('#msgs');
+          appendMessages([m]);
+          box.scrollTop = box.scrollHeight;
+        }
+      }
+      refreshList ? await loadChats() : renderChats();
+    } else { maxRowid = Math.max(maxRowid, d.max_rowid); }
+  } catch(e){ /* transient */ }
+}
+/* Push-first: the bridge webhook pings /api/events over SSE; a slow poll
+   remains as safety net (SSE drop, missed webhook). */
+try{
+  const es = new EventSource('/api/events');
+  es.onmessage = ev => { poll(); if (schedOpen && ev.data === 'scheduled') renderSchedPanel(); };
+} catch(e){}
+setInterval(poll, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+
+/* ---------- search ---------- */
+let searchTimer;
+$('#semantic-toggle').onclick = function(){ semantic = !semantic; this.classList.toggle('on', semantic); runSearch(); };
+$('#search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, semantic ? 600 : 250); });
+async function runSearch(){
+  const qv = $('#search').value.trim();
+  const results = $('#results'), list = $('#chatlist');
+  if (!qv){ results.style.display = 'none'; list.style.display = 'block'; return; }
+  list.style.display = 'none'; results.style.display = 'block';
+  results.innerHTML = '<div id="results-note">Searching' + (semantic ? ' semantically (may load the model)…' : '…') + '</div>';
+  try{
+    const d = await api('/api/search?mode=' + (semantic ? 'semantic' : 'keyword') + '&q=' + encodeURIComponent(qv));
+    if (d.error) { results.innerHTML = '<div id="results-note">' + esc(d.error) + '</div>'; return; }
+    if (!d.results.length){ results.innerHTML = '<div id="results-note">No matches.</div>'; return; }
+    results.innerHTML = d.results.map(r => `
+      <div class="result-item" data-jid="${esc(r.chat_jid)}">
+        <div class="result-meta"><span>${esc(r.chat_name || phoneOf(r.chat_jid))}</span>
+          <span>${r.similarity ? '<span class="sim-badge">' + Math.round(r.similarity*100) + '%</span> · ' : ''}${fmtListTime(r.timestamp)}</span></div>
+        <div class="result-snippet">${esc(r.content || '')}</div>
+      </div>`).join('');
+    results.querySelectorAll('.result-item').forEach(el => el.onclick = () => {
+      $('#search').value = ''; runSearch(); openChat(el.dataset.jid);
+    });
+  } catch(e){ results.innerHTML = '<div id="results-note">Search failed: ' + esc(e.message) + '</div>'; }
+}
+
+loadChats();
+</script>
+</body>
+</html>

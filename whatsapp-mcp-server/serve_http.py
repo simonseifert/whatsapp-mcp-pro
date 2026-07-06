@@ -50,9 +50,7 @@ if __name__ == "__main__":
         tokens[os.environ["WA_MCP_READONLY_TOKEN"]] = "readonly"
 
     readonly_tools = {
-        t.name
-        for t in mcp._tool_manager.list_tools()
-        if t.annotations is not None and t.annotations.readOnlyHint
+        t.name for t in mcp._tool_manager.list_tools() if t.annotations is not None and t.annotations.readOnlyHint
     }
 
     class ScopedAuth:
@@ -101,8 +99,15 @@ if __name__ == "__main__":
                     },
                 )
 
+            body_sent = False
+
             async def replay():
-                return {"type": "http.request", "body": body, "more_body": False}
+                nonlocal body_sent
+                if not body_sent:
+                    body_sent = True
+                    return {"type": "http.request", "body": body, "more_body": False}
+                # After the body: delegate so disconnect detection still works.
+                return await receive()
 
             return await self.app(scope, replay, send)
 
