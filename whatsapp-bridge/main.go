@@ -154,10 +154,16 @@ func main() {
 			_, _, discAt, _ := client.ConnectionState()
 			client.MarkConnected()
 			client.Antiban().RecordEvent(antiban.EventConnected)
-			if err := client.SetPresence("available"); err != nil {
-				logger.Warnf("Failed to set presence: %v", err)
-			} else {
-				logger.Infof("✓ Presence set to available")
+			// Only broadcast presence if explicitly enabled. Marking this linked device
+			// "available" tells WhatsApp we're actively reading here, which suppresses push
+			// notifications on the paired phone. Gated by the same flag as the periodic ping
+			// so presence hygiene is a single on/off decision. See config.PresencePingEnabled.
+			if cfg.PresencePingEnabled {
+				if err := client.SetPresence("available"); err != nil {
+					logger.Warnf("Failed to set presence: %v", err)
+				} else {
+					logger.Infof("✓ Presence set to available")
+				}
 			}
 			logger.Infof("✓ Connected to WhatsApp")
 			go fireConnectionEvent(webhookManager, client, "connected", "")

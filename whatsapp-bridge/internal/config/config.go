@@ -17,8 +17,11 @@ type Config struct {
 	StorageQuotaMB       uint32 // STORAGE_QUOTA_MB env var
 
 	// Presence ping configuration
-	// PRESENCE_PING_ENABLED=false disables presence broadcasts to contacts (default true)
-	// PRESENCE_PING_INTERVAL sets how often to ping (default 20m; reduce below 25m risks bot fingerprinting)
+	// PRESENCE_PING_ENABLED=true broadcasts presence "available" to contacts — on connect
+	// and periodically. Default false: broadcasting presence marks this linked device as
+	// actively reading, which suppresses push notifications on the paired phone and paints
+	// an always-online fingerprint. Off by default so the phone keeps notifying.
+	// PRESENCE_PING_INTERVAL sets how often to ping when enabled (default 20m; below 25m risks bot fingerprinting)
 	PresencePingEnabled  bool
 	PresencePingInterval time.Duration
 }
@@ -32,8 +35,8 @@ func NewConfig() *Config {
 		HistorySyncDaysLimit: 365,   // 1 year default
 		HistorySyncSizeMB:    5000,  // 5GB default
 		StorageQuotaMB:       10240, // 10GB default
-		// Presence ping defaults
-		PresencePingEnabled:  true,
+		// Presence ping defaults — off so the phone keeps receiving push notifications
+		PresencePingEnabled:  false,
 		PresencePingInterval: 20 * time.Minute,
 	}
 
@@ -66,7 +69,9 @@ func NewConfig() *Config {
 		}
 	}
 
-	if enabled := os.Getenv("PRESENCE_PING_ENABLED"); enabled == "false" {
+	if enabled := os.Getenv("PRESENCE_PING_ENABLED"); enabled == "true" {
+		cfg.PresencePingEnabled = true
+	} else if enabled == "false" {
 		cfg.PresencePingEnabled = false
 	}
 
