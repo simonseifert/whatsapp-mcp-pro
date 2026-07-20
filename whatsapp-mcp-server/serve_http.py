@@ -53,11 +53,69 @@ if __name__ == "__main__":
         t.name for t in mcp._tool_manager.list_tools() if t.annotations is not None and t.annotations.readOnlyHint
     }
 
+    def _filter_tools_payload(payload):
+        """Drop non-read-only tools from a tools/list result, in place."""
+        try:
+            tools = payload["result"]["tools"]
+        except (KeyError, TypeError):
+            return payload
+        payload["result"]["tools"] = [
+            t for t in tools if t.get("name") in readonly_tools
+        ]
+        return payload
+
     class ScopedAuth:
         """Pure ASGI middleware: bearer-token auth + read-only tool gating."""
 
         def __init__(self, app):
             self.app = app
+
+        def _filtered_list_sender(self, send):
+            """Wrap `send` so a tools/list response is filtered before it leaves.
+
+            The whole response is buffered because content-length must be
+            rewritten, and a streamed body cannot be edited after its header
+            has gone out.
+            """
+            state = {"start": None, "chunks": []}
+
+            async def wrapped(message):
+                if message["type"] == "http.response.start":
+                    state["start"] = message
+                    return
+                if message["type"] != "http.response.body":
+                    return await send(message)
+                state["chunks"].append(message.get("body", b""))
+                if message.get("more_body"):
+                    return
+                raw = b"".join(state["chunks"])
+                out = raw
+                try:
+                    text = raw.decode("utf-8")
+                    if text.lstrip().startswith("{"):
+                        out = json.dumps(_filter_tools_payload(json.loads(text))).encode()
+                    else:  # SSE frames: rewrite each `data:` line, keep the rest
+                        lines = []
+                        for line in text.split("\n"):
+                            if line.startswith("data:"):
+                                payload = json.loads(line[5:].strip())
+                                lines.append("data: " + json.dumps(
+                                    _filter_tools_payload(payload)))
+                            else:
+                                lines.append(line)
+                        out = "\n".join(lines).encode()
+                except Exception:
+                    out = raw  # never break the response over cosmetics
+                start = state["start"] or {"type": "http.response.start",
+                                           "status": 200, "headers": []}
+                headers = [(k, v) for k, v in start.get("headers", [])
+                           if k.decode().lower() != "content-length"]
+                headers.append((b"content-length", str(len(out)).encode()))
+                await send({**start, "headers": headers})
+                await send({"type": "http.response.body", "body": out,
+                            "more_body": False})
+
+            return wrapped
 
         async def __call__(self, scope, receive, send):
             if scope["type"] != "http" or not tokens:
@@ -98,6 +156,14 @@ if __name__ == "__main__":
                         },
                     },
                 )
+
+            # tools/call is gated above. tools/list also needs filtering: left
+            # unfiltered a read-only client is shown every tool, including the
+            # ~20 it cannot call, and will confidently try one and burn a turn
+            # on a rejection. The response may come back as plain JSON or as an
+            # SSE frame, so handle both framings.
+            if isinstance(rpc, dict) and rpc.get("method") == "tools/list":
+                send = self._filtered_list_sender(send)
 
             body_sent = False
 
