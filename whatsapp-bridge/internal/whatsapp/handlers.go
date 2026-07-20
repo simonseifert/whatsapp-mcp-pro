@@ -116,10 +116,30 @@ func (c *Client) GetChatName(messageStore *database.MessageStore, jid types.JID,
 	return name
 }
 
+// NormalizeChatJID collapses a one-to-one chat onto a single stable identity.
+//
+// WhatsApp is migrating users to hidden "@lid" JIDs, and delivers the same
+// conversation under either the LID or the phone-number JID depending on route.
+// Storing whatever arrived splits one contact into two chat rows: messages land
+// in one, replies in the other, and anything keyed on chat_jid (search, recall,
+// per-chat automation) silently sees half the conversation.
+//
+// Groups are left alone — "@g.us" JIDs are already stable.
+func (c *Client) NormalizeChatJID(chat types.JID) types.JID {
+	if chat.Server != types.HiddenUserServer {
+		return chat
+	}
+	resolved, err := c.Store.GetAltJID(context.Background(), chat)
+	if err != nil || resolved.IsEmpty() {
+		return chat // no mapping known yet; keep the LID rather than lose the message
+	}
+	return resolved.ToNonAD()
+}
+
 // HandleMessage processes regular incoming messages with media support and webhook processing
 func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManager interface{}, msg *events.Message) {
 	// Save message to database
-	chatJID := msg.Info.Chat.String()
+	chatJID := c.NormalizeChatJID(msg.Info.Chat).String()
 	sender := msg.Info.Sender.User
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
