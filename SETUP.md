@@ -80,12 +80,21 @@ Defaults worth knowing (all in `.env.example`):
 ```bash
 cd whatsapp-mcp-server
 uv sync                    # base install
-uv sync --extra pro        # optional: semantic recall + local transcription
+
+# optional extras — pick by hardware:
+uv sync --extra pro        # Apple Silicon: mlx-whisper (fully local, fast)
+uv sync --extra pro-cpu    # anything else: faster-whisper (CPU/GPU, local)
 ```
 
-`--extra pro` pulls sentence-transformers and (on Apple Silicon) mlx-whisper.
-It is a large download (~2 GB) and only needed for `recall` and voice-note
-transcription. Skip it on a first install; it can be added later.
+Both add sentence-transformers for `recall`; they differ only in the
+transcription backend. Picking `pro` on a non-Apple-Silicon machine installs
+the search model but leaves you without a working transcriber — use `pro-cpu`
+there. Either is a large download (~2 GB) and only needed for `recall` and
+voice notes. Skip on a first install; add later.
+
+There is also a `groq` backend (`WHISPER_BACKEND=groq`, needs `GROQ_API_KEY`)
+which sends audio to Groq rather than transcribing locally — near-zero RAM,
+but the audio leaves the machine.
 
 ---
 
