@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keep the WhatsApp bridge running across logins and restart it if it exits.
+
+  1. Replace YOUR_USERNAME and the two paths below.
+  2. cp to ~/Library/LaunchAgents/
+  3. launchctl load ~/Library/LaunchAgents/com.example.whatsapp-bridge.plist
+
+  The bridge exits on its own watchdog when the websocket dies; KeepAlive is
+  what turns that into an automatic recovery instead of silence.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.example.whatsapp-bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOUR_USERNAME/whatsapp-mcp-pro/whatsapp-bridge/whatsapp-bridge</string>
+    </array>
+
+    <!-- must be the bridge directory: the SQLite store is resolved relative to it -->
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/whatsapp-mcp-pro/whatsapp-bridge</string>
+
+    <!-- launchd does not read .env; pass the key explicitly -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>API_KEY</key><string>REPLACE_WITH_YOUR_API_KEY</string>
+        <key>PRESENCE_PING_ENABLED</key><string>false</string>
+    </dict>
+
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+
+    <key>StandardOutPath</key><string>/tmp/whatsapp-bridge.log</string>
+    <key>StandardErrorPath</key><string>/tmp/whatsapp-bridge.log</string>
+</dict>
+</plist>
