@@ -41,6 +41,15 @@ Everything upstream ships is here too: 27 curated tools (31 with the pro toolset
 - **wa-client** — the chat web UI. Optional but excellent.
 - **whatsapp-web-ui** — upstream's Next.js admin panel (pairing, webhook management). Not a chat client.
 
+## Install
+
+**[SETUP.md](SETUP.md) is the full walkthrough** — prerequisites, pairing,
+wiring up Claude Desktop or Claude Code, and troubleshooting. It is written so
+an AI agent can follow it and do the setup for you; paste the repo link into
+Claude and ask it to set this up.
+
+The short version, if you know your way around:
+
 ## Quickstart
 
 ```bash
@@ -61,6 +70,15 @@ claude mcp add -t http whatsapp http://<host>:8082/mcp \
 # 4. Optional: the web client
 WA_WEB_HOST=<host> .venv/bin/python ../wa-client/app.py   # then open http://<host>:8084
 ```
+
+### Toolsets
+
+`recall` (semantic search), `audio` (transcription) and `inbox` are opt-in via
+`WHATSAPP_MCP_TOOLSETS`. `inbox` adds `check_inbox` — "what arrived since I
+last asked" — which is how a Claude Desktop session keeps up with messages,
+since unlike a terminal session it cannot be interrupted by one. The first call
+returns nothing and pins a cursor to now, so asking once never dumps your whole
+history into the conversation.
 
 Pro toolsets are opt-in: set `WHATSAPP_MCP_TOOLSETS=all` (the shared server does this automatically). See `.env.example` for bridge options (`API_KEY`, `ANTIBAN_*`, `SEND_ALLOWED_JIDS`, `DISABLE_SSRF_CHECK` for localhost webhooks).
 
