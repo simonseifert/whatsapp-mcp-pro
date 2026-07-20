@@ -53,3 +53,10 @@ secrets.yaml
 secrets.yml
 .webhook-secret
 scheduled.db
+
+# The repo-root `store` is a symlink to whatsapp-bridge/store. A trailing-slash
+# pattern only matches real directories, so the symlink itself stayed untracked
+# and would have been swept up by `git add -A`. Match it without the slash too.
+store
+/store
+scheduled.db
