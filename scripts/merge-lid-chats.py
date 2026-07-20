@@ -129,16 +129,27 @@ def main():
         # The recall index is keyed by (chat_jid, message_id). Moving messages
         # without moving their embeddings would orphan 44% of the index here —
         # search would quietly stop resolving those results to a chat.
-        for tbl, col in (("message_embeddings", "chat_jid"),
-                         ("contact_nicknames", "jid")):
+        # Dedupe by the row's own identity key, NOT rowid: a row can never share
+        # a rowid with another row, so a rowid-based dedupe silently matches
+        # nothing and the UPDATE then trips the uniqueness constraint. Learned
+        # the hard way — a broad except swallowed it and left 857 embeddings
+        # orphaned on chats that no longer existed.
+        for tbl, col, key in (("message_embeddings", "chat_jid", "message_id"),
+                              ("contact_nicknames", "jid", None)):
             try:
-                cur.execute("DELETE FROM %s WHERE %s=? AND rowid IN "
-                            "(SELECT rowid FROM %s WHERE %s=?)"
-                            % (tbl, col, tbl, col), (lj, pj))
+                if key:
+                    cur.execute(
+                        "DELETE FROM %s WHERE %s=? AND %s IN "
+                        "(SELECT %s FROM %s WHERE %s=?)"
+                        % (tbl, col, key, key, tbl, col), (lj, pj))
+                else:
+                    cur.execute("DELETE FROM %s WHERE %s=? AND EXISTS "
+                                "(SELECT 1 FROM %s WHERE %s=?)"
+                                % (tbl, col, tbl, col), (lj, pj))
                 cur.execute("UPDATE %s SET %s=? WHERE %s=?" % (tbl, col, col),
                             (pj, lj))
-            except sqlite3.Error:
-                pass  # table may not exist in older stores
+            except sqlite3.OperationalError:
+                pass  # table absent in older stores — genuinely optional
         cur.execute(
             "UPDATE chats SET last_message_time=(SELECT MAX(last_message_time) "
             "FROM chats WHERE jid IN (?,?)) WHERE jid=?", (lj, pj, pj))
