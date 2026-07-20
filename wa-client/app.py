@@ -256,6 +256,33 @@ async def mark_read(request):
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+# ---------- dispatch to a Claude session ----------
+# The Claude sessions live on another machine that cannot be reached from here,
+# so this only *records* the request. wa-dispatch already polls this host over
+# SSH for new messages and picks these up on the same cycle, which avoids
+# opening an inbound path back to the laptop.
+
+DISPATCH_REQUESTS = os.path.expanduser("~/.local/share/wa-dispatch/requests.jsonl")
+
+
+async def dispatch_request(request):
+    import json as _json
+
+    body = await request.json()
+    chat_jid = (body or {}).get("chat_jid")
+    if not chat_jid:
+        return JSONResponse({"ok": False, "error": "chat_jid required"}, status_code=400)
+    rec = {
+        "chat_jid": chat_jid,
+        "chat_name": (body or {}).get("chat_name") or "",
+        "limit": int((body or {}).get("limit") or 25),
+    }
+    os.makedirs(os.path.dirname(DISPATCH_REQUESTS), exist_ok=True)
+    with open(DISPATCH_REQUESTS, "a") as f:
+        f.write(_json.dumps(rec) + "\n")
+    return JSONResponse({"ok": True, "queued": rec})
+
+
 # ---------- scheduled sends ----------
 
 
@@ -426,6 +453,7 @@ app = Starlette(
         Route("/api/schedule", schedule_list, methods=["GET"]),
         Route("/api/schedule", schedule_delete, methods=["DELETE"]),
         Route("/api/search", search),
+        Route("/api/dispatch", dispatch_request, methods=["POST"]),
     ],
     # Read-only CORS so the dashboard widget (:8888) can list chats.
     # Everything is tailnet-bound anyway; writes stay same-origin only.

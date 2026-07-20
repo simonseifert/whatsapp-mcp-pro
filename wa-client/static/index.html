@@ -135,7 +135,7 @@
       <button id="back">←</button>
       <div class="avatar" id="chat-avatar" style="width:38px;height:38px;font-size:14px"></div>
       <div><div id="chat-title"></div><div id="chat-sub"></div></div>
-      <div id="head-actions"><button class="hbtn" id="mark-read">Mark read</button></div>
+      <div id="head-actions"><button class="hbtn" id="send-to-claude" title="Send this chat's recent messages to its Claude session">&rarr; Claude</button><button class="hbtn" id="mark-read">Mark read</button></div>
     </div>
     <div id="msgs"><button id="load-older">Load older messages</button></div>
     <div id="composer">
@@ -333,6 +333,20 @@ $('#mark-read').onclick = async () => {
     if (d.success === false) throw new Error(d.error || d.message || 'failed');
     toast('Marked as read');
   } catch(e){ toast('Mark read failed: ' + e.message, true); }
+}
+$('#send-to-claude').onclick = async () => {
+  if (!currentJid){ toast('Open a chat first', true); return; }
+  const b = $('#send-to-claude'), was = b.textContent;
+  b.disabled = true; b.textContent = 'sending...';
+  try{
+    const c = chats.find(x => x.jid === currentJid);
+    const d = await api('/api/dispatch', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({chat_jid: currentJid, chat_name: c ? nameOf(c) : ''})});
+    if (d.ok === false) throw new Error(d.error || 'failed');
+    toast('Queued for its Claude session');
+  } catch(e){ toast('Dispatch failed: ' + e.message, true); }
+  finally { b.disabled = false; b.textContent = was; }
+}
 };
 
 /* ---------- scheduled sends ---------- */
