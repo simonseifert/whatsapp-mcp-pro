@@ -183,17 +183,18 @@ TRANSCRIPT:
 
 
 # ---------- delivery ----------
-def deliver(meeting, slice_, dry_run, note=None):
+def deliver(meeting, slice_, dry_run, note=None) -> bool:
+    """True only if the slice actually reached a session."""
     proj = os.path.expanduser(slice_["project"])
     label, key = slice_["label"], slice_["key"]
     if not os.path.isdir(proj):
         log("  %s: project dir missing (%s)" % (label, proj))
-        return
+        return True          # never retryable; don't wedge the meeting forever
     if dry_run:
         state = "warm" if find_claude_pane(proj) else "cold"
         log("  WOULD deliver -> %s [%s] %d action item(s)"
             % (label, state, len(slice_.get("action_items") or [])))
-        return
+        return True
 
     rec = {
         "source": "fathom",
@@ -222,16 +223,19 @@ def deliver(meeting, slice_, dry_run, note=None):
         prompt = "%s\n\n%s" % (note, prompt)
     pane = find_claude_pane(proj)
     if pane:
-        nudge_pane(pane, proj, prompt)
+        nudge_pane(pane, proj, prompt, INBOX)
         log("  delivered -> %s (live session, pane %s)" % (label, pane))
-        return
+        return True
     if in_cooldown(proj, slice_["cooldown_min"]):
-        log("  delivered -> %s (queued; session cooling down)" % label)
-        return
+        log("  NOT delivered -> %s (cooling down; will retry)" % label)
+        return False
     _touch_marker(proj, "last-run")
     pane = spawn_visible(proj, key, prompt)
-    log("  delivered -> %s (%s)" % (label, "opened window '%s'" % key if pane
-                                    else "queued; tmux unavailable"))
+    if pane:
+        log("  delivered -> %s (opened window '%s')" % (label, key))
+        return True
+    log("  NOT delivered -> %s (tmux unavailable; will retry)" % label)
+    return False
 
 
 MIN_TRANSCRIPT_CHARS = 400
@@ -249,15 +253,18 @@ def transcript_ready(meeting):
     return len(transcript_text(meeting)) >= MIN_TRANSCRIPT_CHARS
 
 
-def process(meeting, routes, dry_run, note=None):
+def process(meeting, routes, dry_run, note=None) -> bool:
     title = meeting.get("title", "?")
     log("meeting: %s (%s)" % (title, meeting.get("created_at", "")[:16]))
     slices = segment(meeting, routes)
     if not slices:
         log("  no routed project was meaningfully discussed — nothing delivered")
-        return
+        return True
+    ok = True
     for s in slices:
-        deliver(meeting, s, dry_run, note)
+        if not deliver(meeting, s, dry_run, note):
+            ok = False
+    return ok
 
 
 def main():
@@ -298,9 +305,15 @@ def main():
                 log("waiting on transcript: %s (retry next poll)"
                     % m.get("title", "?"))
                 continue  # deliberately NOT marked seen
-            process(m, routes, args.dry_run, args.note)
-            if not args.dry_run:
+            # Only mark seen once every slice reached a session. Previously a
+            # cooldown or a missing tmux logged "queued" and the meeting was
+            # consumed anyway — nothing retried .meet-inbox.jsonl, so that
+            # slice was simply lost.
+            delivered = process(m, routes, args.dry_run, args.note)
+            if not args.dry_run and delivered:
                 mark_seen([str(m.get("recording_id"))])
+            elif not args.dry_run:
+                log("  meeting left unconsumed; will retry next poll")
 
     if args.once or args.dry_run:
         cycle()
