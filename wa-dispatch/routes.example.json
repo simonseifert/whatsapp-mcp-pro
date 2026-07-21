@@ -1,0 +1,26 @@
+{
+  "_comment": "wa-dispatch routing. First ENABLED match wins. Match on chat_jid (exact), chat_name or sender_name (case-insensitive substring). Flip 'enabled' to turn a route on/off without deleting it. cooldown_min batches chatty threads: messages arriving inside the window append to the inbox and the next run picks them all up. 'default': null means unrouted chats (family, friends) are ignored entirely.",
+  "routes": [
+    {
+      "match": {
+        "chat_jid": "1203xxxxxxxxxxxxxxx@g.us"
+      },
+      "label": "Example Group",
+      "project": "~/Code/clients/example-client",
+      "session": "example",
+      "cooldown_min": 10,
+      "enabled": false
+    },
+    {
+      "match": {
+        "sender_name": "Some Person"
+      },
+      "label": "Example DM",
+      "project": "~/Code/clients/other-project",
+      "session": "other",
+      "cooldown_min": 30,
+      "enabled": false
+    }
+  ],
+  "default": null
+}
