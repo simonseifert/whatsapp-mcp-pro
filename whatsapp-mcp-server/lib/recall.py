@@ -24,6 +24,7 @@ Pro tier — added in whatsapp-mcp-extended-pro fork.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -35,7 +36,13 @@ MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 EMBED_DIM = 384
 INDEX_BATCH_SIZE = 64
 
-MODEL_IDLE_UNLOAD_SECONDS = 900
+# 0 disables unloading. Cycling turned out to cost more than it saved: each
+# load/unload ratcheted the CPU heap ~38MB because freed arenas are not returned
+# to the OS, so an idle-unload guaranteed a reload and a permanent increment.
+# Resident on CPU is a flat ~600-700MB. Set RECALL_MODEL_IDLE_UNLOAD_SECONDS to
+# a positive number to restore the old behaviour.
+MODEL_IDLE_UNLOAD_SECONDS = int(
+    os.environ.get("RECALL_MODEL_IDLE_UNLOAD_SECONDS", "0"))
 
 _model = None
 _model_lock = threading.Lock()
@@ -64,7 +71,15 @@ def _get_model():
 
             logger.info("[recall] loading embedding model %s", MODEL_NAME)
             t0 = time.time()
-            _model = SentenceTransformer(MODEL_NAME)
+            # device="cpu" is deliberate. Left to choose, sentence-transformers
+            # picks mps on Apple Silicon and the 470MB model becomes a ~1GB
+            # Metal buffer pool that is invisible to RSS and is never returned
+            # to the OS by gc — measured 1056MB of "Owned physical footprint
+            # (graphics)" still held with the model unloaded. At this volume
+            # (~264 embeddings/day, batches of 64) CPU encode is sub-second, so
+            # the GPU bought nothing and cost a gigabyte on an 8GB box.
+            _model = SentenceTransformer(MODEL_NAME, device=os.environ.get(
+                "RECALL_DEVICE", "cpu"))
             logger.info("[recall] embedding model loaded in %.1fs", time.time() - t0)
     return _model
 
@@ -108,6 +123,8 @@ def _unloader_loop() -> None:
 
 
 def _ensure_unloader_running() -> None:
+    if MODEL_IDLE_UNLOAD_SECONDS <= 0:
+        return          # cycling disabled: see MODEL_IDLE_UNLOAD_SECONDS
     global _unloader_thread
     with _unloader_lock:
         if _unloader_thread is not None and _unloader_thread.is_alive():
