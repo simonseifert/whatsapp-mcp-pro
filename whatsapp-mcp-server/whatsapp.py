@@ -207,7 +207,7 @@ def get_sender_name(sender_jid: str) -> str:
             return sender_jid
 
     except sqlite3.Error as e:
-        print(f"Database error while getting sender name: {e}")
+        logger.error(f"Database error while getting sender name: {e}")
         return sender_jid
     finally:
         if "messages_conn" in locals():
@@ -231,7 +231,7 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
         output += f"From: {sender_name}: {content_prefix}{message.content}\n"
     except Exception as e:
-        print(f"Error formatting message: {e}")
+        logger.error(f"Error formatting message: {e}")
     return output
 
 
@@ -354,7 +354,7 @@ def list_messages(
         return [msg.to_dict() for msg in result]
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "conn" in locals():
@@ -458,7 +458,7 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
         return MessageContext(message=target_message, before=before_messages, after=after_messages)
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         raise
     finally:
         if "conn" in locals():
@@ -473,8 +473,8 @@ def list_chats(
     sort_by: str = "last_active",
 ) -> list[Chat]:
     """Get chats matching the specified criteria."""
-    print(f"Debug: Database path: {MESSAGES_DB_PATH}")
-    print(f"Debug: Database exists: {os.path.exists(MESSAGES_DB_PATH)}")
+    logger.debug(f"Database path: {MESSAGES_DB_PATH}")
+    logger.debug(f"Database exists: {os.path.exists(MESSAGES_DB_PATH)}")
 
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
@@ -483,15 +483,15 @@ def list_chats(
         # Debug: Check if tables exist
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
-        print(f"Debug: Available tables: {tables}")
+        logger.debug(f"Available tables: {tables}")
 
         # Debug: Check row counts
         try:
             cursor.execute("SELECT COUNT(*) FROM chats")
             chat_count = cursor.fetchone()[0]
-            print(f"Debug: Total chats in database: {chat_count}")
+            logger.debug(f"Total chats in database: {chat_count}")
         except Exception as e:
-            print(f"Debug: Error counting chats: {e}")
+            logger.debug(f"Error counting chats: {e}")
 
         # Build base query.
         # Always join the latest message per chat to avoid SELECT/JOIN drift when
@@ -566,7 +566,7 @@ def list_chats(
         return result
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "conn" in locals():
@@ -636,7 +636,7 @@ def search_contacts(query: str) -> list[dict[str, Any]]:
         return result
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "whatsapp_conn" in locals():
@@ -692,7 +692,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
         return result
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "conn" in locals():
@@ -748,7 +748,7 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
         return message.to_dict()
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if "conn" in locals():
@@ -807,7 +807,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
         return chat.to_dict()
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if "conn" in locals():
@@ -854,7 +854,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
         return chat.to_dict()
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if "conn" in locals():
@@ -1017,23 +1017,23 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
                 if path and not os.path.isabs(path):
                     bridge_root = os.path.dirname(os.path.dirname(MESSAGES_DB_PATH))
                     path = os.path.join(bridge_root, path)
-                print(f"Media downloaded successfully: {path}")
+                logger.info(f"Media downloaded successfully: {path}")
                 return path
             else:
-                print(f"Download failed: {result.get('message', 'Unknown error')}")
+                logger.error(f"Download failed: {result.get('message', 'Unknown error')}")
                 return None
         else:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
+            logger.error(f"Error: HTTP {response.status_code} - {response.text}")
             return None
 
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
+        logger.error(f"Request error: {str(e)}")
         return None
     except json.JSONDecodeError:
-        print(f"Error parsing response: {response.text}")
+        logger.error(f"Error parsing response: {response.text}")
         return None
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error: {str(e)}")
         return None
 
 
@@ -1103,7 +1103,7 @@ def get_contact_by_jid(jid: str) -> Contact | None:
         return None
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
 
 
@@ -1142,7 +1142,7 @@ def get_contact_by_phone(phone_number: str) -> Contact | None:
         return None
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
 
 
@@ -1200,7 +1200,7 @@ def list_all_contacts(limit: int = 100) -> list[Contact]:
         return contacts
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
 
 
@@ -1281,7 +1281,7 @@ def get_contact_nickname(jid: str) -> str | None:
         return result[0] if result else None
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if "conn" in locals():
@@ -1334,7 +1334,7 @@ def list_contact_nicknames() -> list[dict[str, Any]]:
         ]
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "conn" in locals():
