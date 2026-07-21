@@ -1,8 +1,10 @@
 # Live routing table — contains client names, chat JIDs, local paths. Never commit.
 routes.json
 
-# Runtime state
+# Runtime state — cursors and counters, per-machine
 .state
+.meet-state
+.requests-state
 .launchers/
 __pycache__/
 config.env
