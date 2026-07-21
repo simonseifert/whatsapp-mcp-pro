@@ -12,7 +12,7 @@ a JSON-RPC error. With no tokens configured, auth is off (tailnet-only bind
 remains the outer wall).
 
 Clients connect via Claude Code MCP config:
-    type=http, url=http://100.78.169.70:8082/mcp
+    type=http, url=http://<MCP_HOST>:8082/mcp
     (+ header Authorization: Bearer <token> when tokens are configured)
 """
 
@@ -31,7 +31,10 @@ if __name__ == "__main__":
     from lib.recall import start_periodic_indexing
     from main import mcp
 
-    host = os.environ.get("MCP_HOST", "100.78.169.70")
+    # 127.0.0.1, not a specific machine's address: this default shipped as a
+    # tailnet IP in a public repo, so anyone else running it bare hit a bind
+    # failure. Set MCP_HOST to a VPN/tailnet address to share it across hosts.
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
     port = int(os.environ.get("MCP_PORT", "8082"))
 
     mcp.settings.host = host

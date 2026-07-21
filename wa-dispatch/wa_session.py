@@ -335,7 +335,8 @@ def nudge_recently(proj: str, window_sec: int = 90) -> bool:
 
 
 
-def nudge_pane(pane: str, proj: str, msg: str) -> None:
+def nudge_pane(pane: str, proj: str, msg: str,
+               inbox_name: str = ".wa-inbox.jsonl") -> None:
     """Type a prompt into the live session so it acts now, not at the next turn.
 
     SECURITY: a literal newline inside `send-keys -l` is a carriage return, not
@@ -356,14 +357,23 @@ def nudge_pane(pane: str, proj: str, msg: str) -> None:
     # Claim these lines for the nudge. The Stop hook uses the same cursor, so
     # without this it would re-surface the very items we just handed over when
     # the nudged turn ends — a guaranteed duplicate.
-    _claim_inbox_lines(proj)
+    _claim_inbox_lines(proj, inbox_name)
 
 
 
-def _claim_inbox_lines(proj: str) -> None:
-    """Advance the shared inbox cursor to the current line count."""
-    inbox = os.path.join(proj, ".wa-inbox.jsonl")
-    cursor = os.path.join(proj, ".wa-dispatch", "inbox.cursor")
+def _claim_inbox_lines(proj: str, inbox_name: str = ".wa-inbox.jsonl") -> None:
+    """Advance one inbox's cursor to its current line count.
+
+    The inbox name is a parameter because this used to hardcode the WhatsApp
+    one. meet-dispatch delivers through the same nudge_pane, so a meeting
+    notification advanced the WhatsApp cursor — any message sitting inside the
+    debounce window got marked seen without ever being shown, and both the
+    sweep and the Stop hook then skipped it permanently.
+    """
+    inbox = os.path.join(proj, inbox_name)
+    cursor_name = "inbox.cursor" if inbox_name == ".wa-inbox.jsonl" \
+        else inbox_name.strip(".").split(".")[0] + ".cursor"
+    cursor = os.path.join(proj, ".wa-dispatch", cursor_name)
     try:
         with open(inbox, encoding="utf-8") as f:
             n = len([ln for ln in f.read().splitlines() if ln.strip()])
