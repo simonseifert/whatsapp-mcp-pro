@@ -1,6 +1,24 @@
 # whatsapp-mcp-pro
 
-**AI-augmented WhatsApp for Claude and MCP agents — with semantic memory, local voice transcription, a shared multi-session server, and a self-hosted web client that costs zero extra device slots.**
+**Your WhatsApp, usable by Claude.** Read and send messages, search years of
+history by meaning rather than keywords, transcribe voice notes locally — and
+optionally have incoming client messages start the work before you sit down.
+
+Runs entirely on your own machine. Nothing goes to a third party.
+
+```
+"what did we agree about the deadline six weeks ago?"  → recall searches years of history, any language
+"summarise what came in overnight"                     → across every chat
+[a client texts you at 3am]                            → a Claude session drafts the reply by morning
+```
+
+### Get started
+
+| | |
+|---|---|
+| **Just want it working** | Paste this repo's URL into Claude and say *"set this up for me"* — [SETUP.md](SETUP.md) is written for exactly that |
+| **Prefer doing it yourself** | [SETUP.md](SETUP.md), or the [Quickstart](#quickstart) below |
+| **Curious first** | Keep reading |
 
 Forked from [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) (itself descended from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp)), tracking upstream closely and adding a "pro" layer on top.
 
@@ -10,14 +28,15 @@ Every WhatsApp MCP gives you send/read tools. This one also answers questions li
 
 | Pro feature | What it does |
 |---|---|
-| **`recall`** — semantic search | Multilingual embedding search over your full message history (paraphrase-multilingual-MiniLM, 50+ languages). Vector store lives inside the bridge's SQLite; background indexer keeps it warm; the model auto-unloads after 15 min idle so a small always-on box stays small. |
+| **`recall`** — semantic search | Multilingual embedding search over your full message history (paraphrase-multilingual-MiniLM, 50+ languages). Vector store lives inside the bridge's SQLite; a background indexer keeps it current. Pinned to CPU and kept resident (~700 MB steady) — on Apple Silicon the GPU path pinned a gigabyte of Metal buffers it never gave back. |
 | **`transcribe_audio`** — local voice-note transcription | mlx-whisper (large-v3-turbo) on Apple Silicon. No audio leaves your machine. |
 | **Shared HTTP server** (`serve_http.py`) | One always-on streamable-HTTP MCP serving *all* your Claude sessions. Kills the per-session stdio-spawn pattern that leaks orphaned processes (we learned this the hard way: 82 orphans, 44 GB RAM, one kernel panic). |
 | **Scoped bearer tokens** | A full token for trusted agents, a read-only token for dashboards/automations. Read-only can only call tools annotated `readOnlyHint=true` — enforced server-side. |
 | **`wa-client/`** — self-hosted web client | A WhatsApp-Web-style chat UI that rides the bridge's device session. **Zero additional linked-device slots**, unlimited browsers. Real-time push (webhook → SSE), inline media, keyword + semantic search, file sending, **scheduled messages**. |
 | **Send allowlist** | `SEND_ALLOWED_JIDS` limits which chats the bridge will ever send to. Safety gate for automation. |
+| **`wa-dispatch/`** — messages start the work | A message from a routed chat opens or wakes a Claude Code session in that client's project, which reads the thread, researches and drafts a reply — then stops. It never sends. Optional, macOS + tmux. |
 
-Everything upstream ships is here too: 27 curated tools (31 with the pro toolsets), toolset gating, HMAC-signed webhooks with trigger filters, group management, polls, newsletters, presence, opt-in anti-ban protection with humanized send pacing, auto-download of media before CDN links expire.
+Everything upstream ships is here too: 22 curated tools (27 with the pro toolsets on), toolset gating, HMAC-signed webhooks with trigger filters, group management, polls, newsletters, presence, opt-in anti-ban protection with humanized send pacing, auto-download of media before CDN links expire.
 
 ## Architecture
 
@@ -80,7 +99,7 @@ since unlike a terminal session it cannot be interrupted by one. The first call
 returns nothing and pins a cursor to now, so asking once never dumps your whole
 history into the conversation.
 
-Pro toolsets are opt-in: set `WHATSAPP_MCP_TOOLSETS=all` (the shared server does this automatically). See `.env.example` for bridge options (`API_KEY`, `ANTIBAN_*`, `SEND_ALLOWED_JIDS`, `DISABLE_SSRF_CHECK` for localhost webhooks).
+Pro toolsets are opt-in: set `WHATSAPP_MCP_TOOLSETS=all` (the shared server does this automatically). See `.env.example` for bridge options (`API_KEY`, `API_BIND_HOST`, `PRESENCE_PING_ENABLED`, `DISABLE_SSRF_CHECK` for localhost webhooks). Anti-ban (`ANTIBAN_ENABLED`, off by default) and the send allowlist (`SEND_ALLOWED_JIDS`) are set the same way.
 
 ## wa-client: unlimited "WhatsApp Web", one device slot
 
@@ -91,6 +110,24 @@ Features: real-time push (bridge webhook → SSE, no polling), inline media, fil
 Deliberate limitations: no calls, no status posting (also a documented ban trigger — see below), media older than ~2 weeks may be expired upstream (mitigated by the bridge's auto-download-on-receipt).
 
 **Security note:** wa-client has no login of its own. Bind it to 127.0.0.1 (default) or a VPN/tailnet address only. Never expose it to the internet.
+
+## wa-dispatch: incoming messages start the work (optional)
+
+Everything above is pull — you ask, Claude answers. `wa-dispatch/` inverts it:
+a message from a chat you've routed **opens or wakes a Claude Code session in
+that client's project directory**, which reads the thread, researches, drafts a
+reply and stages fixes on a local branch — then stops.
+
+It never sends and never pushes. You review, and can approve a drafted reply
+from your phone. Meeting transcripts (via Fathom) are split per client and
+delivered the same way.
+
+Incoming messages are untrusted input, so sessions the dispatcher launches run
+behind a `PreToolUse` hook that blocks every outbound and destructive tool
+before it executes — sends, pushes, deploys, `rm -rf`. Sessions you start
+yourself are untouched by it.
+
+Requires macOS, tmux and Claude Code. See [wa-dispatch/README.md](wa-dispatch/README.md).
 
 ## Transcription backends and integrations
 
