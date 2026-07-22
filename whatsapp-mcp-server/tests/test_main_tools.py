@@ -142,10 +142,9 @@ def test_manage_group_forwards_create_action(monkeypatch):
 
 def test_docker_mcp_entrypoint_uses_curated_main_server():
     root = Path(__file__).resolve().parents[2]
-    dockerfile = (root / "Dockerfile.mcp").read_text(encoding="utf-8")
+    dockerfile = (root / "docker" / "Dockerfile.mcp").read_text(encoding="utf-8")
     compose = (root / "docker-compose.yaml").read_text(encoding="utf-8")
 
     assert "python main.py" in dockerfile
-    assert "python gradio-main.py" not in dockerfile
     assert "MCP_TRANSPORT=streamable-http" in compose
     assert "WHATSAPP_MCP_TOOLSETS=${WHATSAPP_MCP_TOOLSETS:-all}" in compose

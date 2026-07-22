@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-FILES = ["whatsapp.py", "main.py", "gradio-main.py"]
+FILES = ["whatsapp.py", "main.py", "serve_http.py"]
 
 
 def run(cmd: list[str], desc: str) -> bool:

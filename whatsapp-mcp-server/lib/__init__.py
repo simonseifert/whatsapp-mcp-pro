@@ -1,85 +1,36 @@
-"""WhatsApp MCP Server Library.
+"""Shared internals for the WhatsApp MCP server.
 
-This module provides the core functionality for the WhatsApp MCP server,
-organized into submodules:
+Deliberately small. The MCP tool surface lives in `main.py` and its
+implementation in `whatsapp.py`; this package holds only what those two
+actually import:
 
-- models: Data classes (Message, Chat, Contact, MessageContext)
-- database: Database operations (list_messages, list_chats, search_contacts, etc.)
-- bridge: Bridge API calls (send_message, send_reaction, edit_message, etc.)
-- utils: Logging, configuration, helper functions
+- utils:      paths, logger, bridge URL
+- bridge:     auth headers for the bridge REST API
+- recall:     semantic search over message history (pro toolset)
+- transcribe: local voice-note transcription (pro toolset)
+
+An earlier parallel implementation (models/database, and most of bridge) was
+removed: production never called it, but it was 1,700 lines and the CI coverage
+gate pointed at it, so the coverage number measured code nothing ran.
 """
 
-# Models
-# Bridge API
-from .bridge import (
-    BridgeError,
-    create_group,
-    create_poll,
-    delete_message,
-    edit_message,
-    get_group_info,
-    mark_read,
-    send_file,
-    send_message,
-    send_reaction,
-)
-
-# Database operations
-from .database import (
-    DatabaseError,
-    get_contact_by_jid,
-    get_contact_nickname,
-    get_message_context,
-    list_chats,
-    list_messages,
-    search_contacts,
-    set_contact_nickname,
-)
-from .models import Chat, Contact, Message, MessageContext
-
-# Utilities
+from .bridge import BridgeError, _get_headers
 from .utils import (
     BRIDGE_HOST,
     MESSAGES_DB_PATH,
     WHATSAPP_API_BASE_URL,
     WHATSAPP_DB_PATH,
-    get_sender_name,
     logger,
     setup_logging,
 )
 
 __all__ = [
-    # Models
-    "Message",
-    "Chat",
-    "Contact",
-    "MessageContext",
-    # Database
-    "DatabaseError",
-    "list_messages",
-    "get_message_context",
-    "list_chats",
-    "get_contact_by_jid",
-    "get_contact_nickname",
-    "set_contact_nickname",
-    "search_contacts",
-    # Bridge
     "BridgeError",
-    "send_message",
-    "send_file",
-    "send_reaction",
-    "edit_message",
-    "delete_message",
-    "mark_read",
-    "get_group_info",
-    "create_group",
-    "create_poll",
-    # Utils
+    "_get_headers",
     "logger",
     "setup_logging",
     "MESSAGES_DB_PATH",
     "WHATSAPP_DB_PATH",
     "BRIDGE_HOST",
     "WHATSAPP_API_BASE_URL",
-    "get_sender_name",
 ]

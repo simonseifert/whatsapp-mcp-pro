@@ -233,6 +233,12 @@ bridge was started from a directory where `.env` is not visible. Run it from
 protocol and whatsmeow needs updating:
 `cd whatsapp-bridge && go get -u go.mau.fi/whatsmeow@latest && go mod tidy && go build -o whatsapp-bridge .`
 
+**Desktop: "Server disconnected" with `Non-HTTPS URLs are only allowed for
+localhost`** — you pointed Desktop at a shared HTTP server on another host via
+`mcp-remote`, which refuses plain HTTP to anything but localhost. Add
+`--allow-http` to the args, right after the URL. (Only do this on a private
+network or VPN; the traffic is unencrypted.)
+
 **Client shows no WhatsApp tools** — config not loaded. Confirm the absolute
 paths, that `uv` resolves (use its full path), and that the app was **fully
 quit** and reopened. In Claude Code, `/mcp` lists connected servers.

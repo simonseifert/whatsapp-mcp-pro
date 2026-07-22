@@ -80,20 +80,3 @@ if ":" not in _bridge_host:
 BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
 
-
-def get_sender_name(sender_jid: str) -> str:
-    """Get display name for a sender JID.
-
-    Args:
-        sender_jid: WhatsApp JID of the sender.
-
-    Returns:
-        Display name or phone number if name not found.
-    """
-    from .database import get_contact_by_jid
-
-    if sender_jid.endswith("@s.whatsapp.net"):
-        contact = get_contact_by_jid(sender_jid)
-        if contact:
-            return contact.name or contact.push_name or contact.phone_number
-    return sender_jid.split("@")[0]
