@@ -111,6 +111,20 @@ def bridge_api_key():
     return raw.splitlines()[0].strip() if raw else ""
 
 
+# Fail fast on a flaky link rather than hanging a poll loop.
+SSH_OPTS = ["-o", "ConnectTimeout=10", "-o", "BatchMode=yes"]
+
+
+def ssh_prefix():
+    """argv prefix for running a command on the bridge host, or [] if local."""
+    if get("BRIDGE_MODE") != "ssh":
+        return []
+    host = get("BRIDGE_SSH_HOST")
+    if not host:
+        raise RuntimeError("BRIDGE_MODE=ssh but BRIDGE_SSH_HOST is empty")
+    return ["ssh"] + SSH_OPTS + [host]
+
+
 def db_command(sql, json_out=True):
     """argv that runs `sql` against the bridge DB, local or over SSH.
 
