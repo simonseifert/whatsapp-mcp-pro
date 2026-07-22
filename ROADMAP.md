@@ -16,7 +16,7 @@ worth closing are listed below in value order.
 - [x] Scheduled sends (queue + delivery loop + composer UI)
 - [x] Send JID allowlist in the bridge (upstream issue #47)
 - [x] Automated SQLite backups (online .backup, gzip, retention)
-- [x] Anti-ban enabled-by-default posture for personal use (delays + typing sim, warm-up neutralized for aged accounts)
+- [x] Anti-ban pacing available (delays + typing sim, warm-up neutralized for aged accounts) — **opt-in**, `ANTIBAN_ENABLED=true`; it is off by default
 
 ## Next (high value, low risk)
 
@@ -44,7 +44,7 @@ worth closing are listed below in value order.
 - [ ] **Multi-account** — GOWA-style multiple device sessions behind one server (needs per-session stores + routing; big lift). GOWA's concrete shape (verified July 2026): one process, N sessions via a `/devices` CRUD resource, per-request scoping through an `X-Device-Id` header/query param, WS scoping via `?device_id=`, per-device webhook override, and a separate `DB_KEYS_URI` so session keys don't live in the same DB as messages (a re-link doesn't force a full data wipe). GOWA's README claims MCP and multi-device REST can't run together (a "limitation from whatsmeow") — unverified against whatsmeow's actual API, worth testing against our own bridge before assuming it applies to us too.
 - [ ] **Digest engine** — daily/weekly per-chat summaries via recall + an LLM, delivered as a WhatsApp note-to-self or ntfy push
 - [ ] **Call events** (whatsmeow exposes them; no MCP surfaces them today) — missed-call triggers for agents
-- [ ] **Agent inbox pattern** — a queue MCP where incoming messages matching triggers wait for an agent to claim/handle them (webhook → queue → tool). Prior art worth studying, not copying (different stack): LucasQuiles/WhatSoup runs three explicit modes per WhatsApp instance (passive / chat / **agent**), and its agent mode spawns a CLI subprocess (`claude-cli` default, with `codex-cli`/`gemini-cli`/`opencode-cli` fallback chain) per multi-turn session. The mode-split and fallback-chain shape transfers even though the runtime doesn't.
+- [x] **Agent inbox pattern** (shipped as `wa-dispatch/`, plus the `check_inbox` MCP tool for pull-style clients) — a queue MCP where incoming messages matching triggers wait for an agent to claim/handle them (webhook → queue → tool). Prior art worth studying, not copying (different stack): LucasQuiles/WhatSoup runs three explicit modes per WhatsApp instance (passive / chat / **agent**), and its agent mode spawns a CLI subprocess (`claude-cli` default, with `codex-cli`/`gemini-cli`/`opencode-cli` fallback chain) per multi-turn session. The mode-split and fallback-chain shape transfers even though the runtime doesn't.
 
 ## Ecosystem watch
 
