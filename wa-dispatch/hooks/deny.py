@@ -73,7 +73,7 @@ DANGER = [
     # blocked. A prepare-ahead session has no legitimate reason to launch
     # another agent, so treat it as outbound. Matched at command position only,
     # so `grep claude notes.md` still works.
-    r"(?:^|[;&|]|\$\(|`)\s*(?:[\w./-]*/)?claude\b",
+    r"(?:^|[;&|()\n\r]|\$\()\s*(?:[\w./-]*/)?claude\b",
     # Interpreters and shells re-entered from Bash defeat any pattern matching
     # on the outer command, so treat them as outbound-capable outright.
     r"\b(sh|bash|zsh|python3?|node|ruby|perl|osascript)\s+-c\b",
@@ -90,7 +90,11 @@ DANGER = [
     # never handed to the model, so this is belt-and-braces.
     r":8086/(approve|discard)/",
 ]
-DANGER_RE = re.compile("|".join(DANGER), re.IGNORECASE)
+# MULTILINE matters: a shell treats a newline as a command separator, so
+# `echo hi\nclaude -p x` puts claude at command position. Without it, ^ only
+# matched the start of the whole string and that bypassed the nested-agent
+# rule — a parser differential between this regex and the shell it guards.
+DANGER_RE = re.compile("|".join(DANGER), re.IGNORECASE | re.MULTILINE)
 
 
 def deny(reason: str) -> None:
