@@ -90,8 +90,10 @@ do*.
 
 ## Task shape
 
-The target board is **Developer (Simon) - To Do List**
-(`34991492532d8076abdacc7dea54ca90`), whose real schema is:
+The queue's own board should live in a workspace Simon owns (see
+[the board decision](#the-agent-must-not-write-to-rahuls-board)). Rahul's
+**Developer (Simon) - To Do List** (`34991492532d8076abdacc7dea54ca90`) is worth
+copying the schema from, because it already works and Simon reads it fluently:
 
 | Property | Type | Use |
 |---|---|---|
@@ -111,19 +113,71 @@ exactly what happened with the SMTP credentials thread.
 Body of the page carries what the session needs: the message excerpt, links to
 media, what was found, what was drafted, and what is blocked on approval.
 
+`Client Page` is the natural link back to Rahul's board when an item is promoted
+— which keeps the two boards connected without the agent writing to his.
+
+## Two decisions now settled
+
+### The agent must not write to Rahul's board
+
+The only Notion integration available reports `workspace: Rahul's Notion`, and
+Simon is a **Guest** there. `Simon | Head Developer` → To-Do List is Rahul's
+view of Simon's work, with a house convention ("Backlog → In Progress → Review →
+Done, document each completed task with a Loom link before closing") and
+human-scale entries: *VSL Funnel Build with Nirmal*, *Learn and Document All
+Client Systems*. Multi-day projects, not per-message items.
+
+So writing there is **outward-facing** — visible to the person Simon reports to.
+By the rule this design is built on (read and draft freely, stop before anything
+that leaves the machine) an agent creating tasks on that board is the same class
+of action as sending a WhatsApp message. It needs approval, not automation.
+Auto-generated per-chat items would also swamp a board whose entries are
+week-long projects, and could read as padding a task list Rahul reviews.
+
+Consequence: **the agent's queue is private; Rahul's board stays human.**
+Promotion from one to the other is Simon's decision — and a natural fit for
+`wa-approve`, which already exists for approving a drafted action from a phone.
+
+Prerequisite: a Notion integration against a workspace Simon owns (an internal
+integration plus one shared database, ~10 minutes). Until that exists, the queue
+should live locally — a SQLite table or the existing jsonl — which is enough to
+build and test the whole runner. Notion is the *view*, not the mechanism.
+
+Note for whoever implements: the board's callout text is stale relative to its
+schema. The real `Status` options are `To Do`, `In Progress`, `Waiting for
+Client`, `Quality Check`, `Complete` — not the Backlog/Review/Done in the
+instructions. Use the schema.
+
+### Granularity: one *open* task per chat
+
+The question was whether several messages about one issue should share a task,
+or whether it should simply be one task per chat.
+
+Per chat, with a twist that gets issue-level grouping for free: **at most one
+open task per chat at a time.** New messages append to the open task; when
+Simon marks it `Complete`, the next message opens a fresh one.
+
+The task's lifespan then *is* the issue, and the boundary is drawn by Simon
+closing it rather than by an agent deciding "is this the same issue as before?".
+That classification would be wrong in both directions — duplicate tasks for one
+issue, or two unrelated issues silently merged — and neither error is visible
+until someone reads the task and finds it incoherent.
+
+It also gives a stable natural key (`chat_jid` + open status), which is what
+made the old cursor logic fragile by its absence.
+
+Cost: a chat where two genuinely separate things are live at once shares a task
+until one is closed. Acceptable, and visible when it happens — unlike a
+misclassification.
+
 ## Open questions
 
 Deliberately unanswered — these want real usage, not a guess tonight.
 
-1. **Which board.** That database lives in the RJ Media workspace, so
-   auto-generated tasks are plausibly visible to Rahul. Options: a separate
-   agent-only database, a `source: agent` marker, or accept the visibility
-   (arguably a feature). **Decide before the first write.**
-2. **Granularity.** One task per message, per thread, or per client per day? A
-   burst of five messages should almost certainly be one task, which suggests
-   thread-level with a debounce — but that is the debounce complexity coming
-   back in another form.
-3. **How much goes in the task vs left in the project.** Findings inline in
+1. **Where the private queue lives** until Simon owns a Notion workspace —
+   SQLite, or the existing jsonl. SQLite gives real IDs and a status column,
+   which is the whole point of moving off cursors.
+2. **How much goes in the task vs left in the project.** Findings inline in
    Notion are readable from a phone; artifacts in the repo are where the work
    actually is. Probably a summary in Notion linking to the branch/draft.
 4. **Latency.** Hourly is the proposal. Is anything genuinely urgent enough to
