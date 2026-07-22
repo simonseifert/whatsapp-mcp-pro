@@ -8,6 +8,7 @@ local git, research, building — is allowed.
 
 Exit 0 = allow, exit 2 = deny (stderr is shown to the model).
 """
+import os
 import sys
 import json
 import re
@@ -93,6 +94,15 @@ def deny(reason: str) -> None:
 
 
 def main() -> None:
+    # This hook lives in each routed project's settings.local.json, so it runs
+    # for EVERY session opened in that directory — including ones Simon starts
+    # by hand to do his own work. Only enforce in sessions the dispatcher
+    # launched; it sets WA_DISPATCH_SESSION=1. A session Simon opened himself
+    # has no marker and is left completely alone (this is what let his working
+    # session's git push get blocked).
+    if os.environ.get("WA_DISPATCH_SESSION") != "1":
+        sys.exit(0)
+
     try:
         data = json.load(sys.stdin)
     except Exception:

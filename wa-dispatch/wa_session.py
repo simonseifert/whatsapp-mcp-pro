@@ -258,6 +258,22 @@ def find_idle_pane(proj: str):
     return None
 
 
+def _launch_cmd(prompt: str) -> str:
+    """claude launch string, marking the session as dispatcher-owned.
+
+    WA_DISPATCH_SESSION=1 is set inline (VAR=val cmd), not exported, so it
+    applies to the claude process — and the PreToolUse hook it spawns inherits
+    it — but does NOT persist in the pane's shell after claude exits. Otherwise
+    a manual claude Simon later runs in the same pane would wrongly inherit the
+    marker and get the hook. Carried on both sides of the -c fallback.
+    """
+    cb = shlex.quote(cfg.path("CLAUDE_BIN") or "claude")
+    fl = cfg.get("CLAUDE_FLAGS")
+    q = shlex.quote(prompt)
+    m = "WA_DISPATCH_SESSION=1"
+    return "%s %s %s -c %s || %s %s %s %s" % (m, cb, fl, q, m, cb, fl, q)
+
+
 def spawn_visible(proj: str, label: str, prompt: str):
     """Open a real, visible tmux window running Claude in the project.
 
@@ -279,10 +295,7 @@ def spawn_visible(proj: str, label: str, prompt: str):
     # Reuse an idle pane already sitting in this project before making a window.
     idle = find_idle_pane(proj)
     if idle:
-        cb = shlex.quote(cfg.path("CLAUDE_BIN") or "claude")
-        fl = cfg.get("CLAUDE_FLAGS")
-        q = shlex.quote(prompt)
-        launch = "%s %s -c %s || %s %s %s" % (cb, fl, q, cb, fl, q)
+        launch = _launch_cmd(prompt)
         subprocess.run(["tmux", "send-keys", "-t", idle, "-l", launch],
                        capture_output=True)
         subprocess.run(["tmux", "send-keys", "-t", idle, "Enter"], capture_output=True)
@@ -295,12 +308,7 @@ def spawn_visible(proj: str, label: str, prompt: str):
         return None
 
     target = tmux_target_session() + ":"
-    base = "%s %s" % (
-        shlex.quote(cfg.path("CLAUDE_BIN") or "claude"),
-        cfg.get("CLAUDE_FLAGS"),
-    )
-    p = shlex.quote(prompt)
-    inner = "%s -c %s || %s %s; exec zsh" % (base, p, base, p)
+    inner = "%s; exec zsh" % _launch_cmd(prompt)
     cmd = "sh -c %s" % shlex.quote(inner)
     try:
         subprocess.run(
