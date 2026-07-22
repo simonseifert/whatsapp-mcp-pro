@@ -24,6 +24,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -336,13 +337,33 @@ def fetch_media(project: str, msg: dict):
     Returns the local path, or None. Never raises: a missing image degrades to
     the old placeholder rather than dropping the message.
     """
-    fn, chat = msg.get("filename"), msg.get("chat_jid")
-    if not fn or not chat or (msg.get("media_type") or "text") == "text":
+    raw, chat = msg.get("filename"), msg.get("chat_jid")
+    if not raw or not chat or (msg.get("media_type") or "text") == "text":
         return None
+
+    # The filename in the DB is SENDER-SUPPLIED for documents (the bridge stores
+    # doc.GetFileName() verbatim) and 79 rows in a real store already contain
+    # characters outside [A-Za-z0-9._-]. It reaches an scp remote path, which
+    # the remote shell expands, and a local os.path.join. Unsanitised that is
+    # remote command injection and path traversal from anyone who can send a
+    # document.
+    #
+    # The bridge writes the file under its own sanitised name, so applying the
+    # identical transform is both the security fix and the correctness fix —
+    # the raw name would not have matched anything on disk anyway.
+    fn = re.sub(r"[^A-Za-z0-9._-]", "_", raw)
+    if not fn or fn.startswith((".", "-")) or ".." in fn:
+        return None                      # traversal, hidden files, scp flags
+    if not re.fullmatch(r"[A-Za-z0-9._@-]+", chat):
+        return None                      # JIDs are alphanumerics, @, dots, dashes
+
     store = os.path.dirname(cfg.get("BRIDGE_DB"))
     remote = "%s/%s/%s" % (store, chat.replace("@", "_"), fn)
     local_dir = os.path.join(os.path.expanduser(project), ".wa-media")
     local = os.path.join(local_dir, fn)
+    # Belt and braces: even with the allowlist, never write outside .wa-media/
+    if not os.path.realpath(local).startswith(os.path.realpath(local_dir) + os.sep):
+        return None
     if os.path.exists(local):
         return local
     try:
@@ -351,7 +372,10 @@ def fetch_media(project: str, msg: dict):
             # Escape spaces rather than shlex.quote: quoting the whole path
             # stops the remote shell expanding a leading ~, so scp looks for a
             # literal "~" directory and silently finds nothing.
-            scp = ["scp", "-q"] + cfg.SSH_OPTS + [
+            # -T: skip the client-side filename check, which is not a security
+            # control; the allowlist above is. Path is metacharacter-free by
+            # construction, so remote shell expansion has nothing to act on.
+            scp = ["scp", "-q", "-T"] + cfg.SSH_OPTS + [
                 "%s:%s" % (cfg.get("BRIDGE_SSH_HOST"),
                            remote.replace(" ", r"\ ")), local]
             if subprocess.run(scp, capture_output=True, timeout=90).returncode != 0:
