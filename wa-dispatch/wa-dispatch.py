@@ -106,9 +106,9 @@ def match_route(routes, msg):
 
 def poll_new(since: int):
     q = (
-        "SELECT m.rowid AS rowid, m.chat_jid AS chat_jid, m.sender AS sender, "
+        "SELECT m.rowid AS rowid, m.id AS id, m.chat_jid AS chat_jid, m.sender AS sender, "
         "m.sender_name AS sender_name, m.content AS content, "
-        "m.media_type AS media_type, m.timestamp AS timestamp, "
+        "m.media_type AS media_type, m.filename AS filename, m.timestamp AS timestamp, "
         "m.quoted_sender_name AS quoted_sender_name, "
         "m.quoted_text_preview AS quoted_text_preview, m.is_from_me AS is_from_me, "
         "c.name AS chat_name "
@@ -319,9 +319,61 @@ def current_max_rowid():
 
 
 
+def fetch_media(project: str, msg: dict):
+    """Copy an incoming media file to the project so a session can open it.
+
+    The bridge auto-downloads media on receipt, but onto the machine it runs
+    on — and the sessions run here. Without this the inbox says `[image]` and
+    the model correctly reports it cannot see it, which is useless when the
+    image IS the message: a client sending a screenshot of the leads that
+    never arrived.
+
+    The bridge stores at `<store>/<chat_jid with @ replaced by _>/<filename>`,
+    and `filename` comes from the DB rather than being derived from the message
+    id — deriving it was wrong, and an older layout on disk made the mistake
+    look plausible.
+
+    Returns the local path, or None. Never raises: a missing image degrades to
+    the old placeholder rather than dropping the message.
+    """
+    fn, chat = msg.get("filename"), msg.get("chat_jid")
+    if not fn or not chat or (msg.get("media_type") or "text") == "text":
+        return None
+    store = os.path.dirname(cfg.get("BRIDGE_DB"))
+    remote = "%s/%s/%s" % (store, chat.replace("@", "_"), fn)
+    local_dir = os.path.join(os.path.expanduser(project), ".wa-media")
+    local = os.path.join(local_dir, fn)
+    if os.path.exists(local):
+        return local
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+        if cfg.get("BRIDGE_MODE") == "ssh":
+            # Escape spaces rather than shlex.quote: quoting the whole path
+            # stops the remote shell expanding a leading ~, so scp looks for a
+            # literal "~" directory and silently finds nothing.
+            scp = ["scp", "-q"] + cfg.SSH_OPTS + [
+                "%s:%s" % (cfg.get("BRIDGE_SSH_HOST"),
+                           remote.replace(" ", r"\ ")), local]
+            if subprocess.run(scp, capture_output=True, timeout=90).returncode != 0:
+                return None
+        else:
+            src = os.path.expanduser(remote)
+            if not os.path.exists(src):
+                return None
+            import shutil as _shutil
+            _shutil.copy2(src, local)
+        return local if os.path.exists(local) else None
+    except Exception as e:
+        log("could not fetch media %s: %s" % (fn, e))
+        return None
+
+
 def append_inbox(project: str, msg: dict) -> str:
     proj = os.path.expanduser(project)
     os.makedirs(proj, exist_ok=True)
+    local = fetch_media(project, msg)
+    if local:
+        msg = dict(msg, media_path=os.path.relpath(local, proj))
     inbox = os.path.join(proj, ".wa-inbox.jsonl")
     with open(inbox, "a") as f:
         f.write(json.dumps(msg, ensure_ascii=False) + "\n")
