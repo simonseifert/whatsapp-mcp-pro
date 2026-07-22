@@ -192,3 +192,13 @@ Documented so you don't rediscover them:
   is UTF-8 and keeps emoji.
 - Whichever path delivers a message claims the shared inbox cursor, so the Stop
   hook can't re-announce what was already handed over.
+
+## Where this is going
+
+A proposed redesign moves the queue into Notion: capture writes a task, an
+hourly runner works it, and Simon approves the one irreversible step. It is
+mostly a deletion — the warm/cold detection, tmux targeting, cursors and
+keystroke nudging that caused nearly every bug in the first week all go away.
+
+Not built. See [DESIGN-notion-queue.md](DESIGN-notion-queue.md), including what
+to learn from real usage before committing to it.
