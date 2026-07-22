@@ -65,6 +65,15 @@ DANGER = [
     r"\bnetlify\s+deploy\b",
     r"\bdocker(-compose)?\s+(up|push|run)\b",
     r"/api/send\b",                    # bridge send endpoint via curl/wget
+    # Nested agents are the cleanest escape from this hook. The marker IS
+    # inherited by tool subprocesses, but the hook itself is loaded from the
+    # PROJECT's settings — so `cd /tmp && claude -p "..."` runs somewhere with
+    # no project settings and therefore no hook, with all constraints gone.
+    # Verified: a git push from such a nested session was attempted, not
+    # blocked. A prepare-ahead session has no legitimate reason to launch
+    # another agent, so treat it as outbound. Matched at command position only,
+    # so `grep claude notes.md` still works.
+    r"(?:^|[;&|]|\$\(|`)\s*(?:[\w./-]*/)?claude\b",
     # Interpreters and shells re-entered from Bash defeat any pattern matching
     # on the outer command, so treat them as outbound-capable outright.
     r"\b(sh|bash|zsh|python3?|node|ruby|perl|osascript)\s+-c\b",
