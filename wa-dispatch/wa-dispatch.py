@@ -374,6 +374,7 @@ def run_prepare(project: str) -> str:
     proc = subprocess.Popen(
         cmd, cwd=proj, stdout=lf, stderr=lf,
         stdin=subprocess.DEVNULL, start_new_session=True,
+        env=dict(os.environ, WA_DISPATCH_SESSION="1"),
     )
     with open(os.path.join(rundir, "run.lock"), "w") as f:
         f.write(str(proc.pid))
