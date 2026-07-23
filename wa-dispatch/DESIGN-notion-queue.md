@@ -118,30 +118,37 @@ media, what was found, what was drafted, and what is blocked on approval.
 
 ## Two decisions now settled
 
-### The agent must not write to Rahul's board
+### Which board — and it is Simon's
 
-The only Notion integration available reports `workspace: Rahul's Notion`, and
-Simon is a **Guest** there. `Simon | Head Developer` → To-Do List is Rahul's
-view of Simon's work, with a house convention ("Backlog → In Progress → Review →
-Done, document each completed task with a Loom link before closing") and
-human-scale entries: *VSL Funnel Build with Nirmal*, *Learn and Document All
-Client Systems*. Multi-day projects, not per-message items.
+The board lives in Rahul's workspace and Simon is a Guest there, but it is
+**Simon's working board**: he works from it, Rahul oversees and adds tasks to
+it. So this is not a boundary question, as first assumed — it is a **noise**
+question.
 
-So writing there is **outward-facing** — visible to the person Simon reports to.
-By the rule this design is built on (read and draft freely, stop before anything
-that leaves the machine) an agent creating tasks on that board is the same class
-of action as sending a WhatsApp message. It needs approval, not automation.
-Auto-generated per-chat items would also swamp a board whose entries are
-week-long projects, and could read as padding a task list Rahul reviews.
+That still matters. Existing entries are week-long projects (*VSL Funnel Build
+with Nirmal*, *Learn and Document All Client Systems*) with a convention of
+documenting each completed task with a Loom before closing. Per-chat
+auto-generated items are a different granularity and would bury the handful of
+things Simon is actually working on this week, in the one view Rahul also reads.
 
-Consequence: **the agent's queue is private; Rahul's board stays human.**
-Promotion from one to the other is Simon's decision — and a natural fit for
-`wa-approve`, which already exists for approving a drafted action from a phone.
+Reasonable options, to pick with a few days of real volume in hand:
 
-Prerequisite: a Notion integration against a workspace Simon owns (an internal
-integration plus one shared database, ~10 minutes). Until that exists, the queue
-should live locally — a SQLite table or the existing jsonl — which is enough to
-build and test the whole runner. Notion is the *view*, not the mechanism.
+- **Same board, marked.** Simplest. Agent items carry a prefix or a `Priority`
+  convention so they are filterable. Risk is volume.
+- **Separate database, promote by hand.** Agent items land in their own list;
+  Simon promotes the ones that are real work. Keeps the main board human-scale,
+  costs a step.
+- **Separate database, promote automatically once worked.** The runner only
+  promotes after it has something worth showing — a diagnosis and a draft, not
+  just "a message arrived".
+
+The third is probably right, but it depends on how many chats produce real work
+per day, which is unknown until the queue has run for a week.
+
+Either way the agent writing to a board Rahul reads is still an outward-facing
+act in the sense that matters here: it is visible to someone else and hard to
+retract quietly. Worth keeping behind the same approve-before-external-action
+posture as sending a message, at least until the volume is understood.
 
 Note for whoever implements: the board's callout text is stale relative to its
 schema. The real `Status` options are `To Do`, `In Progress`, `Waiting for
