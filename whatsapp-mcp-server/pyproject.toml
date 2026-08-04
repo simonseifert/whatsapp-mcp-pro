@@ -24,10 +24,16 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-asyncio>=0.24.0",
 ]
-# On-device voice transcription via Apple's mlx framework. Apple Silicon only —
-# the platform marker prevents install attempts on incompatible systems.
 transcribe = [
     "mlx-whisper>=0.4.0 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# Multilingual semantic search over message history via sentence-transformers.
+# Heavy install (~470 MB of model weights cached lazily at ~/.cache/huggingface
+# on first use), so kept behind an opt-in extra.
+recall = [
+    "sentence-transformers>=3.0.0",
+    "numpy>=1.26.0",
+]
 ]
 
 [tool.pytest.ini_options]
