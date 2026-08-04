@@ -31,6 +31,7 @@ import (
 type Client struct {
 	*whatsmeow.Client
 	logger waLog.Logger
+	cfg    *config.Config
 
 	// Connection state tracking
 	connMu              sync.RWMutex
@@ -127,6 +128,7 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 	c := &Client{
 		Client:    client,
 		logger:    logger,
+		cfg:       cfg,
 		startedAt: time.Now(),
 		antiban:   antibanInterceptor,
 		presence:  newPresenceManager(cfg.PresenceMode, cfg.PresenceLingerMin, cfg.PresenceLingerMax),

@@ -34,7 +34,6 @@ recall = [
     "sentence-transformers>=3.0.0",
     "numpy>=1.26.0",
 ]
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

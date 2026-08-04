@@ -29,6 +29,10 @@ type Config struct {
 	PresenceMode      string
 	PresenceLingerMin time.Duration // PRESENCE_LINGER_MIN
 	PresenceLingerMax time.Duration // PRESENCE_LINGER_MAX
+
+	// Safety gate: comma-separated list of allowed JIDs/phone numbers (WHATSAPP_ALLOWLIST_JIDS)
+	// If set, outgoing message sends to JIDs/numbers outside this allowlist are rejected.
+	AllowlistJIDs []string
 }
 
 // NewConfig creates a new configuration with default values
@@ -112,6 +116,19 @@ func NewConfig() *Config {
 
 	if cfg.PresenceLingerMax < cfg.PresenceLingerMin {
 		cfg.PresenceLingerMax = cfg.PresenceLingerMin
+	}
+
+	allowlist := os.Getenv("WHATSAPP_ALLOWLIST_JIDS")
+	if allowlist == "" {
+		allowlist = os.Getenv("WHATSAPP_JID_ALLOWLIST")
+	}
+	if allowlist != "" {
+		for _, jid := range strings.Split(allowlist, ",") {
+			trimmed := strings.TrimSpace(jid)
+			if trimmed != "" {
+				cfg.AllowlistJIDs = append(cfg.AllowlistJIDs, trimmed)
+			}
+		}
 	}
 
 	return cfg

@@ -67,6 +67,15 @@ Add to your MCP config (`claude_desktop_config.json` or Cursor settings):
 }
 ```
 
+### Security & Safety Gate (Allowlist)
+
+To restrict outgoing message delivery to a specified set of allowed contacts or groups (useful for dev environments or enterprise privacy gates), set `WHATSAPP_ALLOWLIST_JIDS`:
+
+```bash
+# Allow sending only to specific phone numbers or group JIDs (comma-separated)
+WHATSAPP_ALLOWLIST_JIDS=1234567890,9876543210@s.whatsapp.net,1203630123456789@g.us
+```
+
 ## MCP Tools
 
 Version `0.3.0` exposes the full curated MCP surface by default for compatibility. Users who want a leaner agent context can opt into smaller toolsets.
@@ -115,7 +124,7 @@ Migration:
 ### Messaging
 | Tool | Description |
 |------|-------------|
-| `send_message` | Send text message |
+| `send_message` | Send text message (supports optional `quoted_message_id` to reply/quote) |
 | `send_file` | Send image/video/document |
 | `send_audio_message` | Send voice message |
 | `download_media` | Download received media |
