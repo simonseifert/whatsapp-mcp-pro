@@ -18,11 +18,8 @@ except ImportError:
     pass
 
 import os
-from typing import Any
 
-import requests
-
-from .utils import WHATSAPP_API_BASE_URL, logger
+from .utils import logger
 
 
 class BridgeError(Exception):

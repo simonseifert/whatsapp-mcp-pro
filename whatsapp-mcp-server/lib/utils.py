@@ -79,4 +79,3 @@ if ":" not in _bridge_host:
     _bridge_host = f"{_bridge_host}:8080"
 BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
-
