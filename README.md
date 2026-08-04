@@ -1,16 +1,23 @@
 # whatsapp-mcp-pro
 
-**Your WhatsApp, usable by Claude.** Read and send messages, search years of
-history by meaning rather than keywords, transcribe voice notes locally — and
-optionally have incoming client messages start the work before you sit down.
+**Your WhatsApp, turned into something you can program.** Read and send from any
+Claude session, browse it in your own web client, hold a conversation with Claude
+Code by texting yourself, or have incoming messages start work before you sit
+down.
 
 Runs entirely on your own machine. Nothing goes to a third party.
 
-```
-"what did we agree about the deadline six weeks ago?"  → recall searches years of history, any language
-"summarise what came in overnight"                     → across every chat
-[a client texts you at 3am]                            → a Claude session drafts the reply by morning
-```
+### Four ways to use it
+
+| | |
+|---|---|
+| **Ask** | 32 MCP tools in any Claude session — read, send, search, media, groups, polls |
+| **Browse** | [`wa-client`](#wa-client-unlimited-whatsapp-web-one-device-slot) — a WhatsApp-Web-style UI that costs **zero** extra linked-device slots |
+| **Talk to it** | [`wa-assistant`](#wa-assistant-text-yourself-get-claude-code-back) — message your own chat, Claude Code answers. Voice notes both ways |
+| **Have it act** | [`wa-dispatch`](#wa-dispatch-incoming-messages-start-the-work-optional) — a client's message opens a Claude session in that project and drafts the reply |
+
+The last two are the ones nothing else does: your phone becomes a terminal, and
+work starts when the message arrives rather than when you remember to look.
 
 ### Get started
 
@@ -22,21 +29,39 @@ Runs entirely on your own machine. Nothing goes to a third party.
 
 Forked from [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) (itself descended from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp)), tracking upstream closely and adding a "pro" layer on top.
 
-## Why this fork exists
+## What the pro layer adds
 
-Every WhatsApp MCP gives you send/read tools. This one also answers questions like *"what did we agree about the deadline six weeks ago?"* — across your full message history, in any language, including what was said in voice notes.
+Every WhatsApp MCP gives you send/read tools. These are the parts that aren't
+standard, grouped by what they're for.
 
-| Pro feature | What it does |
+**Getting answers out of your history**
+
+| | |
 |---|---|
-| **`recall`** — semantic search | Multilingual embedding search over your full message history (paraphrase-multilingual-MiniLM, 50+ languages). Vector store lives inside the bridge's SQLite; a background indexer keeps it current. Pinned to CPU and kept resident (~700 MB steady) — on Apple Silicon the GPU path pinned a gigabyte of Metal buffers it never gave back. |
-| **`transcribe_audio`** — local voice-note transcription | mlx-whisper (large-v3-turbo) on Apple Silicon. No audio leaves your machine. |
+| **`recall`** — semantic search | Multilingual embedding search over your full history (paraphrase-multilingual-MiniLM, 50+ languages), so *"what did we agree about the deadline six weeks ago?"* works without remembering the words used. Vector store lives inside the bridge's SQLite; a background indexer keeps it current. Pinned to CPU and kept resident (~700 MB steady) — on Apple Silicon the GPU path pinned a gigabyte of Metal buffers it never gave back. |
+| **`transcribe_audio`** — voice notes | Local transcription (mlx-whisper large-v3-turbo on Apple Silicon, faster-whisper anywhere, or Groq). With `AUTO_TRANSCRIBE_VOICE` the backlog is transcribed in the background, so speech becomes searchable too. |
+| **`check_inbox`** | "What arrived since I last asked" — how a Claude Desktop session keeps up, since unlike a terminal it can't be interrupted by an incoming message. |
+
+**Interfaces**
+
+| | |
+|---|---|
+| **[`wa-client/`](wa-client)** — self-hosted web client | WhatsApp-Web-style chat UI riding the bridge's device session. **Zero additional linked-device slots**, unlimited browsers. Real-time push (webhook → SSE), inline media, keyword + semantic search, file sending, **scheduled messages**. |
+| **[`wa-assistant/`](wa-assistant)** — text yourself | Message your own chat and a persistent Claude Code session answers. Voice note in → voice note out, screenshots filed automatically, long questions routed to a stronger model. Your phone becomes a terminal. |
+| **[`wa-dispatch/`](wa-dispatch)** — messages start the work | A message from a routed chat opens or wakes a Claude Code session in that client's project, which reads the thread, researches and drafts a reply — then stops. It never sends. macOS + tmux. |
+
+**Running it seriously**
+
+| | |
+|---|---|
 | **Shared HTTP server** (`serve_http.py`) | One always-on streamable-HTTP MCP serving *all* your Claude sessions. Kills the per-session stdio-spawn pattern that leaks orphaned processes (we learned this the hard way: 82 orphans, 44 GB RAM, one kernel panic). |
 | **Scoped bearer tokens** | A full token for trusted agents, a read-only token for dashboards/automations. Read-only can only call tools annotated `readOnlyHint=true` — enforced server-side. |
-| **`wa-client/`** — self-hosted web client | A WhatsApp-Web-style chat UI that rides the bridge's device session. **Zero additional linked-device slots**, unlimited browsers. Real-time push (webhook → SSE), inline media, keyword + semantic search, file sending, **scheduled messages**. |
 | **Send allowlist** | `SEND_ALLOWED_JIDS` limits which chats the bridge will ever send to. Safety gate for automation. |
-| **`wa-dispatch/`** — messages start the work | A message from a routed chat opens or wakes a Claude Code session in that client's project, which reads the thread, researches and drafts a reply — then stops. It never sends. Optional, macOS + tmux. |
+| **Anti-ban pacing** | Opt-in humanized send delays and typing simulation. See [Account safety](#account-safety-honestly) — it is a real risk, honestly described. |
 
-Everything upstream ships is here too: 22 curated tools (27 with the pro toolsets on), toolset gating, HMAC-signed webhooks with trigger filters, group management, polls, newsletters, presence, opt-in anti-ban protection with humanized send pacing, auto-download of media before CDN links expire.
+Everything upstream ships is here too: toolset gating, HMAC-signed webhooks with
+trigger filters, group management, polls, newsletters, presence, auto-download of
+media before CDN links expire.
 
 ## Architecture
 
@@ -110,6 +135,37 @@ Features: real-time push (bridge webhook → SSE, no polling), inline media, fil
 Deliberate limitations: no calls, no status posting (also a documented ban trigger — see below), media older than ~2 weeks may be expired upstream (mitigated by the bridge's auto-download-on-receipt).
 
 **Security note:** wa-client has no login of its own. Bind it to 127.0.0.1 (default) or a VPN/tailnet address only. Never expose it to the internet.
+
+## wa-assistant: text yourself, get Claude Code back
+
+Type into your own Note-to-Self chat and a persistent Claude Code session
+replies. Send a voice note, get a voice note back. Send a screenshot, have it
+read and filed. Ask something big and it hands off to a stronger model in a
+separate process, so a ten-minute research task never blocks *"what time is my
+meeting"*.
+
+The session is kept **warm** deliberately: a cold `claude -p` per message costs
+seconds of startup and forgets the thread, so follow-up questions stop working.
+
+Only messages *you* send in *your own* chat are ever read
+(`is_from_me=1 AND chat_jid IN (your jids)`), and it only ever replies to you.
+Both of your identities — the phone-number jid and the LID — are detected
+automatically, which matters because **which one your self-chat is filed under
+differs per linked device**; watching only the one the API reports finds nothing
+at all on some installs.
+
+Speech in and out are off by default and configured as shell commands rather
+than Python dependencies, so they can be a local model, a hosted API, or the
+`say` binary macOS already has.
+
+```bash
+cd wa-assistant && cp config.example.env config.env
+./wa-assistant.py --check     # validates setup, sends nothing
+./wa-assistant.py --once      # handle one message and exit
+```
+
+See [wa-assistant/README.md](wa-assistant/README.md), and read its Security
+section before enabling — the session runs without permission prompts.
 
 ## wa-dispatch: incoming messages start the work (optional)
 
