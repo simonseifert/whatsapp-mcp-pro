@@ -339,12 +339,14 @@ Several forks independently solved real problems and their ideas have been incor
 
 | Contributor | What they figured out |
 |---|---|
-| [simonseifert](https://github.com/simonseifert/whatsapp-mcp-extended-pro) | First to track the `direct_path` DB column needed for CDN fallback during media download; whatsmeow-native `Download()` approach in `/api/download`; correct DB path resolution across Docker/local environments; inline `Image` content blocks in `download_media` |
-| [laudite](https://github.com/laudite/whatsapp-mcp-extended) | Media captions were silently dropped for images/video/docs — fixed in `ExtractTextContent()`; quoted/reply context in webhook payloads; `@mention` auto-detection; `request_history` peer-message target bug (was sending to group JID instead of own device JID) |
-| [kasperpeulen](https://github.com/kasperpeulen/whatsapp-mcp-extended) | Contact name resolution priority chain (`FullName > PushName > FirstName > Business`) and the phone-number-cache bug; full call event pipeline (offer/accept/terminate/reject with duration); LID → phone JID resolution via `GetAltJID()` |
+| [simonseifert](https://github.com/simonseifert) | Optional on-device voice transcription (`mlx-whisper`) & multilingual semantic search (`sentence-transformers`); `direct_path` DB column tracking for CDN fallback; inline `Image` content blocks |
+| [bitterdev](https://github.com/bitterdev) | WhatsApp LID addressing resolution (`GetAltJID()`), mapping `<id>@lid` recipients to phone JIDs to prevent server error 463 |
+| [domdomegg](https://github.com/domdomegg) | Security scan workflow fixes and `.gitleaks.toml` allowlist configuration |
+| [laudite](https://github.com/laudite/whatsapp-mcp-extended) | Media captions in `ExtractTextContent()`; quoted/reply context in webhooks; `@mention` auto-detection |
+| [kasperpeulen](https://github.com/kasperpeulen/whatsapp-mcp-extended) | Contact name resolution priority chain (`FullName > PushName > FirstName > Business`) |
 | [Coriatel](https://github.com/Coriatel/whatsapp-mcp-extended) | First working `/api/download` implementation with manual HKDF/AES-CBC decryption |
-| [jedijashwa](https://github.com/jedijashwa/whatsapp-mcp-extended) | Reactions silently failing fix (wrong sender JID lookup); extended MIME type support for audio/document types |
-| [slarrain](https://github.com/slarrain/whatsapp-mcp-extended) | LID JID normalization — diagnosed the silent conversation-splitting bug where WhatsApp's new LID format caused messages to land in separate chat threads |
+| [jedijashwa](https://github.com/jedijashwa/whatsapp-mcp-extended) | Reactions silently failing fix (wrong sender JID lookup); extended MIME type support |
+| [slarrain](https://github.com/slarrain/whatsapp-mcp-extended) | LID JID normalization — diagnosed conversation-splitting bug |
 
 If you've forked this repo and built something useful, open a PR or issue — good ideas deserve to flow upstream.
 
