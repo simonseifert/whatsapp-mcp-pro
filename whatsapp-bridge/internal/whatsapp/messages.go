@@ -143,6 +143,42 @@ func validateMediaPath(mediaPath string) error {
 }
 
 // SendMessage sends a WhatsApp message with optional media, quoted message, and mentions
+
+// IsRecipientAllowed reports whether a recipient passes the
+// WHATSAPP_ALLOWLIST_JIDS safety gate.
+//
+// Matching is EXACT (case-insensitive) against either the full JID
+// ("4915112345678@s.whatsapp.net") or its user part ("4915112345678"), which is
+// what the documented syntax describes: "only to specific phone numbers or
+// group JIDs (comma-separated)".
+//
+// It deliberately does NOT substring-match. An earlier version also allowed
+// `strings.Contains(target, entry)`, which silently defeated the gate: because
+// the comparison ran against the whole JID string, an entry of "net",
+// "s.whatsapp.net" or "@" matched EVERY individual recipient, and a short entry
+// like a country code matched every number containing those digits anywhere.
+// This gate is the backstop for autonomous senders (wa-dispatch, wa-assistant)
+// that run without a human approving each message, so a bypass here is the
+// difference between "drafts a reply" and "messages a client".
+//
+// Prefix semantics are not supported. If they are ever wanted they need an
+// explicit syntax (e.g. a trailing "*") parsed deliberately, never as the
+// default behaviour of a containment check.
+func IsRecipientAllowed(allowlist []string, recipient types.JID) bool {
+	target := recipient.String()
+	user := recipient.User
+	for _, entry := range allowlist {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.EqualFold(entry, target) || strings.EqualFold(entry, user) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentionedJIDs ...[]string) bridgeTypes.SendResult {
 	if !c.IsConnected() {
 		return bridgeTypes.SendResult{Success: false, Error: "Not connected to WhatsApp"}
@@ -186,16 +222,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 
 	// Safety gate: Check WHATSAPP_ALLOWLIST_JIDS if configured
 	if c.cfg != nil && len(c.cfg.AllowlistJIDs) > 0 {
-		allowed := false
-		targetStr := recipientJID.String()
-		targetUser := recipientJID.User
-		for _, a := range c.cfg.AllowlistJIDs {
-			if strings.EqualFold(a, targetStr) || strings.EqualFold(a, targetUser) || strings.Contains(targetStr, a) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !IsRecipientAllowed(c.cfg.AllowlistJIDs, recipientJID) {
 			return bridgeTypes.SendResult{
 				Success: false,
 				Error:   fmt.Sprintf("recipient %s is blocked by WHATSAPP_ALLOWLIST_JIDS safety gate", recipient),
