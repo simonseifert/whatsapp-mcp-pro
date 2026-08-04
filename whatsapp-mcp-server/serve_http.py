@@ -62,9 +62,7 @@ if __name__ == "__main__":
             tools = payload["result"]["tools"]
         except (KeyError, TypeError):
             return payload
-        payload["result"]["tools"] = [
-            t for t in tools if t.get("name") in readonly_tools
-        ]
+        payload["result"]["tools"] = [t for t in tools if t.get("name") in readonly_tools]
         return payload
 
     class ScopedAuth:
@@ -102,21 +100,17 @@ if __name__ == "__main__":
                         for line in text.split("\n"):
                             if line.startswith("data:"):
                                 payload = json.loads(line[5:].strip())
-                                lines.append("data: " + json.dumps(
-                                    _filter_tools_payload(payload)))
+                                lines.append("data: " + json.dumps(_filter_tools_payload(payload)))
                             else:
                                 lines.append(line)
                         out = "\n".join(lines).encode()
                 except Exception:
                     out = raw  # never break the response over cosmetics
-                start = state["start"] or {"type": "http.response.start",
-                                           "status": 200, "headers": []}
-                headers = [(k, v) for k, v in start.get("headers", [])
-                           if k.decode().lower() != "content-length"]
+                start = state["start"] or {"type": "http.response.start", "status": 200, "headers": []}
+                headers = [(k, v) for k, v in start.get("headers", []) if k.decode().lower() != "content-length"]
                 headers.append((b"content-length", str(len(out)).encode()))
                 await send({**start, "headers": headers})
-                await send({"type": "http.response.body", "body": out,
-                            "more_body": False})
+                await send({"type": "http.response.body", "body": out, "more_body": False})
 
             return wrapped
 

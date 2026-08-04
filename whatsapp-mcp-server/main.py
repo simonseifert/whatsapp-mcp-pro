@@ -882,13 +882,19 @@ def check_inbox(
             state[key] = int(row["m"])
             with open(cursor_file, "w") as fh:
                 json.dump(state, fh)
-            return {"messages": [], "count": 0, "cursor": state[key], "more": False,
-                    "note": "First check — cursor set to now. Subsequent calls "
-                            "return only what arrives from here on."}
-        sql = ("SELECT m.rowid AS rowid, m.chat_jid, m.sender_name, m.content, "
-               "m.media_type, m.timestamp, m.is_from_me, c.name AS chat_name "
-               "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid "
-               "WHERE m.rowid > ?")
+            return {
+                "messages": [],
+                "count": 0,
+                "cursor": state[key],
+                "more": False,
+                "note": "First check — cursor set to now. Subsequent calls return only what arrives from here on.",
+            }
+        sql = (
+            "SELECT m.rowid AS rowid, m.chat_jid, m.sender_name, m.content, "
+            "m.media_type, m.timestamp, m.is_from_me, c.name AS chat_name "
+            "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid "
+            "WHERE m.rowid > ?"
+        )
         args: list[Any] = [since]
         if chat_jid:
             sql += " AND m.chat_jid = ?"
@@ -914,8 +920,7 @@ def check_inbox(
         state[key] = int(rows[-1]["rowid"])
         with open(cursor_file, "w") as fh:
             json.dump(state, fh)
-    return {"messages": messages, "count": len(messages),
-            "cursor": state.get(key, since), "more": more}
+    return {"messages": messages, "count": len(messages), "cursor": state.get(key, since), "more": more}
 
 
 @tool("recall", "Semantic Recall", read_only=True, open_world=False)
