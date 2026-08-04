@@ -160,7 +160,18 @@ Migration:
 ### Newsletters (Channels)
 | Tool | Description |
 |------|-------------|
-| `manage_newsletter` | Follow/unfollow/create channels |
+| `manage_newsletter` | Follow, unfollow, or create channels |
+
+### Optional Extensions (Opt-In Extras)
+
+These advanced features are fully optional and gated behind `uv` extras so the default installation remains lightweight with zero heavy dependencies:
+
+| Tool | Opt-In Command | Description |
+|------|----------------|-------------|
+| `transcribe_audio` | `uv sync --extra transcribe` | On-device voice message transcription via `mlx-whisper` (Apple Silicon) |
+| `transcribe_audio_file` | `uv sync --extra transcribe` | Transcribe any local audio file |
+| `recall` | `uv sync --extra recall` | Multilingual natural-language semantic search over message history |
+| `recall_index_status` | `uv sync --extra recall` | Report background embedding indexer status |
 
 ## API Design Philosophy
 
