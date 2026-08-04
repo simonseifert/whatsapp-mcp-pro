@@ -60,3 +60,7 @@ scheduled.db
 store
 /store
 scheduled.db
+
+# Built binaries and local backups
+whatsapp-bridge/whatsapp-bridge
+whatsapp-bridge/whatsapp-bridge.*

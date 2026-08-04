@@ -31,6 +31,7 @@ import (
 type Client struct {
 	*whatsmeow.Client
 	logger waLog.Logger
+	cfg    *config.Config
 
 	// Connection state tracking
 	connMu              sync.RWMutex
@@ -41,6 +42,9 @@ type Client struct {
 
 	// Anti-ban protection
 	antiban *antiban.SendInterceptor
+
+	// Human-like presence handling (offline by default, online only around activity)
+	presence *presenceManager
 
 	// Pairing state
 	pairingMutex      sync.Mutex
@@ -124,9 +128,13 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 	c := &Client{
 		Client:    client,
 		logger:    logger,
+		cfg:       cfg,
 		startedAt: time.Now(),
 		antiban:   antibanInterceptor,
+		presence:  newPresenceManager(cfg.PresenceMode, cfg.PresenceLingerMin, cfg.PresenceLingerMax),
 	}
+
+	logger.Infof("Presence mode: %s (linger %v..%v)", cfg.PresenceMode, cfg.PresenceLingerMin, cfg.PresenceLingerMax)
 
 	// Persist retry receipts across restarts — prevents message dedup failures after crashes.
 	client.UseRetryMessageStore = true

@@ -861,13 +861,19 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             conn.close()
 
 
-def send_message(recipient: str, message: str, mentioned_jids: list[str] | None = None) -> dict[str, Any]:
+def send_message(
+    recipient: str,
+    message: str,
+    mentioned_jids: list[str] | None = None,
+    quoted_message_id: str | None = None,
+) -> dict[str, Any]:
     """Send a WhatsApp message and return structured result with message_id.
 
     Args:
         recipient: WhatsApp JID of the recipient
         message: Text content to send
         mentioned_jids: Optional list of JIDs to mention (e.g. ["5521998593002@s.whatsapp.net"])
+        quoted_message_id: Optional ID of a message to quote/reply to
     """
     try:
         # Validate input
@@ -881,6 +887,8 @@ def send_message(recipient: str, message: str, mentioned_jids: list[str] | None 
         }
         if mentioned_jids:
             payload["mentioned_jids"] = mentioned_jids
+        if quoted_message_id:
+            payload["quoted_message_id"] = quoted_message_id
 
         response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
 
@@ -1567,13 +1575,19 @@ def get_group_info(group_jid: str) -> dict[str, Any]:
         return {"success": False, "group_jid": group_jid, "error": f"Unexpected error: {str(e)}"}
 
 
-def mark_messages_read(chat_jid: str, message_ids: list[str], sender_jid: str | None = None) -> dict[str, Any]:
+def mark_messages_read(
+    chat_jid: str,
+    message_ids: list[str],
+    sender_jid: str | None = None,
+    receipt_type: str | None = None,
+) -> dict[str, Any]:
     """Mark messages as read.
 
     Args:
         chat_jid: The JID of the chat containing the messages
         message_ids: List of message IDs to mark as read
         sender_jid: Optional sender JID (required for group chats)
+        receipt_type: "read" (default) or "played" for voice messages that were listened to
 
     Returns:
         Structured dict with success, chat_jid, message_ids, count, error
@@ -1583,6 +1597,8 @@ def mark_messages_read(chat_jid: str, message_ids: list[str], sender_jid: str | 
         payload = {"chat_jid": chat_jid, "message_ids": message_ids}
         if sender_jid:
             payload["sender_jid"] = sender_jid
+        if receipt_type:
+            payload["receipt_type"] = receipt_type
 
         response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
 

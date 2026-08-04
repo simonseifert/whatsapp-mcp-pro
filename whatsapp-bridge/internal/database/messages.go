@@ -324,6 +324,15 @@ func (store *MessageStore) GetMessageSender(messageID, chatJID string) (sender s
 	return
 }
 
+// GetMessageContentAndSender returns content, sender JID, and is_from_me for a message ID.
+func (store *MessageStore) GetMessageContentAndSender(messageID string) (content string, sender string, isFromMe bool, err error) {
+	err = store.db.QueryRow(
+		"SELECT content, sender, is_from_me FROM messages WHERE id = ? ORDER BY timestamp DESC LIMIT 1",
+		messageID,
+	).Scan(&content, &sender, &isFromMe)
+	return
+}
+
 // GetPreviousMessageTime returns the timestamp of the message sent immediately before the given time in same chat.
 func (store *MessageStore) GetPreviousMessageTime(chatJID string, currentTime time.Time) (time.Time, error) {
 	query := `

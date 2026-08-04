@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,18 @@ type Config struct {
 	// PRESENCE_PING_INTERVAL sets how often to ping when enabled (default 20m; below 25m risks bot fingerprinting)
 	PresencePingEnabled  bool
 	PresencePingInterval time.Duration
+
+	// Human-like presence behaviour
+	// WA_PRESENCE_MODE=human (default) keeps the account offline and only goes
+	// online for a short window around outgoing activity. always_online restores the
+	// legacy "online while connected" behaviour.
+	PresenceMode      string
+	PresenceLingerMin time.Duration // PRESENCE_LINGER_MIN
+	PresenceLingerMax time.Duration // PRESENCE_LINGER_MAX
+
+	// Safety gate: comma-separated list of allowed JIDs/phone numbers (WHATSAPP_ALLOWLIST_JIDS)
+	// If set, outgoing message sends to JIDs/numbers outside this allowlist are rejected.
+	AllowlistJIDs []string
 }
 
 // NewConfig creates a new configuration with default values
@@ -38,6 +51,10 @@ func NewConfig() *Config {
 		// Presence ping defaults — off so the phone keeps receiving push notifications
 		PresencePingEnabled:  false,
 		PresencePingInterval: 20 * time.Minute,
+		// Human-like presence defaults
+		PresenceMode:      "human",
+		PresenceLingerMin: 8 * time.Second,
+		PresenceLingerMax: 15 * time.Second,
 	}
 
 	// Override with environment variables if set
@@ -78,6 +95,45 @@ func NewConfig() *Config {
 	if interval := os.Getenv("PRESENCE_PING_INTERVAL"); interval != "" {
 		if d, err := time.ParseDuration(interval); err == nil && d > 0 {
 			cfg.PresencePingInterval = d
+		}
+	}
+
+	// WA_PRESENCE_MODE is the documented name; the JUNO_ prefixed variant stays readable so an
+	// existing deployment keeps working after the rename.
+	mode := os.Getenv("WA_PRESENCE_MODE")
+	if mode == "" {
+		mode = os.Getenv("JUNO_WA_PRESENCE_MODE")
+	}
+	if mode == "always_online" {
+		cfg.PresenceMode = "always_online"
+	}
+
+	if min := os.Getenv("PRESENCE_LINGER_MIN"); min != "" {
+		if d, err := time.ParseDuration(min); err == nil && d > 0 {
+			cfg.PresenceLingerMin = d
+		}
+	}
+
+	if max := os.Getenv("PRESENCE_LINGER_MAX"); max != "" {
+		if d, err := time.ParseDuration(max); err == nil && d > 0 {
+			cfg.PresenceLingerMax = d
+		}
+	}
+
+	if cfg.PresenceLingerMax < cfg.PresenceLingerMin {
+		cfg.PresenceLingerMax = cfg.PresenceLingerMin
+	}
+
+	allowlist := os.Getenv("WHATSAPP_ALLOWLIST_JIDS")
+	if allowlist == "" {
+		allowlist = os.Getenv("WHATSAPP_JID_ALLOWLIST")
+	}
+	if allowlist != "" {
+		for _, jid := range strings.Split(allowlist, ",") {
+			trimmed := strings.TrimSpace(jid)
+			if trimmed != "" {
+				cfg.AllowlistJIDs = append(cfg.AllowlistJIDs, trimmed)
+			}
 		}
 	}
 

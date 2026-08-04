@@ -275,7 +275,12 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> dic
 
 
 @tool("send", "Send Message", read_only=False)
-def send_message(recipient: str, message: str, mentioned_jids: list[str] | None = None) -> dict[str, Any]:
+def send_message(
+    recipient: str,
+    message: str,
+    mentioned_jids: list[str] | None = None,
+    quoted_message_id: str | None = None,
+) -> dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
 
     Args:
@@ -283,11 +288,12 @@ def send_message(recipient: str, message: str, mentioned_jids: list[str] | None 
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         message: The message text to send
         mentioned_jids: Optional list of JIDs to mention in the message (e.g. ["123456789@s.whatsapp.net"])
+        quoted_message_id: Optional ID of a message to quote or reply to
 
     Returns:
         A dictionary containing success status and a status message
     """
-    return whatsapp_send_message(recipient, message, mentioned_jids)
+    return whatsapp_send_message(recipient, message, mentioned_jids, quoted_message_id)
 
 
 @tool("media", "Send File", read_only=False)
@@ -513,18 +519,25 @@ def get_group_info(group_jid: str) -> dict[str, Any]:
 
 
 @tool("message_admin", "Mark Read", read_only=False)
-def mark_read(chat_jid: str, message_ids: list[str], sender_jid: str | None = None) -> dict[str, Any]:
+def mark_read(
+    chat_jid: str,
+    message_ids: list[str],
+    sender_jid: str | None = None,
+    receipt_type: str | None = None,
+) -> dict[str, Any]:
     """Mark WhatsApp messages as read (sends blue ticks).
 
     Args:
         chat_jid: The JID of the chat containing the messages
         message_ids: List of message IDs to mark as read
         sender_jid: Optional sender JID (required for group chats)
+        receipt_type: "read" (default) or "played" for voice messages that were listened to.
+            "played" turns the sender's microphone icon blue and also sends the read receipt.
 
     Returns:
         A dictionary containing success status, chat_jid, message_ids, and count
     """
-    return whatsapp_mark_messages_read(chat_jid, message_ids, sender_jid)
+    return whatsapp_mark_messages_read(chat_jid, message_ids, sender_jid, receipt_type)
 
 
 # Phase 2: Group Management

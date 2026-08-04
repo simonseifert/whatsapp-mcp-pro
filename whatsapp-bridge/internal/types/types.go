@@ -257,10 +257,11 @@ type WebhookLog struct {
 
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient     string   `json:"recipient"`
-	Message       string   `json:"message"`
-	MediaPath     string   `json:"media_path,omitempty"`
-	MentionedJIDs []string `json:"mentioned_jids,omitempty"`
+	Recipient       string   `json:"recipient"`
+	Message         string   `json:"message"`
+	MediaPath       string   `json:"media_path,omitempty"`
+	MentionedJIDs   []string `json:"mentioned_jids,omitempty"`
+	QuotedMessageID string   `json:"quoted_message_id,omitempty"`
 }
 
 // SendMessageResponse represents the response for the send message API
@@ -303,9 +304,10 @@ type DeleteMessageRequest struct {
 
 // MarkReadRequest represents the request body for marking messages as read
 type MarkReadRequest struct {
-	ChatJID    string   `json:"chat_jid"`
-	MessageIDs []string `json:"message_ids"`
-	SenderJID  string   `json:"sender_jid,omitempty"` // required for group chats
+	ChatJID     string   `json:"chat_jid"`
+	MessageIDs  []string `json:"message_ids"`
+	SenderJID   string   `json:"sender_jid,omitempty"`   // required for group chats
+	ReceiptType string   `json:"receipt_type,omitempty"` // "read" (default) or "played" for voice messages
 }
 
 // Phase 2: Group Management

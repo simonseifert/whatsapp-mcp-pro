@@ -154,17 +154,17 @@ func main() {
 			_, _, discAt, _ := client.ConnectionState()
 			client.MarkConnected()
 			client.Antiban().RecordEvent(antiban.EventConnected)
-			// Only broadcast presence if explicitly enabled. Marking this linked device
-			// "available" tells WhatsApp we're actively reading here, which suppresses push
-			// notifications on the paired phone. Gated by the same flag as the periodic ping
-			// so presence hygiene is a single on/off decision. See config.PresencePingEnabled.
-			if cfg.PresencePingEnabled {
-				if err := client.SetPresence("available"); err != nil {
-					logger.Warnf("Failed to set presence: %v", err)
-				} else {
-					logger.Infof("✓ Presence set to available")
-				}
-			}
+			// Human flow: stay offline by default. Being permanently "available"
+			// is a bot tell. The presence manager goes online only around real
+			// outgoing activity and drops back to unavailable afterwards.
+			//
+			// This replaces our older PresencePingEnabled gate on the initial
+			// SetPresence. It reaches the same goal — do not sit permanently
+			// "available", which both looks like a bot and suppresses push
+			// notifications on the paired phone — but dynamically rather than as a
+			// static on/off. PresenceModeAlwaysOnline restores the old behaviour,
+			// and PresencePingEnabled still governs the periodic ping below.
+			client.ApplyConnectedPresence()
 			logger.Infof("✓ Connected to WhatsApp")
 			go fireConnectionEvent(webhookManager, client, "connected", "")
 
@@ -258,6 +258,7 @@ func main() {
 
 		case *events.Disconnected:
 			client.MarkDisconnected()
+			client.ResetPresenceState()
 			client.Antiban().RecordEvent(antiban.EventDisconnected)
 			logger.Warnf("⚠ Disconnected from WhatsApp - attempting reconnect")
 			go fireConnectionEvent(webhookManager, client, "disconnected", "")
@@ -406,17 +407,23 @@ func main() {
 
 	// Periodic presence ping to keep the WhatsApp session active.
 	// Controlled by PRESENCE_PING_ENABLED and PRESENCE_PING_INTERVAL env vars.
-	// Default: enabled, every 20 minutes. Disable if you don't want to appear online to contacts.
+	// Default: enabled, every 20 minutes. In human presence mode the ping sends
+	// "unavailable" so the session stays alive without showing the account online.
 	if cfg.PresencePingEnabled {
+		pingPresence := "available"
+		if client.PresenceMode() == whatsapp.PresenceModeHuman {
+			pingPresence = "unavailable"
+		}
 		go func() {
 			ticker := time.NewTicker(cfg.PresencePingInterval)
 			defer ticker.Stop()
 			for range ticker.C {
-				if client.IsConnected() {
-					if err := client.SetPresence("available"); err != nil {
+				// Never override an active online window with a keepalive ping.
+				if client.IsConnected() && !client.PresenceOnline() {
+					if err := client.SetPresence(pingPresence); err != nil {
 						logger.Debugf("Presence ping failed: %v", err)
 					} else {
-						logger.Debugf("Presence ping sent (interval: %v)", cfg.PresencePingInterval)
+						logger.Debugf("Presence ping sent as %s (interval: %v)", pingPresence, cfg.PresencePingInterval)
 					}
 				}
 			}
