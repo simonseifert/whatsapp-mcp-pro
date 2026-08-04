@@ -29,6 +29,8 @@ work starts when the message arrives rather than when you remember to look.
 
 Forked from [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) (itself descended from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp)), tracking upstream closely and adding a "pro" layer on top.
 
+Upstream deliberately keeps ML out of its core — its [ARCHITECTURE.md](https://github.com/FelixIsaac/whatsapp-mcp-extended/blob/main/ARCHITECTURE.md) calls the transcription and vector-search work "heavy ML bloat" for a transport layer, and points here for it. That is the division of labour: upstream stays a lean, rock-solid transport primitive; this fork is the batteries-included build. Transcription and recall were contributed upstream from here ([#55](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/55), [#56](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/56)) and live in both.
+
 ## What the pro layer adds
 
 Every WhatsApp MCP gives you send/read tools. These are the parts that aren't
@@ -56,7 +58,7 @@ standard, grouped by what they're for.
 |---|---|
 | **Shared HTTP server** (`serve_http.py`) | One always-on streamable-HTTP MCP serving *all* your Claude sessions. Kills the per-session stdio-spawn pattern that leaks orphaned processes (we learned this the hard way: 82 orphans, 44 GB RAM, one kernel panic). |
 | **Scoped bearer tokens** | A full token for trusted agents, a read-only token for dashboards/automations. Read-only can only call tools annotated `readOnlyHint=true` — enforced server-side. |
-| **Send allowlist** | `SEND_ALLOWED_JIDS` limits which chats the bridge will ever send to. Safety gate for automation. |
+| **Send allowlist** | `WHATSAPP_ALLOWLIST_JIDS` (upstream) / `SEND_ALLOWED_JIDS` (ours, still honoured) limits which chats the bridge will ever send to. Safety gate for automation. |
 | **Anti-ban pacing** | Opt-in humanized send delays and typing simulation. See [Account safety](#account-safety-honestly) — it is a real risk, honestly described. |
 
 Everything upstream ships is here too: toolset gating, HMAC-signed webhooks with
