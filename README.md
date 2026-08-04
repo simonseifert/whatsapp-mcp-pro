@@ -171,18 +171,18 @@ Migration:
 |------|-------------|
 | `manage_newsletter` | Follow, unfollow, or create channels |
 
-### Optional Extensions (Opt-In Extras)
+## Design Philosophy: Lean Transport Primitives
 
-These advanced features are fully optional and gated behind `uv` extras so the default installation remains lightweight with zero heavy dependencies:
+`whatsapp-mcp-extended` is engineered according to the **Unix Philosophy**:
+* **Do One Thing Well:** Be a rock-solid, production-grade transport layer to WhatsApp (socket lifecycle, messaging CRUD, media downloads, reactions, group administration, webhooks, and safety allowlists).
+* **Composable Primitives:** High-level AI features (voice-to-text transcription, vector database semantic recall, LLM summarizers) are kept modular. `whatsapp-mcp-extended` returns clean, raw media file paths (`download_media`) and message arrays (`list_messages`) so AI agents (Claude Code, Cursor, OpenCode, Codex) can chain them with specialized sidecars or plugins.
 
-| Tool | Opt-In Command | Description |
-|------|----------------|-------------|
-| `transcribe_audio` | `uv sync --extra transcribe` | On-device voice message transcription via `mlx-whisper` (Apple Silicon) |
-| `transcribe_audio_file` | `uv sync --extra transcribe` | Transcribe any local audio file |
-| `recall` | `uv sync --extra recall` | Multilingual natural-language semantic search over message history |
-| `recall_index_status` | `uv sync --extra recall` | Report background embedding indexer status |
+### 🔌 Plugins & Extensions
 
-## API Design Philosophy
+Reference plugins and recipes are available in the [`plugins/`](plugins/) directory:
+- **`plugins/transcribe_voice_notes.py`**: Local voice note transcription using `mlx-whisper` or Whisper.
+- **`plugins/semantic_recall.py`**: Multilingual semantic search over message history using `sentence-transformers`.
+- **All-in-One Fork:** Users looking for a pre-packaged ML bundle can check out [@simonseifert's fork](https://github.com/simonseifert/whatsapp-mcp-pro).
 
 Response data prioritizes **complete context with minimal interpretation**. See [METADATA_PHILOSOPHY.md](./docs/METADATA_PHILOSOPHY.md) for:
 

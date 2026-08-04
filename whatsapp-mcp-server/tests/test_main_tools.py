@@ -13,6 +13,7 @@ DEFAULT_TOOLS = {
     "download_media",
     "list_all_contacts",
     "get_contact_context",
+    "get_direct_chat_by_contact",
     "send_reaction",
     "get_group_info",
     "create_poll",
