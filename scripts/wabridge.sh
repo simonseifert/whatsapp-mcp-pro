@@ -70,10 +70,33 @@ else
     latest="-"; age_sec=-1; age_min=-1
 fi
 
+# Ask the bridge whether it is actually on the websocket. Process-alive,
+# port-bound and recent-messages can ALL look fine while `connected` is false:
+# a cold start where DNS was not ready yet leaves the process up and silent.
+# That state cost the M1 49 hours of ingestion on 2026-08-02, and the warmup
+# grace below hid the same thing on the laptop on 2026-08-03 — so this check
+# has to come before the grace, not after it.
+connected="unknown"
+if [[ -f "$REPO/.env" ]]; then
+    # shellcheck disable=SC1091
+    api_key=$(grep -m1 '^API_KEY=' "$REPO/.env" | cut -d= -f2-)
+    resp=$(curl -sf -m 5 -H "X-API-Key: ${api_key}" http://127.0.0.1:8080/api/connection 2>/dev/null)
+    if [[ -n "$resp" ]]; then
+        case "$resp" in
+            *'"connected":true'*)  connected="yes" ;;
+            *'"connected":false'*) connected="no" ;;
+        esac
+    fi
+fi
+
 # Verdict
 if [[ "$listening" != "yes" ]]; then
     color="$RED"; status="● UNHEALTHY"
     note="process alive but port 8080 not bound"; rc=2
+elif [[ "$connected" == "no" ]]; then
+    color="$RED"; status="● DISCONNECTED"
+    note="linked but not on the websocket — ingesting nothing (usually a cold-start DNS stick)"
+    rc=1
 elif (( age_sec < 0 )); then
     color="$YELLOW"; status="● UNKNOWN  "
     note="messages.db not found at $DB"; rc=1
@@ -91,7 +114,7 @@ else
 fi
 
 echo "${color}${status}${RESET}  ${note}"
-echo "${DIM}  pid ${pid:-?}    uptime ${uptime:-?}    port-8080 ${listening}${RESET}"
+echo "${DIM}  pid ${pid:-?}    uptime ${uptime:-?}    port-8080 ${listening}    connected ${connected}${RESET}"
 if (( age_sec >= 0 )); then
     if (( age_min > 0 )); then
         echo "${DIM}  last message ${latest} (${age_min}m ago)${RESET}"
@@ -103,6 +126,10 @@ fi
 # Suggested fix line for non-healthy states
 if (( rc == 1 )) && [[ -n "$pid" ]]; then
     echo "${DIM}  fix: kill ${pid}   (wrapper will relaunch in ~5s)${RESET}"
+fi
+if [[ "$connected" == "no" ]]; then
+    echo "${DIM}  fix: launchctl kickstart -k gui/$(id -u)/com.simon.whatsapp-bridge${RESET}"
+    echo "${DIM}       (com.simon.wa-conn-guard does this automatically every 5 min)${RESET}"
 fi
 
 exit "$rc"
