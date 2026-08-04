@@ -65,6 +65,12 @@ npm run dev
 5. Commit with clear messages
 6. Push and open a PR
 
+### Upstreaming & Downstream Fork Sync
+
+`FelixIsaac/whatsapp-mcp-extended` actively maintains an automated downstream monitoring workflow (`.github/workflows/downstream-check.yml`) that tracks satellite forks. If you maintain a fork and build something useful:
+- Open a PR directly to `main` — we actively review and merge high-quality community PRs!
+- Mention your fork/feature in **Community Acknowledgements** so your work is credited across the ecosystem.
+
 ### PR Guidelines
 
 - Keep PRs focused on a single feature/fix

@@ -29,6 +29,9 @@ Guidelines and architecture overview for AI agents and human contributors workin
    * SQLite operations on `messages.db` and `store/whatsapp.db` must use WAL mode and proper transaction boundaries.
    * Never break LID-to-phone-JID lookup resolution (`<id>@lid` -> phone JID).
 
+4. **Automated Downstream Monitoring:**
+   * `.github/workflows/downstream-check.yml` periodically audits active satellite forks (`simonseifert`, `bitterdev`, `domdomegg`, `Coriatel`, `laudite`, `kasperpeulen`, `slarrain`) for new commits to ensure community fixes are merged upstream.
+
 ---
 
 ## 🧪 Quick Test Commands
