@@ -1,0 +1,37 @@
+# Gitleaks configuration.
+#
+# Why this file exists: the scheduled Security Scan failed on every run while
+# the push-triggered one passed. The scheduled job checks out with
+# fetch-depth: 0 and scans the whole history; the push job only sees the diff.
+# The finding was therefore never in new code — it lives in commit ba8f26f and
+# only a full-history walk reaches it.
+#
+# The finding is a documentation example, not a credential:
+#   docs/WEBHOOK.md:189   "secret_token": "family-secret-123"
+#   RuleID: generic-api-key
+# (whatsapp-bridge/WEBHOOK_README.md carried the same line until 7e883a4
+# deleted it; history still contains it, so it is still scanned.)
+#
+# This allowlist matches on the SECRET VALUE, not on the file path. Excluding
+# the path would mean a real key pasted into WEBHOOK.md is never reported,
+# which defeats the point of running a secrets scanner. Matching the exact
+# placeholder strings keeps every other value in those files in scope.
+#
+# Note for future edits: use the singular [allowlist] table. The plural
+# [[allowlists]] form with `condition` is silently ignored by gitleaks 8.24.3,
+# which is the version gitleaks-action@v2 pins — a config that looks correct
+# will do nothing. Verify with:
+#   gitleaks detect --redact -v --exit-code=2
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholder secrets used in webhook documentation examples"
+regexes = [
+    '''^family-secret-123$''',
+    '''^emergency-secret-456$''',
+    '''^super_secret_key_123$''',
+    '''^optional-secret$''',
+    '''^new-secret$''',
+]
