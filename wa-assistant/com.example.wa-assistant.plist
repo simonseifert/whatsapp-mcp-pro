@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Copy to ~/Library/LaunchAgents/, replace /Users/you and the repo path, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.wa-assistant.plist
+    launchctl kickstart -k gui/$(id -u) com.example.wa-assistant   # restart after edits
+
+  Run it under the GUI domain (not `sudo launchctl`): the session needs your
+  keychain and your login environment to reach the claude binary.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.wa-assistant</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/you/whatsapp-mcp-pro/wa-assistant/wa-assistant.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/you/whatsapp-mcp-pro/wa-assistant</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd does not inherit your shell PATH. Without this the claude
+             binary, ffmpeg and uv are all "not found" and every reply fails. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- Do not respawn instantly in a crash loop. -->
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/wa-assistant.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/wa-assistant.err</string>
+</dict>
+</plist>
