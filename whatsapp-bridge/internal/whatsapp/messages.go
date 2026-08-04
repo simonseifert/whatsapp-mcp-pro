@@ -142,11 +142,13 @@ func validateMediaPath(mediaPath string) error {
 	return fmt.Errorf("media path outside allowed directories")
 }
 
-// SendMessage sends a WhatsApp message with optional media and mentions
-func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string, mentionedJIDs ...[]string) bridgeTypes.SendResult {
+// SendMessage sends a WhatsApp message with optional media, quoted message, and mentions
+func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentionedJIDs ...[]string) bridgeTypes.SendResult {
 	if !c.IsConnected() {
 		return bridgeTypes.SendResult{Success: false, Error: "Not connected to WhatsApp"}
 	}
+
+	c.GoOnlineBriefly()
 
 	// Create JID for recipient
 	var recipientJID types.JID
@@ -161,11 +163,43 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 		if err != nil {
 			return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Error parsing JID: %v", err)}
 		}
+		// WhatsApp now hands out LID addresses ("<id>@lid") for one-to-one chats, and that is what
+		// the chat list stores. Sending straight to a LID is refused by the server with error 463,
+		// so resolve it back to the phone JID we are actually allowed to address. The mapping comes
+		// from the client's own LID store, which is filled while receiving. If there is no mapping
+		// yet, keep the LID: a group JID or an unknown contact must not be silently rewritten.
+		if recipientJID.Server == types.HiddenUserServer {
+			if pn, altErr := c.Store.GetAltJID(context.Background(), recipientJID); altErr == nil && !pn.IsEmpty() {
+				c.logger.Debugf("Resolved LID %s to %s for sending", recipientJID, pn)
+				recipientJID = pn
+			} else if altErr != nil {
+				c.logger.Warnf("Could not resolve LID %s to a phone JID: %v", recipientJID, altErr)
+			}
+		}
 	} else {
 		// Create JID from phone number
 		recipientJID = types.JID{
 			User:   recipient,
 			Server: "s.whatsapp.net", // For personal chats
+		}
+	}
+
+	// Safety gate: Check WHATSAPP_ALLOWLIST_JIDS if configured
+	if c.cfg != nil && len(c.cfg.AllowlistJIDs) > 0 {
+		allowed := false
+		targetStr := recipientJID.String()
+		targetUser := recipientJID.User
+		for _, a := range c.cfg.AllowlistJIDs {
+			if strings.EqualFold(a, targetStr) || strings.EqualFold(a, targetUser) || strings.Contains(targetStr, a) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return bridgeTypes.SendResult{
+				Success: false,
+				Error:   fmt.Sprintf("recipient %s is blocked by WHATSAPP_ALLOWLIST_JIDS safety gate", recipient),
+			}
 		}
 	}
 
@@ -279,6 +313,44 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 		}
 	}
 
+	// Build quoted message context if quotedMessageID is provided
+	if quotedMessageID != "" && messageStore != nil {
+		content, sender, _, err := messageStore.GetMessageContentAndSender(quotedMessageID)
+		if err == nil {
+			contextInfo := &waE2E.ContextInfo{
+				StanzaID:    proto.String(quotedMessageID),
+				Participant: proto.String(sender),
+				QuotedMessage: &waE2E.Message{
+					Conversation: proto.String(content),
+				},
+			}
+
+			if msg.ExtendedTextMessage != nil {
+				if msg.ExtendedTextMessage.ContextInfo == nil {
+					msg.ExtendedTextMessage.ContextInfo = contextInfo
+				} else {
+					msg.ExtendedTextMessage.ContextInfo.StanzaID = proto.String(quotedMessageID)
+					msg.ExtendedTextMessage.ContextInfo.Participant = proto.String(sender)
+					msg.ExtendedTextMessage.ContextInfo.QuotedMessage = contextInfo.QuotedMessage
+				}
+			} else if msg.ImageMessage != nil {
+				msg.ImageMessage.ContextInfo = contextInfo
+			} else if msg.AudioMessage != nil {
+				msg.AudioMessage.ContextInfo = contextInfo
+			} else if msg.VideoMessage != nil {
+				msg.VideoMessage.ContextInfo = contextInfo
+			} else if msg.DocumentMessage != nil {
+				msg.DocumentMessage.ContextInfo = contextInfo
+			} else if msg.Conversation != nil {
+				msg.ExtendedTextMessage = &waE2E.ExtendedTextMessage{
+					Text:        msg.Conversation,
+					ContextInfo: contextInfo,
+				}
+				msg.Conversation = nil
+			}
+		}
+	}
+
 	// Antiban: simulate typing and enforce rate limit / warm-up before sending
 	if c.antiban.Enabled() {
 		_ = c.SendTypingIndicator(recipientJID.String(), "typing")
@@ -338,6 +410,8 @@ func (c *Client) SendReaction(messageStore *database.MessageStore, chatJID, mess
 		return fmt.Errorf("not connected to WhatsApp")
 	}
 
+	c.GoOnlineBriefly()
+
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %v", err)
@@ -383,6 +457,8 @@ func (c *Client) EditMessage(chatJID, messageID, newContent string) error {
 		return fmt.Errorf("invalid chat JID: %v", err)
 	}
 
+	c.GoOnlineBriefly()
+
 	msgID := types.MessageID(messageID)
 
 	newMsg := &waE2E.Message{
@@ -418,6 +494,8 @@ func (c *Client) DeleteMessage(chatJID, messageID, senderJID string) error {
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %v", err)
 	}
+
+	c.GoOnlineBriefly()
 
 	msgID := types.MessageID(messageID)
 
@@ -460,8 +538,23 @@ func (c *Client) GetGroupInfo(groupJID string) (*types.GroupInfo, error) {
 	return c.Client.GetGroupInfo(context.Background(), jid)
 }
 
-// MarkMessagesRead marks messages as read
+// MarkMessagesRead marks messages as read (blue ticks)
 func (c *Client) MarkMessagesRead(chatJID string, messageIDs []string, senderJID string) error {
+	return c.markMessages(chatJID, messageIDs, senderJID, types.ReceiptTypeRead)
+}
+
+// MarkMessagesPlayed marks voice messages (PTT) as played, which turns the
+// microphone icon blue on the sender's side. WhatsApp expects a read receipt
+// before the played receipt, so both are sent in order.
+func (c *Client) MarkMessagesPlayed(chatJID string, messageIDs []string, senderJID string) error {
+	if err := c.markMessages(chatJID, messageIDs, senderJID, types.ReceiptTypeRead); err != nil {
+		return err
+	}
+	return c.markMessages(chatJID, messageIDs, senderJID, types.ReceiptTypePlayed)
+}
+
+// markMessages sends a receipt of the given type for the given message IDs.
+func (c *Client) markMessages(chatJID string, messageIDs []string, senderJID string, receiptType types.ReceiptType) error {
 	if !c.IsConnected() {
 		return fmt.Errorf("not connected to WhatsApp")
 	}
@@ -470,6 +563,8 @@ func (c *Client) MarkMessagesRead(chatJID string, messageIDs []string, senderJID
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %v", err)
 	}
+
+	c.GoOnlineBriefly()
 
 	ids := make([]types.MessageID, len(messageIDs))
 	for i, id := range messageIDs {
@@ -484,7 +579,7 @@ func (c *Client) MarkMessagesRead(chatJID string, messageIDs []string, senderJID
 		}
 	}
 
-	return c.Client.MarkRead(context.Background(), ids, time.Now(), chat, sender)
+	return c.Client.MarkRead(context.Background(), ids, time.Now(), chat, sender, receiptType)
 }
 
 // Phase 2: Group Management
@@ -651,6 +746,8 @@ func (c *Client) CreatePoll(chatJID string, question string, options []string, m
 	if err != nil {
 		return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("invalid chat JID: %v", err)}, err
 	}
+
+	c.GoOnlineBriefly()
 
 	// Determine selectable count based on multiSelect
 	selectableCount := 1
