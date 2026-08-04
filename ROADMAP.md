@@ -1,14 +1,20 @@
 # WhatsApp MCP Extended - Feature Roadmap
 
-> Historical note: this roadmap tracks feature implementation history. As of MCP server `0.2.0`, the default agent-facing MCP surface exposes 26 curated tools, while lean installs can opt into 15 tools via `WHATSAPP_MCP_TOOLSETS=core,send,media`. Several older one-action tools below are now exposed through merged tools such as `get_contact_context`, `manage_nickname`, `manage_group`, `manage_blocklist`, and `manage_newsletter`.
+> **Design Philosophy:** `whatsapp-mcp-extended` is engineered as a **Lean Transport Primitive** for WhatsApp (socket lifecycle, messaging CRUD, media downloads, reactions, group administration, webhooks, and safety allowlists). Heavy ML tasks (transcription, vector search) are kept modular as sidecars or reference recipes in [`plugins/`](plugins/).
 
 ## Project Context
 
 - **Base**: `whatsapp-mcp-extended` (Dockerized, with webhooks)
 - **Core library**: whatsmeow (Go) - WhatsApp Web multi-device API
-- **Status**: Docker support ✅, Webhooks ✅, Contact management ✅
+- **Status**: Docker support ✅, Webhooks ✅, Contact management ✅, Safety Allowlists ✅, Quoted Message Replies ✅
 
-## Current State
+## Current State (v0.3.0+)
+
+### Recently Shipped (v0.3.0)
+- ✅ **Reply/Quote Support:** `send_message` supports optional `quoted_message_id` (Issue #57).
+- ✅ **Security Allowlist Gate:** `WHATSAPP_ALLOWLIST_JIDS` env var in Go bridge (Issue #47).
+- ✅ **Automated Downstream Monitoring:** `.github/workflows/downstream-check.yml` audits satellite forks.
+- ✅ **Plugins & Sidecars Architecture:** Reference recipes in [`plugins/`](plugins/) + [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ### Implemented MCP surface
 - Default toolsets: `all` (26 tools)
