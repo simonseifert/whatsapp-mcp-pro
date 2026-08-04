@@ -142,8 +142,8 @@ func validateMediaPath(mediaPath string) error {
 	return fmt.Errorf("media path outside allowed directories")
 }
 
-// SendMessage sends a WhatsApp message with optional media and mentions
-func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string, mentionedJIDs ...[]string) bridgeTypes.SendResult {
+// SendMessage sends a WhatsApp message with optional media, quoted message, and mentions
+func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentionedJIDs ...[]string) bridgeTypes.SendResult {
 	if !c.IsConnected() {
 		return bridgeTypes.SendResult{Success: false, Error: "Not connected to WhatsApp"}
 	}
@@ -291,6 +291,44 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 			}
 		} else {
 			msg.Conversation = proto.String(message)
+		}
+	}
+
+	// Build quoted message context if quotedMessageID is provided
+	if quotedMessageID != "" && messageStore != nil {
+		content, sender, _, err := messageStore.GetMessageContentAndSender(quotedMessageID)
+		if err == nil {
+			contextInfo := &waE2E.ContextInfo{
+				StanzaID:    proto.String(quotedMessageID),
+				Participant: proto.String(sender),
+				QuotedMessage: &waE2E.Message{
+					Conversation: proto.String(content),
+				},
+			}
+
+			if msg.ExtendedTextMessage != nil {
+				if msg.ExtendedTextMessage.ContextInfo == nil {
+					msg.ExtendedTextMessage.ContextInfo = contextInfo
+				} else {
+					msg.ExtendedTextMessage.ContextInfo.StanzaID = proto.String(quotedMessageID)
+					msg.ExtendedTextMessage.ContextInfo.Participant = proto.String(sender)
+					msg.ExtendedTextMessage.ContextInfo.QuotedMessage = contextInfo.QuotedMessage
+				}
+			} else if msg.ImageMessage != nil {
+				msg.ImageMessage.ContextInfo = contextInfo
+			} else if msg.AudioMessage != nil {
+				msg.AudioMessage.ContextInfo = contextInfo
+			} else if msg.VideoMessage != nil {
+				msg.VideoMessage.ContextInfo = contextInfo
+			} else if msg.DocumentMessage != nil {
+				msg.DocumentMessage.ContextInfo = contextInfo
+			} else if msg.Conversation != nil {
+				msg.ExtendedTextMessage = &waE2E.ExtendedTextMessage{
+					Text:        msg.Conversation,
+					ContextInfo: contextInfo,
+				}
+				msg.Conversation = nil
+			}
 		}
 	}
 

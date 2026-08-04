@@ -257,10 +257,11 @@ type WebhookLog struct {
 
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient     string   `json:"recipient"`
-	Message       string   `json:"message"`
-	MediaPath     string   `json:"media_path,omitempty"`
-	MentionedJIDs []string `json:"mentioned_jids,omitempty"`
+	Recipient       string   `json:"recipient"`
+	Message         string   `json:"message"`
+	MediaPath       string   `json:"media_path,omitempty"`
+	MentionedJIDs   []string `json:"mentioned_jids,omitempty"`
+	QuotedMessageID string   `json:"quoted_message_id,omitempty"`
 }
 
 // SendMessageResponse represents the response for the send message API

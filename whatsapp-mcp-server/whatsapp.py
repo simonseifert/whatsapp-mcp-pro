@@ -862,13 +862,19 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             conn.close()
 
 
-def send_message(recipient: str, message: str, mentioned_jids: list[str] | None = None) -> dict[str, Any]:
+def send_message(
+    recipient: str,
+    message: str,
+    mentioned_jids: list[str] | None = None,
+    quoted_message_id: str | None = None,
+) -> dict[str, Any]:
     """Send a WhatsApp message and return structured result with message_id.
 
     Args:
         recipient: WhatsApp JID of the recipient
         message: Text content to send
         mentioned_jids: Optional list of JIDs to mention (e.g. ["5521998593002@s.whatsapp.net"])
+        quoted_message_id: Optional ID of a message to quote/reply to
     """
     try:
         # Validate input
@@ -882,6 +888,8 @@ def send_message(recipient: str, message: str, mentioned_jids: list[str] | None 
         }
         if mentioned_jids:
             payload["mentioned_jids"] = mentioned_jids
+        if quoted_message_id:
+            payload["quoted_message_id"] = quoted_message_id
 
         response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
 

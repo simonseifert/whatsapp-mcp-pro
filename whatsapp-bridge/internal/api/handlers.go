@@ -52,7 +52,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Presence is handled centrally by the client's presence manager.
-	result := s.client.SendMessage(s.messageStore, req.Recipient, req.Message, req.MediaPath, req.MentionedJIDs)
+	result := s.client.SendMessage(s.messageStore, req.Recipient, req.Message, req.MediaPath, req.QuotedMessageID, req.MentionedJIDs)
 
 	// Set response headers
 	w.Header().Set("Content-Type", "application/json")
