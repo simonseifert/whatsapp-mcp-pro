@@ -32,6 +32,7 @@ from typing import Any
 
 from .utils import MESSAGES_DB_PATH, logger
 
+MAX_RECALL_LIMIT = 200  # a semantic search returning more than this is a scan, not a search
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 EMBED_DIM = 384
 INDEX_BATCH_SIZE = 64
@@ -188,12 +189,13 @@ def _index_pending() -> None:
                 FROM messages m
                 LEFT JOIN message_embeddings e
                     ON e.message_id = m.id AND e.chat_jid = m.chat_jid
+                   AND e.model = ?
                 WHERE m.content IS NOT NULL
                   AND TRIM(m.content) != ''
                   AND e.message_id IS NULL
                 LIMIT ?
                 """,
-                (INDEX_BATCH_SIZE,),
+                (MODEL_NAME, INDEX_BATCH_SIZE),
             ).fetchall()
             if not rows:
                 break
@@ -247,9 +249,11 @@ def _ensure_indexer_running() -> None:
                 SELECT COUNT(*) FROM messages m
                 LEFT JOIN message_embeddings e
                     ON e.message_id = m.id AND e.chat_jid = m.chat_jid
+                   AND e.model = ?
                 WHERE m.content IS NOT NULL AND TRIM(m.content) != ''
                   AND e.message_id IS NULL
-                """
+                """,
+                (MODEL_NAME,),
             ).fetchone()
             _indexer_state["pending"] = row[0] if row else 0
             conn.close()
@@ -269,7 +273,7 @@ def index_status() -> dict[str, Any]:
     try:
         conn = _connect()
         _ensure_table(conn)
-        embedded = conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0]
+        embedded = conn.execute("SELECT COUNT(*) FROM message_embeddings WHERE model = ?", (MODEL_NAME,)).fetchone()[0]
         total = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE content IS NOT NULL AND TRIM(content) != ''"
         ).fetchone()[0]
@@ -309,6 +313,13 @@ def recall(
         Dict with `results` (list of matches with similarity score) and
         `index_status` (so the caller can see if indexing is still in flight).
     """
+
+    # np.argsort(...)[:limit] silently does the wrong thing for non-positive
+    # limits: -1 returns everything except the last row, 0 returns nothing.
+    # Reject rather than surprise the caller.
+    if limit is None or limit < 1:
+        return {"error": "limit must be a positive integer"}
+    limit = min(limit, MAX_RECALL_LIMIT)
     import numpy as np
 
     _ensure_indexer_running()
@@ -325,10 +336,12 @@ def recall(
         JOIN messages m
             ON m.id = e.message_id AND m.chat_jid = e.chat_jid
         LEFT JOIN chats c ON c.jid = m.chat_jid
-        WHERE 1=1
+        WHERE e.model = ?
         """
     ]
-    params: list[Any] = []
+    # Seeded with the model: embeddings from a different model have a different
+    # dimensionality, and np.stack over a mixed set raises rather than degrades.
+    params: list[Any] = [MODEL_NAME]
     if chat_jid:
         sql_parts.append(" AND m.chat_jid = ?")
         params.append(chat_jid)
