@@ -51,6 +51,12 @@ Thumbs.db
 credentials.json
 secrets.yaml
 secrets.yml
+# .env is ignored, but timestamped copies made during merges/upgrades were not,
+# leaving a file of real API keys one `git add -A` from being committed.
+.env.*
+!.env.example
+!.env.*.example
+
 .webhook-secret
 scheduled.db
 
