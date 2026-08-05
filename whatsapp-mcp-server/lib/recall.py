@@ -323,7 +323,15 @@ def recall(
     import numpy as np
 
     _ensure_indexer_running()
-    qvec = _embed([query])[0]
+    # recall is an opt-in extra. Without sentence-transformers installed this
+    # raises ImportError, which would surface through MCP as a traceback rather
+    # than something a caller can act on.
+    try:
+        qvec = _embed([query])[0]
+    except ImportError as exc:
+        return {"error": f"recall needs the optional extra: {exc}. Install with: uv sync --extra pro"}
+    except Exception as exc:  # noqa: BLE001 - an embedding failure is a result, not a crash
+        return {"error": f"could not embed the query: {exc}"}
 
     conn = _connect()
     _ensure_table(conn)
