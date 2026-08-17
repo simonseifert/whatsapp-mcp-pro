@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/subtle"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -19,6 +20,56 @@ var (
 	rateLimit       = 100 // requests per window
 	rateLimitWindow = time.Minute
 )
+
+// clientIP extracts the caller's IP address, stripping the ephemeral source
+// port that net/http bakes into RemoteAddr (e.g. "127.0.0.1:54321").
+//
+// Keying the rate-limit maps on the raw RemoteAddr was an unbounded-cache
+// leak: every request from a client that opens a fresh TCP connection (which
+// includes every call the Python MCP server makes via bare `requests.get`/
+// `requests.post`, since those don't pool connections the way a `Session`
+// does) gets a new ephemeral port and therefore a brand-new map entry that
+// was never evicted. On a bridge fielding tens of thousands of MCP tool
+// calls a day, that grows the process memory without bound. Stripping the
+// port collapses those back down to the small number of real client IPs
+// (almost always just 127.0.0.1) and restores the rate limiter's actual
+// intent — it was never really limiting anything per-connection.
+func clientIP(r *http.Request) string {
+	ip := r.RemoteAddr
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		ip = strings.TrimSpace(strings.Split(forwarded, ",")[0])
+	}
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		return host
+	}
+	return ip
+}
+
+// startRateLimitJanitor prunes stale rate-limit map entries on a timer.
+// Defense in depth alongside clientIP: even a small, bounded set of real
+// client IPs would otherwise sit in these maps forever once a window has
+// passed with no further requests from that IP.
+func startRateLimitJanitor() {
+	go func() {
+		ticker := time.NewTicker(rateLimitWindow)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-rateLimitWindow)
+			rateLimitMu.Lock()
+			for ip, window := range requestWindows {
+				if window.Before(cutoff) {
+					delete(requestWindows, ip)
+					delete(requestCounts, ip)
+				}
+			}
+			rateLimitMu.Unlock()
+		}
+	}()
+}
+
+func init() {
+	startRateLimitJanitor()
+}
 
 // getAllowedOrigins returns the list of allowed CORS origins
 func getAllowedOrigins() map[string]bool {
@@ -51,10 +102,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Get client IP
-		ip := r.RemoteAddr
-		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			ip = strings.Split(forwarded, ",")[0]
-		}
+		ip := clientIP(r)
 
 		// Check X-API-Key header using constant-time comparison to prevent timing attacks
 		apiKey := r.Header.Get("X-API-Key")
@@ -73,10 +121,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Get client IP
-		ip := r.RemoteAddr
-		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			ip = strings.Split(forwarded, ",")[0]
-		}
+		ip := clientIP(r)
 
 		rateLimitMu.Lock()
 		now := time.Now()
