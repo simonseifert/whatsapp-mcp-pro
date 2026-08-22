@@ -10,6 +10,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
 
+from lib.identity import directory_stats as whatsapp_directory_stats
+from lib.identity import get_identity as whatsapp_get_identity
+from lib.identity import list_identities as whatsapp_list_identities
 from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
 
 # Phase 2: Group Management
@@ -106,6 +109,8 @@ BlocklistAction = Literal["block", "unblock"]
 NewsletterAction = Literal["follow", "unfollow", "create"]
 PresenceState = Literal["available", "unavailable"]
 ChatSort = Literal["last_active", "name"]
+DirectoryKind = Literal["user", "group", "newsletter", "broadcast"]
+DirectorySort = Literal["last_active", "name", "messages"]
 
 
 def _tool_enabled(name: str, toolset: str) -> bool:
@@ -169,6 +174,77 @@ def search_contacts(query: str) -> list[dict[str, Any]]:
         - Use `get_contact_context` for detailed contact info, chats, or last interaction
     """
     return whatsapp_search_contacts(query)
+
+
+@tool("core", "Look Up Identity", read_only=True, idempotent=True, open_world=False)
+def lookup_identity(value: str) -> dict[str, Any]:
+    """Resolve any WhatsApp handle to a single identity record.
+
+    Accepts a JID, a hidden @lid, a phone JID, a bare phone number, or an exact
+    display name, and returns the merged record: every known name, both JID
+    forms, the phone number, whether they are in the address book, and how much
+    history exists with them.
+
+    Use this before acting on a JID taken from a message or a group — WhatsApp
+    hands out the same person under two identities, and this is what tells you
+    they are the same person and which JID the rest of the store keys on.
+
+    Args:
+        value: JID, LID, phone number, or exact display name.
+    """
+    identity = whatsapp_get_identity(value)
+    if identity is None:
+        stats = whatsapp_directory_stats()
+        if not stats.get("available"):
+            return {
+                "found": False,
+                "error": "Identity directory is not populated yet.",
+                "reason": stats.get("reason"),
+                "hint": "The bridge fills it on connect; check that the bridge is running and connected.",
+            }
+        return {"found": False, "query": value}
+    return {"found": True, **identity.to_dict()}
+
+
+@tool("core", "Search Directory", read_only=True, idempotent=True, open_world=False)
+def search_directory(
+    query: str | None = None,
+    kind: DirectoryKind | None = None,
+    has_chat: bool | None = None,
+    is_contact: bool | None = None,
+    sort_by: DirectorySort = "last_active",
+    limit: int = 50,
+    page: int = 0,
+) -> dict[str, Any]:
+    """Search the unified directory of people, groups, newsletters and broadcasts.
+
+    One row per identity, with LID and phone JID already merged, so a person
+    appears once rather than once per identity. `query` matches any name, any
+    JID form and the phone number at once.
+
+    Args:
+        query: Fragment of a name, JID, LID or phone number. Omit to list everything.
+        kind: Restrict to user, group, newsletter or broadcast.
+        has_chat: True for identities we have a conversation with.
+        is_contact: True for identities in the phone's address book.
+        sort_by: last_active (default), name, or messages.
+        limit: Maximum rows to return (default 50).
+        page: Zero-based page number.
+    """
+    matches = whatsapp_list_identities(
+        query=query,
+        kind=kind,
+        has_chat=has_chat,
+        is_contact=is_contact,
+        sort_by=sort_by,
+        limit=limit,
+        page=page,
+    )
+    return {
+        "count": len(matches),
+        "page": page,
+        "identities": [identity.to_dict() for identity in matches],
+    }
 
 
 @tool("core", "List Messages", read_only=True, idempotent=True, open_world=False)
@@ -245,8 +321,8 @@ def list_chats(
 
 
 @tool("core", "Get Chat", read_only=True, idempotent=True, open_world=False)
-def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]:
-    """Get WhatsApp chat metadata by JID.
+def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any] | None:
+    """Get WhatsApp chat metadata by JID. Returns null when no such chat exists.
 
     Args:
         chat_jid: The JID of the chat to retrieve
@@ -271,7 +347,13 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> dic
         - Useful after finding a message via search to see full context
     """
     context = whatsapp_get_message_context(message_id, before, after)
-    return context
+    # MessageContext is a dataclass of Message dataclasses; structured output
+    # validation only accepts plain dicts, so convert the whole tree.
+    return {
+        "message": context.message.to_dict(),
+        "before": [m.to_dict() for m in context.before],
+        "after": [m.to_dict() for m in context.after],
+    }
 
 
 @tool("send", "Send Message", read_only=False)
@@ -297,18 +379,35 @@ def send_message(
 
 
 @tool("media", "Send File", read_only=False)
-def send_file(recipient: str, media_path: str) -> dict[str, Any]:
+def send_file(
+    recipient: str,
+    media_path: str | None = None,
+    file_content_base64: str | None = None,
+    filename: str | None = None,
+) -> dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
+
+    Provide the file either as a path on the server, or inline as base64.
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
-        media_path: The absolute path to the media file to send (image, video, document)
+        media_path: The absolute path to the media file to send (image, video, document).
+                 This is a path on the *server*, so it only works for files already there.
+        file_content_base64: The file's bytes, base64-encoded. Use this for a local file —
+                 the server cannot read your filesystem. Requires filename.
+        filename: Name for the file, including extension (e.g. "screenshot.png"). Required
+                 with file_content_base64; the extension determines how WhatsApp shows it.
 
     Returns:
         A dictionary containing success status and a status message
+
+    Hints:
+        - Exactly one of media_path or file_content_base64 is required
+        - To send an image you just created locally, base64-encode it and pass
+          file_content_base64 with a filename
     """
-    return whatsapp_send_file(recipient, media_path)
+    return whatsapp_send_file(recipient, media_path, file_content_base64, filename)
 
 
 @tool("media", "Send Audio Message", read_only=False)
@@ -373,7 +472,7 @@ def list_all_contacts(limit: int = 100) -> list[dict[str, Any]]:
     Returns:
         List of contact dicts with jid, phone_number, name, first_name, full_name, push_name, business_name, nickname
     """
-    return whatsapp_list_all_contacts(limit)
+    return [contact.to_dict() for contact in whatsapp_list_all_contacts(limit)]
 
 
 @tool(
@@ -399,8 +498,9 @@ def get_contact_context(
     if not contact:
         contact = whatsapp_get_contact_by_phone(identifier)
 
-    jid = contact.get("jid") if contact else identifier
-    result: dict[str, Any] = {"contact": contact}
+    contact_dict = contact.to_dict() if contact else None
+    jid = contact_dict["jid"] if contact_dict else identifier
+    result: dict[str, Any] = {"contact": contact_dict}
 
     if include_chats:
         result["chats"] = whatsapp_get_contact_chats(jid, limit, page)
@@ -784,6 +884,12 @@ def resource_status() -> str:
     return json.dumps(data)
 
 
+@mcp.resource("whatsapp://directory")
+def resource_directory() -> str:
+    """Identity directory coverage — totals, how many LIDs are resolved to phone numbers."""
+    return json.dumps(whatsapp_directory_stats())
+
+
 @mcp.resource("whatsapp://sync-status")
 def resource_sync_status() -> str:
     """Bridge sync statistics — message/chat counts, DB size, last sync time."""
@@ -824,7 +930,10 @@ def transcribe_audio(
     return result
 
 
-@tool("audio", "Transcribe Audio File", read_only=True, open_world=False)
+# Not read_only: it accepts an arbitrary filesystem path and, on the groq
+# backend, uploads those bytes to an external API. A readonly token should not
+# carry generic read-any-file-and-exfiltrate capability.
+@tool("audio", "Transcribe Audio File", read_only=False, open_world=True)
 def transcribe_audio_file(
     file_path: str,
     language: str | None = None,
@@ -849,7 +958,10 @@ from lib.recall import index_status as _recall_index_status  # noqa: E402
 from lib.recall import recall as _recall  # noqa: E402
 
 
-@tool("inbox", "Check Inbox", read_only=True, idempotent=False, open_world=False)
+# Not read_only: mark_seen advances the shared inbox cursor, i.e. it consumes
+# messages other clients would otherwise see. A readonly bearer token must not
+# be able to do that.
+@tool("inbox", "Check Inbox", read_only=False, idempotent=False, open_world=False)
 def check_inbox(
     chat_jid: str | None = None,
     limit: int = 30,
