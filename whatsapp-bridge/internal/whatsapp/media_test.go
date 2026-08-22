@@ -1,6 +1,8 @@
 package whatsapp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -155,5 +157,37 @@ func TestValidateMediaPathHonorsEnvAllowlist(t *testing.T) {
 	t.Setenv("MEDIA_ALLOWED_DIRS", "")
 	if err := validateMediaPath("/home/alice/Code/pic.png"); err == nil {
 		t.Error("path accepted after env allowlist cleared, want error")
+	}
+}
+
+func TestValidateMediaPathBlocksSymlinkEscape(t *testing.T) {
+	// A symlink inside an allowed dir pointing outside it must not pass — the
+	// bridge would otherwise read the target and send it.
+	tmp := t.TempDir()
+	t.Setenv("MEDIA_ALLOWED_DIRS", tmp)
+
+	// Target must be outside every allowed dir. /tmp is a default allow-root, so
+	// t.TempDir() (which lives under /tmp) would be legitimately allowed; use a
+	// stable read-only file outside it.
+	secret := "/etc/hostname"
+	if _, err := os.Stat(secret); err != nil {
+		t.Skipf("%s unavailable: %v", secret, err)
+	}
+	link := filepath.Join(tmp, "innocent.txt")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+
+	if err := validateMediaPath(link); err == nil {
+		t.Error("symlink escaping the allowed dir was accepted, want error")
+	}
+
+	// A real file inside the allowed dir still works.
+	real := filepath.Join(tmp, "ok.jpg")
+	if err := os.WriteFile(real, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write real: %v", err)
+	}
+	if err := validateMediaPath(real); err != nil {
+		t.Errorf("real in-dir file rejected: %v", err)
 	}
 }
