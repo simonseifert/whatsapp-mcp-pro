@@ -98,7 +98,7 @@ def find_claude_pane(proj: str):
             continue
         pane, pane_pid, path = parts
         try:
-            if os.path.realpath(path) != target:
+            if os.path.realpath(path).lower() != target.lower():
                 continue
             if _runs_claude(int(pane_pid), kids, cmd):
                 return pane
@@ -249,7 +249,7 @@ def find_idle_pane(proj: str):
             continue
         pane, pane_pid, path = parts
         try:
-            if os.path.realpath(path) != target:
+            if os.path.realpath(path).lower() != target.lower():
                 continue
             if not _runs_claude(int(pane_pid), kids, cmd):
                 return pane          # right directory, nothing running in it
