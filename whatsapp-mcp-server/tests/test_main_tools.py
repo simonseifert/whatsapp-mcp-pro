@@ -3,6 +3,8 @@ from pathlib import Path
 
 DEFAULT_TOOLS = {
     "search_contacts",
+    "lookup_identity",
+    "search_directory",
     "list_messages",
     "list_chats",
     "get_chat",
