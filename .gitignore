@@ -70,3 +70,6 @@ scheduled.db
 # Built binaries and local backups
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-bridge.*
+
+# Compiled macOS STT helper (build artifact, arm64)
+wa-assistant/speech-transcribe
