@@ -36,8 +36,15 @@ var (
 // intent — it was never really limiting anything per-connection.
 func clientIP(r *http.Request) string {
 	ip := r.RemoteAddr
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		ip = strings.TrimSpace(strings.Split(forwarded, ",")[0])
+	// X-Forwarded-For is client-supplied and trivially spoofable: honoring it
+	// unconditionally lets a caller mint a fresh rate-limit bucket per request
+	// (unbounded brute-force headroom) and forge the IP in the auth-failure
+	// audit log. Only honor it when the operator says a trusted proxy is in
+	// front of the bridge.
+	if os.Getenv("TRUST_PROXY_HEADERS") == "true" {
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			ip = strings.TrimSpace(strings.Split(forwarded, ",")[0])
+		}
 	}
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		return host
@@ -74,10 +81,10 @@ func init() {
 // getAllowedOrigins returns the list of allowed CORS origins
 func getAllowedOrigins() map[string]bool {
 	origins := map[string]bool{
-		"http://localhost:8089":   true, // Webhook UI (localhost)
-		"http://localhost:8090":   true, // Pairing UI (localhost)
-		"http://127.0.0.1:8089":  true, // Webhook UI (IP — browsers use IP when accessed via 127.0.0.1)
-		"http://127.0.0.1:8090":  true, // Pairing UI (IP)
+		"http://localhost:8089": true, // Webhook UI (localhost)
+		"http://localhost:8090": true, // Pairing UI (localhost)
+		"http://127.0.0.1:8089": true, // Webhook UI (IP — browsers use IP when accessed via 127.0.0.1)
+		"http://127.0.0.1:8090": true, // Pairing UI (IP)
 	}
 
 	// Allow additional origins from env var (comma-separated)

@@ -29,7 +29,7 @@ func (c *Client) GetChatName(messageStore *database.MessageStore, jid types.JID,
 	err := messageStore.GetDB().QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
 	if err == nil && existingName != "" && !isPhoneNumber(existingName) {
 		// Chat exists with a real name, use that
-		c.logger.Infof("Using existing chat name for %s: %s", chatJID, existingName)
+		c.logger.Debugf("Using existing chat name for %s: %s", chatJID, existingName)
 		return existingName
 	}
 
@@ -82,7 +82,7 @@ func (c *Client) GetChatName(messageStore *database.MessageStore, jid types.JID,
 			}
 		}
 
-		c.logger.Infof("Using group name: %s", name)
+		c.logger.Debugf("Using group name: %s", name)
 	} else {
 		// This is an individual contact
 		c.logger.Infof("Getting name for contact: %s", chatJID)
@@ -110,7 +110,7 @@ func (c *Client) GetChatName(messageStore *database.MessageStore, jid types.JID,
 			}
 		}
 
-		c.logger.Infof("Using contact name: %s", name)
+		c.logger.Debugf("Using contact name: %s", name)
 	}
 
 	return name
@@ -262,7 +262,7 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 				}
 
 				// Log the message content for debugging
-				c.logger.Infof("Message content: %v, Media Type: %v", content, mediaType)
+				c.logger.Debugf("Message content: %v, Media Type: %v", content, mediaType)
 
 				// Skip messages with no content and no media
 				if content == "" && mediaType == "" {
@@ -310,10 +310,10 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 					syncedCount++
 					// Log successful message storage
 					if mediaType != "" {
-						c.logger.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",
+						c.logger.Debugf("Stored message: [%s] %s -> %s: [%s: %s] %s",
 							timestamp.Format("2006-01-02 15:04:05"), sender, chatJID, mediaType, filename, content)
 					} else {
-						c.logger.Infof("Stored message: [%s] %s -> %s: %s",
+						c.logger.Debugf("Stored message: [%s] %s -> %s: %s",
 							timestamp.Format("2006-01-02 15:04:05"), sender, chatJID, content)
 					}
 				}
