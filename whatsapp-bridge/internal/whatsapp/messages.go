@@ -97,12 +97,30 @@ func extractMentionsFromText(text string) []string {
 	return jids
 }
 
-// allowedMediaDirs contains directories allowed for media access
-var allowedMediaDirs = []string{
+// defaultMediaDirs are the directories media may be read from when
+// MEDIA_ALLOWED_DIRS is unset: the Docker layout, /tmp (where the MCP server
+// stages base64 uploads), and the native data dir.
+var defaultMediaDirs = []string{
 	"/app/media",
 	"/app/store",
 	"/app/whatsapp-bridge/store",
 	"/tmp",
+}
+
+// allowedMediaDirs resolves the media allowlist. MEDIA_ALLOWED_DIRS is a
+// comma-separated list of extra directories appended to the defaults, so a
+// native install can say MEDIA_ALLOWED_DIRS=/home/alice and let a local agent
+// send files straight from its working tree. Resolved per call rather than
+// cached: it is not hot (only send/download touch it), and this keeps tests
+// and env changes honest.
+func allowedMediaDirs() []string {
+	dirs := append([]string{}, defaultMediaDirs...)
+	for _, extra := range strings.Split(os.Getenv("MEDIA_ALLOWED_DIRS"), ",") {
+		if trimmed := strings.TrimSpace(extra); trimmed != "" {
+			dirs = append(dirs, trimmed)
+		}
+	}
+	return dirs
 }
 
 // validateMediaPath checks if the path is within allowed directories
@@ -128,13 +146,15 @@ func validateMediaPath(mediaPath string) error {
 		return nil
 	}
 
-	// Check if path is within allowed directories
-	for _, allowedDir := range allowedMediaDirs {
+	// Check if path is within allowed directories. The trailing separator
+	// matters: a bare HasPrefix would accept a *sibling* like /tmp-evil as
+	// being inside /tmp.
+	for _, allowedDir := range allowedMediaDirs() {
 		allowedAbs, err := filepath.Abs(allowedDir)
 		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(absPath, allowedAbs) {
+		if absPath == allowedAbs || strings.HasPrefix(absPath, allowedAbs+string(filepath.Separator)) {
 			return nil
 		}
 	}
