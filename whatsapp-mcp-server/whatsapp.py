@@ -240,7 +240,7 @@ def get_sender_name(sender_jid: str) -> str:
                 """
                 SELECT name
                 FROM chats
-                WHERE jid LIKE ? ESCAPE '\'
+                WHERE jid LIKE ? ESCAPE '\\'
                 LIMIT 1
             """,
                 (f"%{_like_escape(phone_part)}%",),
@@ -932,7 +932,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             FROM chats c
             LEFT JOIN messages m ON c.jid = m.chat_jid
                 AND c.last_message_time = m.timestamp
-            WHERE c.jid LIKE ? ESCAPE '\' AND c.jid NOT LIKE '%@g.us'
+            WHERE c.jid LIKE ? ESCAPE '\\' AND c.jid NOT LIKE '%@g.us'
             LIMIT 1
         """,
             (f"%{_like_escape(sender_phone_number)}%",),
@@ -1307,7 +1307,7 @@ def get_contact_by_phone(phone_number: str) -> Contact | None:
             """
             SELECT jid, name
             FROM chats
-            WHERE jid LIKE ? ESCAPE '\' AND jid NOT LIKE '%@g.us'
+            WHERE jid LIKE ? ESCAPE '\\' AND jid NOT LIKE '%@g.us'
             LIMIT 1
         """,
             (f"%{_like_escape(phone_number)}%",),

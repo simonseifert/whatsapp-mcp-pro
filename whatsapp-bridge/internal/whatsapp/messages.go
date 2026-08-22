@@ -146,6 +146,16 @@ func validateMediaPath(mediaPath string) error {
 		return nil
 	}
 
+	// Resolve symlinks before the containment check: a symlink placed inside an
+	// allowed dir (e.g. /tmp/x -> /etc/passwd) would otherwise pass on its
+	// lexical path and then be read and sent. EvalSymlinks needs the file to
+	// exist, which it must for a send anyway; fall back to absPath if it does
+	// not resolve (a nonexistent file fails later at read).
+	realPath := absPath
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+		realPath = resolved
+	}
+
 	// Check if path is within allowed directories. The trailing separator
 	// matters: a bare HasPrefix would accept a *sibling* like /tmp-evil as
 	// being inside /tmp.
@@ -154,7 +164,11 @@ func validateMediaPath(mediaPath string) error {
 		if err != nil {
 			continue
 		}
-		if absPath == allowedAbs || strings.HasPrefix(absPath, allowedAbs+string(filepath.Separator)) {
+		// Resolve the allowed dir too, so a symlinked allow-root still matches.
+		if resolved, err := filepath.EvalSymlinks(allowedAbs); err == nil {
+			allowedAbs = resolved
+		}
+		if realPath == allowedAbs || strings.HasPrefix(realPath, allowedAbs+string(filepath.Separator)) {
 			return nil
 		}
 	}

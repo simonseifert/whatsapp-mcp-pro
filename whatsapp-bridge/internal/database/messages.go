@@ -107,9 +107,13 @@ func (store *MessageStore) GetChatCount() (int, error) {
 	return count, err
 }
 
-// GetChats gets all chats
+// GetChats gets all chats. Chats folded into another identity by MergeChat are
+// excluded: their messages now live under the twin, so returning the stale
+// breadcrumb row would surface a ghost duplicate (empty) chat to /api/chats and
+// the reconnect backfill. The column arrived with migration 002; COALESCE keeps
+// this working against an un-migrated store.
 func (store *MessageStore) GetChats() (map[string]time.Time, error) {
-	rows, err := store.db.Query("SELECT jid, last_message_time FROM chats ORDER BY last_message_time DESC")
+	rows, err := store.db.Query("SELECT jid, last_message_time FROM chats WHERE COALESCE(merged_into, '') = '' ORDER BY last_message_time DESC")
 	if err != nil {
 		return nil, err
 	}

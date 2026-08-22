@@ -16,7 +16,13 @@
 -- Set when a chat has been folded into another identity's chat (a LID chat into
 -- its phone-JID twin). The row is kept rather than deleted so an old LID still
 -- resolves. Readers listing chats should skip rows where this is set.
-
+--
+-- NOTE: SQLite has no "ADD COLUMN IF NOT EXISTS", so re-running this file on a
+-- store that already has the column errors with "duplicate column name". That
+-- is harmless — the bridge's own startup migration path (runMigrations in
+-- internal/database/store.go) swallows that specific error, so live startup is
+-- always idempotent. Only a manual re-run of this .sql will surface it; skip
+-- this statement if the column already exists.
 ALTER TABLE chats ADD COLUMN merged_into TEXT;
 
 -- ============================================================================
