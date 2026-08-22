@@ -34,6 +34,13 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
+	// The identity directory carries its own indexes, so it is built separately
+	// from the plain CREATE TABLE block above.
+	if err = createIdentityTable(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to create identity table: %v", err)
+	}
+
 	// Run migrations for existing databases
 	if err = runMigrations(db); err != nil {
 		db.Close()
@@ -97,6 +104,12 @@ func runMigrations(db *sql.DB) error {
 			name: "direct_path",
 			sql:  `ALTER TABLE messages ADD COLUMN direct_path TEXT`,
 		},
+		{
+			// Set when a chat has been folded into another identity's chat; see
+			// MessageStore.MergeChat. Readers should skip rows where it is set.
+			name: "merged_into",
+			sql:  `ALTER TABLE chats ADD COLUMN merged_into TEXT`,
+		},
 	}
 
 	for _, m := range migrations {
@@ -115,7 +128,8 @@ func createTables(db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS chats (
 			jid TEXT PRIMARY KEY,
 			name TEXT,
-			last_message_time TIMESTAMP
+			last_message_time TIMESTAMP,
+			merged_into TEXT
 		);
 
 		CREATE TABLE IF NOT EXISTS messages (
