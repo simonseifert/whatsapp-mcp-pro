@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -29,6 +30,20 @@ func NewDeliveryService(messageStore *database.MessageStore, logger waLog.Logger
 		logger:       logger,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+			// The SSRF check in ValidateWebhookURL runs when a webhook is
+			// *stored*. Without re-checking each redirect hop, a stored-safe
+			// endpoint can 302 the delivery into a private address (cloud
+			// metadata, localhost services) and the response body lands in
+			// webhook_logs, readable over the API. Same check, later moment.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("too many redirects")
+				}
+				if err := ValidateWebhookURL(req.URL.String()); err != nil {
+					return fmt.Errorf("redirect blocked: %w", err)
+				}
+				return nil
+			},
 		},
 	}
 }
@@ -40,6 +55,13 @@ func (ds *DeliveryService) DeliverWebhook(config *types.WebhookConfig, payload *
 
 	if _, err := json.Marshal(payload); err != nil {
 		ds.logger.Errorf("Failed to marshal webhook payload: %v", err)
+		return
+	}
+
+	// Re-validate at delivery time: the URL was checked when stored, but DNS
+	// can be repointed at a private address between then and now (rebinding).
+	if err := ValidateWebhookURL(config.WebhookURL); err != nil {
+		ds.logger.Warnf("Webhook %s delivery blocked: %v", config.Name, err)
 		return
 	}
 

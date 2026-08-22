@@ -136,10 +136,14 @@ if __name__ == "__main__":
                 rpc = json.loads(body)
             except Exception:
                 rpc = {}
+            # params can legally be null or a list in JSON-RPC; .get on those
+            # raises and turned a malformed request into a 500. Treat any
+            # non-dict params as "not a readonly tool" and reject cleanly.
+            params = rpc.get("params") if isinstance(rpc, dict) else None
             if (
                 isinstance(rpc, dict)
                 and rpc.get("method") == "tools/call"
-                and rpc.get("params", {}).get("name") not in readonly_tools
+                and (not isinstance(params, dict) or params.get("name") not in readonly_tools)
             ):
                 return await self._reply(
                     send,

@@ -1,7 +1,11 @@
+import base64
+import binascii
 import json
 import os
 import os.path
+import shutil
 import sqlite3
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +33,7 @@ except ImportError:
 
 import audio
 from lib.bridge import _get_headers
+from lib.identity import Identity, directory_available, get_identity, list_identities
 from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, logger
 
 # Use environment variable for bridge host, default to localhost:8080 for development
@@ -38,6 +43,13 @@ if ":" not in _bridge_host:
     _bridge_host = f"{_bridge_host}:8080"
 BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
+
+# Where base64 uploads are staged for the bridge to read. Must stay one of the
+# directories allowed by validateMediaPath in the Go bridge
+# (whatsapp-bridge/internal/whatsapp/messages.go); /tmp is the only one of those
+# not tied to a particular deployment layout. Literal rather than
+# tempfile.gettempdir(), since the allowlist names that exact path.
+MEDIA_TEMP_DIR = "/tmp"
 
 
 @dataclass
@@ -133,6 +145,34 @@ class MessageContext:
     after: list[Message]
 
 
+def _has_column(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
+    """Whether a column exists — stores migrate at their own pace."""
+    try:
+        return any(row[1] == column for row in cursor.execute(f"PRAGMA table_info({table})").fetchall())
+    except sqlite3.Error:
+        return False
+
+
+def _identity_to_contact(identity: Identity) -> Contact:
+    """Adapt a directory row to the legacy Contact shape.
+
+    Contact predates the directory and is what the existing contact tools
+    return; keeping the shape means the directory can back them without any
+    caller noticing. The JID stays canonical, so a reply goes to the identity
+    the rest of the store keys on.
+    """
+    return Contact(
+        phone_number=identity.phone or identity.jid.split("@")[0],
+        name=identity.display_name,
+        jid=identity.jid,
+        first_name=identity.first_name,
+        full_name=identity.full_name,
+        push_name=identity.push_name,
+        business_name=identity.business_name,
+        nickname=identity.nickname,
+    )
+
+
 def get_sender_name(sender_jid: str) -> str:
     """Get the best available name for a sender using both contact and chat data."""
     try:
@@ -140,6 +180,13 @@ def get_sender_name(sender_jid: str) -> str:
         nickname = get_contact_nickname(sender_jid)
         if nickname:
             return nickname
+
+        # The directory already merged the LID and phone-JID halves of this
+        # person, so it resolves senders the raw contact store cannot: a sender
+        # seen only as a LID still gets their address-book name.
+        identity = get_identity(sender_jid)
+        if identity and identity.display_name and identity.display_name != identity.jid:
+            return identity.display_name
 
         # Try to get rich contact information from WhatsApp store
         whatsapp_conn = sqlite3.connect(WHATSAPP_DB_PATH)
@@ -193,10 +240,10 @@ def get_sender_name(sender_jid: str) -> str:
                 """
                 SELECT name
                 FROM chats
-                WHERE jid LIKE ?
+                WHERE jid LIKE ? ESCAPE '\'
                 LIMIT 1
             """,
-                (f"%{phone_part}%",),
+                (f"%{_like_escape(phone_part)}%",),
             )
 
             result = messages_cursor.fetchone()
@@ -210,8 +257,15 @@ def get_sender_name(sender_jid: str) -> str:
         logger.error(f"Database error while getting sender name: {e}")
         return sender_jid
     finally:
-        if "messages_conn" in locals():
-            messages_conn.close()
+        # whatsapp_conn is also closed inline on the happy path; this covers the
+        # exception path so a failing whatsmeow query doesn't leak the handle.
+        for _conn_name in ("messages_conn", "whatsapp_conn"):
+            _conn = locals().get(_conn_name)
+            if _conn is not None:
+                try:
+                    _conn.close()
+                except sqlite3.Error:
+                    pass
 
 
 def format_message(message: Message, show_chat_info: bool = True) -> None:
@@ -530,6 +584,11 @@ def list_chats(
             where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
             params.extend([f"%{query}%", f"%{query}%"])
 
+        # A merged chat's messages now live under its twin; listing both would
+        # show the same conversation twice, once of them empty.
+        if _has_column(cursor, "chats", "merged_into"):
+            where_clauses.append("chats.merged_into IS NULL")
+
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
 
@@ -575,6 +634,13 @@ def list_chats(
 
 def search_contacts(query: str) -> list[dict[str, Any]]:
     """Search contacts by name or phone number using both WhatsApp contacts and chat data."""
+    # The directory holds one row per person instead of the contact store's two,
+    # so it does not return the same human twice under two different names.
+    if directory_available():
+        matches = list_identities(query=query, kind="user", sort_by="name", limit=50)
+        if matches:
+            return [_identity_to_contact(identity).to_dict() for identity in matches]
+
     try:
         # Connect to both databases
         whatsapp_conn = sqlite3.connect(WHATSAPP_DB_PATH)
@@ -643,6 +709,38 @@ def search_contacts(query: str) -> list[dict[str, Any]]:
             whatsapp_conn.close()
 
 
+def _like_escape(value: str) -> str:
+    """Escape LIKE wildcards in user input.
+
+    These phone-fallback lookups interpolate the caller's string into a
+    %...% pattern; without escaping, an input of "%" or "_" matches an
+    essentially arbitrary chat and gets returned as *the* match for that
+    "phone number". Pair with ESCAPE '\\' in the query.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _sender_forms(handle: str) -> list[str]:
+    """Every way the messages table might spell this contact as a sender.
+
+    Senders were stored as whatever the wire delivered at the time: bare
+    numbers, {phone}@s.whatsapp.net, or {id}@lid. Matching one form silently
+    drops the rest — measured on a real store, the split was 17.8k bare / 3.2k
+    lid / 33 phone-JID. The identity directory resolves a handle to both halves
+    of the person; this expands that into a match list for SQL IN.
+    """
+    forms = {handle}
+    bare = handle.split("@")[0]
+    forms.update({bare, f"{bare}@s.whatsapp.net", f"{bare}@lid"})
+    identity = get_identity(handle)
+    if identity:
+        for candidate in (identity.jid, identity.lid, identity.phone_jid, identity.phone):
+            if candidate:
+                forms.add(candidate)
+                forms.add(candidate.split("@")[0])
+    return sorted(forms)
+
+
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str, Any]]:
     """Get all chats involving the contact.
 
@@ -652,6 +750,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
         page: Page number for pagination (default 0)
     """
     try:
+        forms = _sender_forms(jid)
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
@@ -667,11 +766,11 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
                 m.is_from_me as last_is_from_me
             FROM chats c
             JOIN messages m ON c.jid = m.chat_jid
-            WHERE m.sender = ? OR c.jid = ?
+            WHERE m.sender IN ({placeholders}) OR c.jid IN ({placeholders})
             ORDER BY c.last_message_time DESC
             LIMIT ? OFFSET ?
-        """,
-            (jid, jid, limit, page * limit),
+        """.format(placeholders=",".join("?" * len(forms))),
+            (*forms, *forms, limit, page * limit),
         )
 
         chats = cursor.fetchall()
@@ -702,6 +801,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
 def get_last_interaction(jid: str) -> dict[str, Any] | None:
     """Get most recent message involving the contact."""
     try:
+        forms = _sender_forms(jid)
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
@@ -720,11 +820,11 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
                 m.file_length
             FROM messages m
             JOIN chats c ON m.chat_jid = c.jid
-            WHERE m.sender = ? OR c.jid = ?
+            WHERE m.sender IN ({placeholders}) OR c.jid IN ({placeholders})
             ORDER BY m.timestamp DESC
             LIMIT 1
-        """,
-            (jid, jid),
+        """.format(placeholders=",".join("?" * len(forms))),
+            (*forms, *forms),
         )
 
         msg_data = cursor.fetchone()
@@ -832,10 +932,10 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             FROM chats c
             LEFT JOIN messages m ON c.jid = m.chat_jid
                 AND c.last_message_time = m.timestamp
-            WHERE c.jid LIKE ? AND c.jid NOT LIKE '%@g.us'
+            WHERE c.jid LIKE ? ESCAPE '\' AND c.jid NOT LIKE '%@g.us'
             LIMIT 1
         """,
-            (f"%{sender_phone_number}%",),
+            (f"%{_like_escape(sender_phone_number)}%",),
         )
 
         chat_data = cursor.fetchone()
@@ -913,15 +1013,69 @@ def send_message(
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
 
-def send_file(recipient: str, media_path: str) -> dict[str, Any]:
-    """Send a file via WhatsApp and return structured result with message_id."""
+def send_file(
+    recipient: str,
+    media_path: str | None = None,
+    file_content_base64: str | None = None,
+    filename: str | None = None,
+) -> dict[str, Any]:
+    """Send a file via WhatsApp and return structured result with message_id.
+
+    Accepts either a path on this server's filesystem, or the file's bytes as
+    base64. The latter exists because MCP clients generally run somewhere else:
+    a client holding a file it just produced has no way to put it on this
+    server's disk, so a path-only interface makes sending it impossible.
+    """
+    temp_path: str | None = None
+    temp_dir: str | None = None
     try:
         # Validate input
         if not recipient:
             return {"success": False, "error": "Recipient must be provided"}
 
+        if media_path and file_content_base64:
+            return {
+                "success": False,
+                "error": "Provide either media_path or file_content_base64, not both",
+            }
+
+        if file_content_base64:
+            if not filename:
+                return {
+                    "success": False,
+                    "error": "filename must be provided with file_content_base64",
+                }
+
+            try:
+                content = base64.b64decode(file_content_base64, validate=True)
+            except (binascii.Error, ValueError) as e:
+                return {"success": False, "error": f"Invalid base64 content: {str(e)}"}
+
+            # The bridge reads the file off disk, so the bytes have to land
+            # there first — and somewhere validateMediaPath allows.
+            base_dir = os.path.join(MEDIA_TEMP_DIR, "whatsapp-outgoing")
+            os.makedirs(base_dir, exist_ok=True)
+            # Only the basename: a filename like "../x" must not escape. The
+            # bridge also rejects any path containing "..", so a traversal
+            # attempt would fail there too.
+            safe_name = os.path.basename(filename) or "upload"
+            # Stage inside a unique subdirectory keeping the real name, rather
+            # than a mkstemp-suffixed file. The bridge names the sent document
+            # after basename(media_path); a "tmpXXXX-" prefix would otherwise
+            # ride along into the recipient's chat (arrived as e.g.
+            # "tmpkzbilqkf-report.md").
+            temp_dir = tempfile.mkdtemp(dir=base_dir)
+            temp_path = os.path.join(temp_dir, safe_name)
+            with open(temp_path, "wb") as f:
+                f.write(content)
+
+            media_path = temp_path
+
         if not media_path:
-            return {"success": False, "error": "Media path must be provided"}
+            return {
+                "success": False,
+                "error": "Either media_path or file_content_base64 must be provided",
+            }
 
         if not os.path.isfile(media_path):
             return {"success": False, "error": f"Media file not found: {media_path}"}
@@ -950,6 +1104,12 @@ def send_file(recipient: str, media_path: str) -> dict[str, Any]:
         return {"success": False, "error": f"Error parsing response: {response.text}"}
     except Exception as e:
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
+    finally:
+        # The bridge reads the file synchronously during /send, so it is safe to
+        # remove once that call has returned either way. Remove the whole staging
+        # subdir (it holds exactly the one file).
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
@@ -1047,6 +1207,10 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
 
 def get_contact_by_jid(jid: str) -> Contact | None:
     """Get detailed contact information by JID."""
+    identity = get_identity(jid)
+    if identity and identity.kind != "group":
+        return _identity_to_contact(identity)
+
     try:
         # First try WhatsApp contacts database
         whatsapp_conn = sqlite3.connect(WHATSAPP_DB_PATH)
@@ -1113,6 +1277,15 @@ def get_contact_by_jid(jid: str) -> Contact | None:
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         return None
+    finally:
+        # Close on the exception path too — the happy path closes inline.
+        for _cn in ("whatsapp_conn", "messages_conn"):
+            _c = locals().get(_cn)
+            if _c is not None:
+                try:
+                    _c.close()
+                except sqlite3.Error:
+                    pass
 
 
 def get_contact_by_phone(phone_number: str) -> Contact | None:
@@ -1134,10 +1307,10 @@ def get_contact_by_phone(phone_number: str) -> Contact | None:
             """
             SELECT jid, name
             FROM chats
-            WHERE jid LIKE ? AND jid NOT LIKE '%@g.us'
+            WHERE jid LIKE ? ESCAPE '\' AND jid NOT LIKE '%@g.us'
             LIMIT 1
         """,
-            (f"%{phone_number}%",),
+            (f"%{_like_escape(phone_number)}%",),
         )
 
         chat_data = messages_cursor.fetchone()
@@ -1152,10 +1325,24 @@ def get_contact_by_phone(phone_number: str) -> Contact | None:
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         return None
+    finally:
+        # Close on the exception path too — the happy path closes inline.
+        for _cn in ("whatsapp_conn", "messages_conn"):
+            _c = locals().get(_cn)
+            if _c is not None:
+                try:
+                    _c.close()
+                except sqlite3.Error:
+                    pass
 
 
 def list_all_contacts(limit: int = 100) -> list[Contact]:
     """Get all contacts with their detailed information."""
+    if directory_available():
+        matches = list_identities(kind="user", is_contact=True, sort_by="name", limit=limit)
+        if matches:
+            return [_identity_to_contact(identity) for identity in matches]
+
     try:
         contacts = []
 
@@ -1210,6 +1397,15 @@ def list_all_contacts(limit: int = 100) -> list[Contact]:
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         return []
+    finally:
+        # Close on the exception path too — the happy path closes inline.
+        for _cn in ("whatsapp_conn", "messages_conn"):
+            _c = locals().get(_cn)
+            if _c is not None:
+                try:
+                    _c.close()
+                except sqlite3.Error:
+                    pass
 
 
 def format_contact_info(contact: Contact) -> str:

@@ -137,6 +137,13 @@ func main() {
 		fireConnectionEvent(webhookManager, client, "circuit_breaker_exhausted", "30 consecutive reconnect failures")
 	})
 
+	// Identity directory: keeps the unified users/chats table in messages.db in
+	// step with the contact store, the LID map and our own chat history.
+	identitySyncer := client.NewIdentitySyncer(messageStore, cfg.IdentitySyncInterval, cfg.MergeLIDChats)
+	identityCtx, stopIdentitySync := context.WithCancel(context.Background())
+	defer stopIdentitySync()
+	identitySyncer.Start(identityCtx)
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -149,6 +156,11 @@ func main() {
 			logger.Infof("[SYNC] Starting HistorySync (Type: %v, Conversations: %d)", v.Data.SyncType, len(v.Data.Conversations))
 			client.HandleHistorySync(messageStore, v)
 			logger.Infof("[SYNC] ✓ Completed (Type: %v, %d conversations)", v.Data.SyncType, len(v.Data.Conversations))
+			identitySyncer.Trigger()
+
+		case *events.Contact, *events.PushName, *events.BusinessName:
+			// Names changed upstream; coalesced into the next directory rebuild.
+			identitySyncer.Trigger()
 
 		case *events.Connected:
 			_, _, discAt, _ := client.ConnectionState()
@@ -167,6 +179,7 @@ func main() {
 			client.ApplyConnectedPresence()
 			logger.Infof("✓ Connected to WhatsApp")
 			go fireConnectionEvent(webhookManager, client, "connected", "")
+			identitySyncer.Trigger()
 
 			// If we were disconnected for >30s, attempt best-effort history backfill
 			// for recently active chats to recover any messages missed during the gap.

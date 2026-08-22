@@ -55,6 +55,23 @@ SCHED_DB = DATA_DIR / "scheduled.db"
 UPLOADS = Path(os.environ.get("TMPDIR", "/tmp")) / "wa-client-uploads"
 HOST = os.environ.get("WA_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("WA_WEB_PORT", "8084"))
+
+
+def _cors_origins() -> list[str]:
+    """Explicit CORS allowlist for the read API.
+
+    Defaults cover the local dashboard widget (:8888) and this app's own
+    origin on localhost; set WA_WEB_CORS_ORIGINS to add a tailnet dashboard
+    origin. Never "*": these endpoints return chat history.
+    """
+    defaults = [
+        "http://localhost:8888",
+        "http://127.0.0.1:8888",
+        f"http://localhost:{PORT}",
+        f"http://127.0.0.1:{PORT}",
+    ]
+    extra = [o.strip() for o in os.environ.get("WA_WEB_CORS_ORIGINS", "").split(",") if o.strip()]
+    return defaults + extra
 MCP_URL = os.environ.get("WA_MCP_URL", "")
 
 MSG_COLS = (
@@ -244,8 +261,11 @@ async def media(request):
     if p is not None and not p.is_absolute():
         p = BASE / "whatsapp-bridge" / p
     resolved = p.resolve() if p else None
-    # Serve only files the bridge wrote inside its own tree.
-    if not resolved or not resolved.is_file() or not str(resolved).startswith(str(BASE)):
+    # Serve only files the bridge wrote inside its own tree. Use is_relative_to
+    # rather than a bare startswith, which would also accept a sibling like
+    # "<BASE>-evil/...".
+    inside = resolved is not None and (resolved == BASE or resolved.is_relative_to(BASE))
+    if not resolved or not resolved.is_file() or not inside:
         return JSONResponse({"success": False, "error": data.get("message", "download failed")}, status_code=404)
     return FileResponse(resolved, filename=resolved.name)
 
@@ -455,10 +475,13 @@ app = Starlette(
         Route("/api/search", search),
         Route("/api/dispatch", dispatch_request, methods=["POST"]),
     ],
-    # Read-only CORS so the dashboard widget (:8888) can list chats.
-    # Everything is tailnet-bound anyway; writes stay same-origin only.
+    # Read-only CORS so the dashboard widget can list chats. Scoped to explicit
+    # origins, not "*": with a wildcard, ANY web page the browser visits could
+    # fetch() these endpoints and read the entire chat history back (GET is
+    # readable cross-origin). Override/extend via WA_WEB_CORS_ORIGINS
+    # (comma-separated). Writes stay same-origin regardless (GET-only here).
     middleware=[
-        Middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"])
+        Middleware(CORSMiddleware, allow_origins=_cors_origins(), allow_methods=["GET"])
     ],
     lifespan=_lifespan,
 )

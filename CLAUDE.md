@@ -36,7 +36,7 @@ our versions of `lib/recall.py` and `lib/transcribe.py` to be supersets.
 | Component | What it is |
 |---|---|
 | `whatsapp-bridge/` | Go daemon on whatsmeow. Pairs as a linked device, stores history in SQLite, exposes REST + webhooks. Packages: `api`, `whatsapp`, `webhook`, `database`, `config`, `antiban`, `security`, `types`. |
-| `whatsapp-mcp-server/` | Python FastMCP. 32 tools (17 read-only). Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
+| `whatsapp-mcp-server/` | Python FastMCP. 34 tools (19 read-only). Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
 | `wa-client/` | Chat web UI riding the bridge's session — costs **zero** extra device slots. Default :8084 (`WA_WEB_PORT`). |
 | `wa-assistant/` | Message your own chat, a persistent Claude Code session replies. Voice both ways. |
 | `wa-dispatch/` | An incoming message from a routed chat opens/wakes a Claude session in that project. Drafts, never sends. macOS + tmux. |
@@ -80,8 +80,32 @@ CI runs `ruff check` **and** `ruff format --check`. `ruff check` exits first, so
 a green check does not mean format is clean — run both. CI does not run mypy;
 there are ~37 pre-existing mypy errors, mostly in tests.
 
-Docker exists under `docker/` but the maintainer runs everything natively under
-launchd. Prefer the native path unless asked.
+Docker exists under `docker/` but the maintainer runs everything natively.
+Prefer the native path unless asked.
+
+**Live deployment: code here, data elsewhere (debian/systemd).** The services
+run this repo directly — there is no separate deploy copy.
+
+```
+code   ~/Code/tools/whatsapp-mcp-pro          this repo
+data   ~/.local/share/whatsapp-mcp-pro/       store/ (session + history) + .env
+units  /etc/systemd/system/whatsapp-bridge.service   WorkingDirectory=<data>,
+                                                      ExecStart=<repo>/…/whatsapp-bridge
+       /etc/systemd/system/whatsapp-mcp.service       WA_STORE_PATH=<data>/store,
+                                                      runs <repo>/…/.venv/bin/python
+       wa-bridge-health.timer                          watchdog, restarts on stall
+```
+
+The bridge writes `store/` relative to its WorkingDirectory, so pointing that at
+the data dir is what keeps session + history **out of the repo** — never commit a
+`store/`, and there is no longer one in the tree. `scripts/deploy-live.sh` is the
+sanctioned path: build + test, online store backup, `systemctl restart`, connection
+check. `/usr/local/sbin/standby-sync.sh` mirrors the data dir to the M1 warm
+standby and also points at `~/.local/share/whatsapp-mcp-pro`.
+
+(History: the live install used to be a hand-copied `~/whatsapp-mcp-extended-pro`
+snapshot that drifted from the repo for weeks; that copy was retired 2026-08-21
+when code/data were split as above.)
 
 ## Things that bite
 
@@ -94,6 +118,11 @@ launchd. Prefer the native path unless asked.
   `…@lid` on one device and `…@s.whatsapp.net` on another. Both identities live
   in `whatsmeow_device` (`jid`, `lid`); `/api/connection` exposes only the jid.
   Code that watches one identity will silently see nothing on some installs.
+  The `identities` table is the join — resolve through it rather than matching
+  a raw JID. `whatsmeow_contacts` is not that join: it keeps a *separate row per
+  identity*, usually with the address-book name on the phone row and the push
+  name on the LID row, so reading it directly returns the same human twice under
+  two different names.
 - **`connected` is the only honest health signal.** A bridge can be alive,
   port-bound and linked while ingesting nothing — a cold start where DNS was
   not ready leaves it stuck. Check `/api/connection`, not the process.
@@ -103,6 +132,32 @@ launchd. Prefer the native path unless asked.
   thinks it is done and `recall` np.stacks mismatched dimensions.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
+
+## Identity directory
+
+`identities` in `messages.db` is the one place to answer "who or what is this
+JID". One row per person, group, newsletter or broadcast list, keyed on a
+canonical JID (the phone JID whenever it is known), carrying both JID forms, the
+phone number, every name WhatsApp knows plus the local nickname, address-book
+and business flags, message counts, activity window, and group metadata.
+
+The bridge owns it (`internal/whatsapp/identity.go`, `internal/database/identities.go`).
+It rebuilds on connect, on contact/push-name/business-name events, and every
+`IDENTITY_SYNC_INTERVAL`. Events only mark it dirty — app-state sync delivers
+hundreds in a burst and each rebuild is a full refresh, so a worker coalesces
+them. The MCP server reads it and never writes it (`lib/identity.py`,
+`lookup_identity` / `search_directory` / `whatsapp://directory`).
+
+Every read degrades to empty when the table is missing or unsynced, and the
+contact tools fall back to their old per-source queries — a store can be older
+than the directory, and a bridge can be down.
+
+`MergeLIDChats` runs before each rebuild and folds a LID-filed chat into its
+phone-JID twin (`MERGE_LID_CHATS=false` to disable). `NormalizeChatJID` stops
+new messages from splitting, but history written before it existed is already
+split, and a chat whose LID mapping only arrives later splits until it lands.
+Merged chat rows are kept and stamped with `chats.merged_into` rather than
+deleted, so an old LID still resolves — readers listing chats must skip them.
 
 ## Database migrations
 

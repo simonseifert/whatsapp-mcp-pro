@@ -129,9 +129,11 @@ func (s *Server) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 		// Reload configurations
 		_ = s.webhookManager.LoadWebhookConfigs()
 
+		// ToResponse masks secret_token — the caller already knows the secret it
+		// just sent, and nobody else should learn it from this endpoint.
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
-			"data":    config,
+			"data":    config.ToResponse(),
 		})
 
 	default:
@@ -308,7 +310,9 @@ func (s *Server) handleWebhookByID(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"message": fmt.Sprintf("Webhook %s successfully", map[bool]string{true: "enabled", false: "disabled"}[req.Enabled]),
-			"data":    config,
+			// Masked: the enable toggle must not hand the signing secret to
+			// every caller with API access.
+			"data": config.ToResponse(),
 		})
 
 	default:
@@ -1660,9 +1664,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	startedAt, lastConn, discAt, reconnErrs := s.client.ConnectionState()
 
 	resp := map[string]interface{}{
-		"connected":     connected,
-		"needs_pairing": needsPairing, // true when Store.ID == nil: QR or pairing code required
-		"uptime":        time.Since(startedAt).Round(time.Second).String(),
+		"connected":      connected,
+		"needs_pairing":  needsPairing, // true when Store.ID == nil: QR or pairing code required
+		"uptime":         time.Since(startedAt).Round(time.Second).String(),
 		"reconnect_errs": reconnErrs,
 	}
 	if !lastConn.IsZero() {
@@ -1932,6 +1936,11 @@ func (s *Server) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 		if parsedLimit, err := fmt.Sscanf(limitStr, "%d", &limit); err != nil || parsedLimit == 0 {
 			limit = 100
 		}
+	}
+	// Clamp: SQLite treats LIMIT -1 (or 0 here) as "no limit", which would let
+	// limit=-1 dump an entire chat's history in one response.
+	if limit <= 0 || limit > 1000 {
+		limit = 100
 	}
 
 	messages, err := s.messageStore.GetMessages(chatJID, limit)
