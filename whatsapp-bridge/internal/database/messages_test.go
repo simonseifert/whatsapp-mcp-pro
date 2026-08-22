@@ -20,6 +20,9 @@ func newTestMessageStore(t *testing.T) *MessageStore {
 	if err := createTables(db); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
+	if err := createIdentityTable(db); err != nil {
+		t.Fatalf("create identity table: %v", err)
+	}
 	if err := runMigrations(db); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
