@@ -205,9 +205,20 @@ def deliver(meeting, slice_, dry_run, note=None) -> bool:
         "action_items": slice_.get("action_items") or [],
         "quotes": slice_.get("quotes") or [],
     }
+    inbox_path = os.path.join(proj, INBOX)
+    murl = meeting.get("url")
+    already = False
+    if murl and os.path.exists(inbox_path):
+        try:
+            with open(inbox_path, encoding="utf-8") as f:
+                already = any(json.loads(l).get("meeting_url") == murl
+                              for l in f if l.strip())
+        except Exception:
+            already = False
     os.makedirs(proj, exist_ok=True)
-    with open(os.path.join(proj, INBOX), "a") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    if not already:
+        with open(inbox_path, "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     prompt = (
         "A meeting that concerned this project just finished. Its summary, "
