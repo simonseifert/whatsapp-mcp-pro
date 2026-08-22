@@ -37,6 +37,15 @@ type Config struct {
 	// Safety gate: comma-separated list of allowed JIDs/phone numbers (WHATSAPP_ALLOWLIST_JIDS)
 	// If set, outgoing message sends to JIDs/numbers outside this allowlist are rejected.
 	AllowlistJIDs []string
+
+	// Identity directory (the identities table in messages.db)
+	// IDENTITY_SYNC_INTERVAL sets how often the directory is rebuilt (default 15m; 0 disables
+	// the ticker, leaving only the rebuild on connect).
+	// MERGE_LID_CHATS=false leaves LID-filed chats split from their phone-JID twins instead of
+	// folding them together. On by default: a split chat means search, recall and per-chat
+	// automation each see only half the conversation.
+	IdentitySyncInterval time.Duration
+	MergeLIDChats        bool
 }
 
 // NewConfig creates a new configuration with default values
@@ -55,6 +64,9 @@ func NewConfig() *Config {
 		PresenceMode:      "human",
 		PresenceLingerMin: 8 * time.Second,
 		PresenceLingerMax: 15 * time.Second,
+		// Identity directory defaults
+		IdentitySyncInterval: 15 * time.Minute,
+		MergeLIDChats:        true,
 	}
 
 	// Override with environment variables if set
@@ -122,6 +134,16 @@ func NewConfig() *Config {
 
 	if cfg.PresenceLingerMax < cfg.PresenceLingerMin {
 		cfg.PresenceLingerMax = cfg.PresenceLingerMin
+	}
+
+	if interval := os.Getenv("IDENTITY_SYNC_INTERVAL"); interval != "" {
+		if d, err := time.ParseDuration(interval); err == nil && d >= 0 {
+			cfg.IdentitySyncInterval = d
+		}
+	}
+
+	if os.Getenv("MERGE_LID_CHATS") == "false" {
+		cfg.MergeLIDChats = false
 	}
 
 	allowlist := os.Getenv("WHATSAPP_ALLOWLIST_JIDS")

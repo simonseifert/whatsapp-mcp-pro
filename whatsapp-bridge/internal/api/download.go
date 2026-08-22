@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/hkdf"
@@ -84,8 +86,25 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The URL column is copied verbatim from the *sender's* message protobuf, so
+	// it is remote-controlled data: a crafted message could point it at cloud
+	// metadata or an internal service and this handler would dutifully GET it.
+	// Real WhatsApp media only ever lives on Meta CDNs — enforce that.
+	if err := validateCDNURL(url); err != nil {
+		SendJSONError(w, "refusing media URL: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Fetch encrypted media from WhatsApp CDN, bounded by request context and total timeout.
-	httpClient := &http.Client{Timeout: 60 * time.Second}
+	httpClient := &http.Client{
+		Timeout: 60 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return fmt.Errorf("too many redirects")
+			}
+			return validateCDNURL(req.URL.String())
+		},
+	}
 	greq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
 	if err != nil {
 		SendJSONError(w, "bad CDN URL: "+err.Error(), http.StatusBadGateway)
@@ -219,4 +238,30 @@ func sanitizePath(s string) string {
 		b[0] = '_'
 	}
 	return string(b)
+}
+
+// whatsappCDNSuffixes are the host suffixes Meta serves WhatsApp media from.
+var whatsappCDNSuffixes = []string{".whatsapp.net", ".fbcdn.net", ".cdninstagram.com"}
+
+// validateCDNURL accepts only HTTPS URLs on known WhatsApp/Meta CDN hosts.
+// DISABLE_SSRF_CHECK=true bypasses it, mirroring the webhook validator's
+// escape hatch for closed test networks.
+func validateCDNURL(raw string) error {
+	if os.Getenv("DISABLE_SSRF_CHECK") == "true" {
+		return nil
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("unparseable URL")
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("scheme %q not allowed", u.Scheme)
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, suffix := range whatsappCDNSuffixes {
+		if strings.HasSuffix(host, suffix) {
+			return nil
+		}
+	}
+	return fmt.Errorf("host %q is not a WhatsApp CDN", host)
 }

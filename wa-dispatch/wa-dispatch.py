@@ -46,6 +46,14 @@ FRAME_FILE = os.path.join(HERE, "prepare-frame.md")
 POLL_SECONDS = cfg.num("POLL_SECONDS")
 DEFAULT_COOLDOWN_MIN = cfg.num("DEFAULT_COOLDOWN_MIN")
 
+# The sweep re-nudges a session that was already told about earlier messages,
+# once more have piled up behind them. Useful when a session is idle and would
+# otherwise never look again; an interruption when you are mid-task in that
+# pane. SWEEP_ENABLED=false keeps the first nudge and drops the follow-ups —
+# the messages still land in .wa-inbox.jsonl either way, so nothing is lost,
+# the session just is not interrupted to be told twice.
+SWEEP_ENABLED = str(cfg.get("SWEEP_ENABLED", "true")).strip().lower() in ("1", "true", "yes", "on")
+
 # What a session (warm or freshly opened) is told when messages arrive.
 NUDGE_PROMPT = (
     "New WhatsApp message(s) landed in .wa-inbox.jsonl. Read the new lines — the "
@@ -253,6 +261,8 @@ def sweep_stragglers(routes, dry_run):
             continue
         if total <= seen:
             continue                      # nothing unshown
+        if not SWEEP_ENABLED:
+            continue                      # follow-up nudges disabled; inbox still accrues
         if nudge_recently(proj):
             continue                      # still inside the debounce; let it settle
         pane = find_claude_pane(proj)

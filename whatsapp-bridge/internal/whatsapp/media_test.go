@@ -71,8 +71,8 @@ func TestExtractTextContent(t *testing.T) {
 			wantText: "report.pdf",
 		},
 		{
-			name: "sticker",
-			msg:  &waE2E.Message{StickerMessage: &waE2E.StickerMessage{}},
+			name:     "sticker",
+			msg:      &waE2E.Message{StickerMessage: &waE2E.StickerMessage{}},
 			wantText: "[Sticker]",
 		},
 		{
@@ -128,5 +128,32 @@ func TestExtractTextContent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateMediaPathRejectsSiblingOfAllowedDir(t *testing.T) {
+	// /tmp is allowed; /tmp-evil is a different directory and must not ride in
+	// on a bare prefix match.
+	if err := validateMediaPath("/tmp-evil/payload.jpg"); err == nil {
+		t.Error("validateMediaPath(/tmp-evil/...) = nil, want error")
+	}
+	if err := validateMediaPath("/tmp/ok.jpg"); err != nil {
+		t.Errorf("validateMediaPath(/tmp/ok.jpg) = %v, want nil", err)
+	}
+}
+
+func TestValidateMediaPathHonorsEnvAllowlist(t *testing.T) {
+	t.Setenv("MEDIA_ALLOWED_DIRS", "/home/alice, /srv/media")
+	for _, ok := range []string{"/home/alice/Code/pic.png", "/srv/media/a.ogg"} {
+		if err := validateMediaPath(ok); err != nil {
+			t.Errorf("validateMediaPath(%s) = %v, want nil", ok, err)
+		}
+	}
+	if err := validateMediaPath("/home/simonevil/pic.png"); err == nil {
+		t.Error("sibling of env-allowed dir accepted, want error")
+	}
+	t.Setenv("MEDIA_ALLOWED_DIRS", "")
+	if err := validateMediaPath("/home/alice/Code/pic.png"); err == nil {
+		t.Error("path accepted after env allowlist cleared, want error")
 	}
 }
