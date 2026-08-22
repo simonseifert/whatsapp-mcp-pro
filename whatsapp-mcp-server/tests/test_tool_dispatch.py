@@ -24,6 +24,7 @@ READ_TOOLS = [
     ("list_all_contacts", {}),
     ("get_contact_context", {"identifier": "123456789@s.whatsapp.net"}),
     ("get_direct_chat_by_contact", {"phone_number": "123456789"}),
+    ("get_contact_context", {"identifier": "123456789", "include_chats": True}),
 ]
 
 
@@ -65,4 +66,9 @@ async def test_read_tool_dispatches_without_validation_error(dispatch_main, tool
     if tool_name == "get_chat" and args["chat_jid"].startswith("does-not-exist"):
         assert structured is None or structured == {} or structured.get("result") is None
     else:
+        # FastMCP wraps a bare None return as {"result": None}; a plain
+        # `is not None` check would wave that through and give false confidence
+        # that the tool returned data. Require a real payload for hit cases.
         assert structured is not None
+        unwrapped = structured.get("result", structured) if isinstance(structured, dict) else structured
+        assert unwrapped not in (None, {}, []), f"{tool_name} returned an empty result: {structured!r}"
