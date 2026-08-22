@@ -2,12 +2,16 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"syscall"
 	"time"
 
 	"whatsapp-bridge/internal/database"
@@ -15,6 +19,31 @@ import (
 
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
+
+// ssrfSafeDialContext rejects connections to private/reserved IPs at the moment
+// of dialing, after DNS has resolved. ValidateWebhookURL checks the hostname's
+// IPs earlier, but that resolution and the actual connect are separate lookups —
+// a short-TTL DNS-rebinding flip between them would otherwise slip a private
+// address through. This closes that window by validating the concrete dialed IP.
+func ssrfSafeDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout: 30 * time.Second,
+		Control: func(network, address string, _ syscall.RawConn) error {
+			if os.Getenv("DISABLE_SSRF_CHECK") == "true" {
+				return nil
+			}
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("bad dial address %q: %w", address, err)
+			}
+			if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
+				return fmt.Errorf("refusing to dial private address %s", host)
+			}
+			return nil
+		},
+	}
+	return dialer.DialContext
+}
 
 // DeliveryService handles webhook delivery with retry logic
 type DeliveryService struct {
@@ -29,7 +58,8 @@ func NewDeliveryService(messageStore *database.MessageStore, logger waLog.Logger
 		messageStore: messageStore,
 		logger:       logger,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: &http.Transport{DialContext: ssrfSafeDialContext()},
 			// The SSRF check in ValidateWebhookURL runs when a webhook is
 			// *stored*. Without re-checking each redirect hop, a stored-safe
 			// endpoint can 302 the delivery into a private address (cloud

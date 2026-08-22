@@ -27,7 +27,9 @@ def temp_messages_db():
     cursor.execute("""
         CREATE TABLE chats (
             jid TEXT PRIMARY KEY,
-            name TEXT
+            name TEXT,
+            last_message_time TEXT,
+            merged_into TEXT
         )
     """)
 
@@ -66,11 +68,17 @@ def temp_messages_db():
     """)
 
     # Insert test data
-    cursor.execute("INSERT INTO chats (jid, name) VALUES (?, ?)", ("123456789@s.whatsapp.net", "Test User"))
-    cursor.execute("INSERT INTO chats (jid, name) VALUES (?, ?)", ("987654321@g.us", "Test Group"))
+    now = datetime.now().isoformat()
+    cursor.execute(
+        "INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
+        ("123456789@s.whatsapp.net", "Test User", now),
+    )
+    cursor.execute(
+        "INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
+        ("987654321@g.us", "Test Group", now),
+    )
 
     # Insert test messages
-    now = datetime.now().isoformat()
     cursor.execute(
         """INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, file_length, sender_name)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",

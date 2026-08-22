@@ -318,3 +318,33 @@ func TestParseStoredTimeRejectsGarbageWithoutPanicking(t *testing.T) {
 		}
 	}
 }
+
+func TestGetChatsExcludesMergedChats(t *testing.T) {
+	// After MergeChat stamps merged_into, GetChats (backing /api/chats and the
+	// reconnect backfill) must not return the breadcrumb row, or callers see a
+	// ghost duplicate of the conversation.
+	store := newTestMessageStore(t)
+	ts := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
+	if err := store.StoreChat("999@lid", "Jane", ts); err != nil {
+		t.Fatalf("store lid chat: %v", err)
+	}
+	if err := store.StoreChat("441234@s.whatsapp.net", "Jane Doe", ts); err != nil {
+		t.Fatalf("store phone chat: %v", err)
+	}
+	storeTestMessage(t, store, "a", "999@lid", "hi", ts)
+
+	if _, err := store.MergeChat("999@lid", "441234@s.whatsapp.net"); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	chats, err := store.GetChats()
+	if err != nil {
+		t.Fatalf("GetChats: %v", err)
+	}
+	if _, present := chats["999@lid"]; present {
+		t.Error("merged-away LID chat still returned by GetChats")
+	}
+	if _, present := chats["441234@s.whatsapp.net"]; !present {
+		t.Error("surviving phone chat missing from GetChats")
+	}
+}
