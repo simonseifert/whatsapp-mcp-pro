@@ -18,6 +18,7 @@ Clients connect via Claude Code MCP config:
 
 import json
 import os
+from typing import Any
 
 if __name__ == "__main__":
     # The pro toolsets (audio, recall) are opt-in so the default stdio
@@ -78,18 +79,20 @@ if __name__ == "__main__":
             rewritten, and a streamed body cannot be edited after its header
             has gone out.
             """
-            state = {"start": None, "chunks": []}
+            start_msg: dict[str, Any] | None = None
+            chunks: list[bytes] = []
 
             async def wrapped(message):
+                nonlocal start_msg
                 if message["type"] == "http.response.start":
-                    state["start"] = message
+                    start_msg = message
                     return
                 if message["type"] != "http.response.body":
                     return await send(message)
-                state["chunks"].append(message.get("body", b""))
+                chunks.append(message.get("body", b""))
                 if message.get("more_body"):
                     return
-                raw = b"".join(state["chunks"])
+                raw = b"".join(chunks)
                 out = raw
                 try:
                     text = raw.decode("utf-8")
@@ -106,7 +109,7 @@ if __name__ == "__main__":
                         out = "\n".join(lines).encode()
                 except Exception:
                     out = raw  # never break the response over cosmetics
-                start = state["start"] or {"type": "http.response.start", "status": 200, "headers": []}
+                start = start_msg or {"type": "http.response.start", "status": 200, "headers": []}
                 headers = [(k, v) for k, v in start.get("headers", []) if k.decode().lower() != "content-length"]
                 headers.append((b"content-length", str(len(out)).encode()))
                 await send({**start, "headers": headers})

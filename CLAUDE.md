@@ -72,13 +72,13 @@ go build ./... && go vet ./... && go test ./...
 # MCP server (Python 3.11+, uv)
 cd whatsapp-mcp-server && uv sync          # + --extra pro   for recall/transcribe
 uv run python check.py                     # fast preflight
-uv run ruff check . && uv run ruff format --check .   # what CI runs
+uv run ruff check . && uv run ruff format --check . && uv run mypy .   # what CI runs
 uv run pytest -q
 ```
 
 CI runs `ruff check` **and** `ruff format --check`. `ruff check` exits first, so
-a green check does not mean format is clean — run both. CI does not run mypy;
-there are ~37 pre-existing mypy errors, mostly in tests.
+a green check does not mean format is clean — run both. CI also runs
+`uv run mypy .`, which is clean as of 2026-10-01; keep it that way.
 
 Docker exists under `docker/` but the maintainer runs everything natively.
 Prefer the native path unless asked.
