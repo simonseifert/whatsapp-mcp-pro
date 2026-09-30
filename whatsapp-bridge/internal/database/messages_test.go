@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -72,5 +73,34 @@ func TestStoreChatEmptyNameDoesNotEraseExistingName(t *testing.T) {
 	}
 	if name != "Alice" {
 		t.Fatalf("name = %q, want existing name", name)
+	}
+}
+
+func TestOldestMessage(t *testing.T) {
+	store := newTestMessageStore(t)
+	chat := "120363@g.us"
+	base := time.Date(2025, 10, 1, 9, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(chat, "FIDIT", base); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"B", "A", "C"} {
+		ts := base.Add(time.Duration(i-1) * time.Hour) // A is the oldest
+		if _, err := store.GetDB().Exec(
+			"INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, 'x', ?, 0)",
+			id, chat, "38591"+id, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	id, sender, fromMe, ts, err := store.OldestMessage(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "B" || sender != "38591B" || fromMe || !ts.Equal(base.Add(-time.Hour)) {
+		t.Errorf("got id=%s sender=%s fromMe=%v ts=%v", id, sender, fromMe, ts)
+	}
+
+	if _, _, _, _, err := store.OldestMessage("nobody@s.whatsapp.net"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("empty chat: got %v, want sql.ErrNoRows", err)
 	}
 }

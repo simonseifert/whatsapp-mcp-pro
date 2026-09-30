@@ -87,6 +87,7 @@ func (s *Server) registerHandlers() {
 
 	// Phase 4: History Sync
 	http.HandleFunc("/api/history/request", SecureMiddleware(s.handleRequestHistory))
+	http.HandleFunc("/api/history/backfill", SecureMiddleware(s.handleHistoryBackfill))
 
 	// Phase 5: Advanced Features
 	http.HandleFunc("/api/presence/set", SecureMiddleware(s.handleSetPresence))

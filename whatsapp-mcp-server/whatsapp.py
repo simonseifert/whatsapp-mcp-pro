@@ -1745,7 +1745,8 @@ def get_group_info(group_jid: str) -> dict[str, Any]:
                             "jid": jid,
                             "name": contact_name,
                             "is_admin": p.get("is_admin", False),
-                            "is_super_admin": p.get("is_super_admin", False),
+                            # The bridge calls the group owner "is_owner".
+                            "is_super_admin": p.get("is_owner", p.get("is_super_admin", False)),
                         }
                     )
                 return {
@@ -1754,7 +1755,11 @@ def get_group_info(group_jid: str) -> dict[str, Any]:
                     "name": data.get("name"),
                     "topic": data.get("topic"),
                     "created_at": data.get("created_at"),
-                    "created_by": data.get("created_by"),
+                    "created_by": data.get("owner_jid"),
+                    "is_community": data.get("is_community", False),
+                    "community_jid": data.get("community_jid") or None,
+                    "is_announcement_group": data.get("is_announcement_group", False),
+                    "is_announce_only": data.get("is_announce_only", False),
                     "participant_count": len(enriched_participants),
                     "participants": enriched_participants,
                 }
@@ -2162,7 +2167,11 @@ def get_poll_results(chat_jid: str, message_id: str) -> dict[str, Any]:
 
 
 def request_chat_history(
-    chat_jid: str, oldest_msg_id: str, oldest_msg_timestamp: int, oldest_msg_from_me: bool = False, count: int = 50
+    chat_jid: str,
+    oldest_msg_id: str | None = None,
+    oldest_msg_timestamp: int | None = None,
+    oldest_msg_from_me: bool = False,
+    count: int = 50,
 ) -> dict[str, Any]:
     """Request older messages for a specific chat (on-demand history sync).
 
@@ -2171,9 +2180,10 @@ def request_chat_history(
 
     Args:
         chat_jid: The JID of the chat to request history for
-        oldest_msg_id: The ID of the oldest message you have (messages before this will be requested)
-        oldest_msg_timestamp: Unix timestamp in milliseconds of the oldest message
-        oldest_msg_from_me: Whether the oldest message was sent by you
+        oldest_msg_id: Anchor message; omit to use the oldest stored message,
+            which the bridge looks up together with its sender
+        oldest_msg_timestamp: Unix timestamp in milliseconds of the anchor message
+        oldest_msg_from_me: Whether the anchor message was sent by you
         count: Number of messages to request (max 50)
 
     Returns:
@@ -2184,13 +2194,15 @@ def request_chat_history(
             count = 50
 
         url = f"{WHATSAPP_API_BASE_URL}/history/request"
-        payload = {
-            "chat_jid": chat_jid,
-            "oldest_msg_id": oldest_msg_id,
-            "oldest_msg_from_me": oldest_msg_from_me,
-            "oldest_msg_timestamp": oldest_msg_timestamp,
-            "count": count,
-        }
+        payload: dict[str, Any] = {"chat_jid": chat_jid, "count": count}
+        if oldest_msg_id:
+            payload.update(
+                {
+                    "oldest_msg_id": oldest_msg_id,
+                    "oldest_msg_from_me": oldest_msg_from_me,
+                    "oldest_msg_timestamp": oldest_msg_timestamp or 0,
+                }
+            )
 
         response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
 
@@ -2201,6 +2213,7 @@ def request_chat_history(
                 "message": result.get("message", "History request sent"),
                 "chat_jid": chat_jid,
                 "count": count,
+                "oldest_msg_before": result.get("oldest_msg_before"),
                 "error": result.get("error") if not result.get("success") else None,
             }
         else:
@@ -2208,6 +2221,37 @@ def request_chat_history(
 
     except requests.RequestException as e:
         return {"success": False, "chat_jid": chat_jid, "error": f"Request error: {str(e)}"}
+
+
+def start_history_backfill(chat_jid: str, until: str | None = None, max_batches: int = 40) -> dict[str, Any]:
+    """Start a background backfill that keeps requesting older history for a chat.
+
+    It stops when the phone has nothing older, the oldest message predates
+    `until` (YYYY-MM-DD), or after max_batches requests of 50 messages.
+    """
+    try:
+        payload: dict[str, Any] = {"chat_jid": chat_jid, "max_batches": max_batches}
+        if until:
+            payload["until"] = until
+        response = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/history/backfill", json=payload, headers=_get_headers(), timeout=30
+        )
+        if response.status_code in (200, 409):
+            return response.json()
+        return {"success": False, "chat_jid": chat_jid, "error": f"HTTP {response.status_code} - {response.text}"}
+    except requests.RequestException as e:
+        return {"success": False, "chat_jid": chat_jid, "error": f"Request error: {str(e)}"}
+
+
+def history_backfill_status() -> dict[str, Any]:
+    """List the background backfills started since the bridge came up."""
+    try:
+        response = requests.get(f"{WHATSAPP_API_BASE_URL}/history/backfill", headers=_get_headers(), timeout=30)
+        if response.status_code == 200:
+            return response.json()
+        return {"success": False, "error": f"HTTP {response.status_code} - {response.text}"}
+    except requests.RequestException as e:
+        return {"success": False, "error": f"Request error: {str(e)}"}
 
 
 # Phase 5: Advanced Features
