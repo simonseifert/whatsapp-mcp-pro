@@ -32,11 +32,11 @@ func ssrfSafeDialContext() func(ctx context.Context, network, addr string) (net.
 			if os.Getenv("DISABLE_SSRF_CHECK") == "true" {
 				return nil
 			}
-			host, _, err := net.SplitHostPort(address)
+			host, port, err := net.SplitHostPort(address)
 			if err != nil {
 				return fmt.Errorf("bad dial address %q: %w", address, err)
 			}
-			if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
+			if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) && !allowedPrivateTarget(ip, port) {
 				return fmt.Errorf("refusing to dial private address %s", host)
 			}
 			return nil
