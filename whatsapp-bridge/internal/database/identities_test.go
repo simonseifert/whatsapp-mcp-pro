@@ -348,3 +348,20 @@ func TestGetChatsExcludesMergedChats(t *testing.T) {
 		t.Error("surviving phone chat missing from GetChats")
 	}
 }
+
+func TestIdentityDisplayNameMatchesEitherJIDForm(t *testing.T) {
+	store := newTestMessageStore(t)
+	if _, err := store.GetDB().Exec(
+		`INSERT INTO identities (jid, lid, phone_jid, phone, kind, display_name)
+		 VALUES ('38591@s.whatsapp.net', '2507@lid', '38591@s.whatsapp.net', '38591', 'user', 'Ana')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, jid := range []string{"38591@s.whatsapp.net", "2507@lid"} {
+		if got := store.IdentityDisplayName(jid); got != "Ana" {
+			t.Errorf("IdentityDisplayName(%q) = %q, want Ana", jid, got)
+		}
+	}
+	if got := store.IdentityDisplayName("999@s.whatsapp.net"); got != "" {
+		t.Errorf("unknown jid: got %q, want empty", got)
+	}
+}

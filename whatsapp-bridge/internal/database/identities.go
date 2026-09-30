@@ -460,3 +460,22 @@ func nullIfEmpty(s string) interface{} {
 	}
 	return s
 }
+
+// IdentityDisplayName returns the directory's display name for a JID in either
+// form (canonical, LID or phone JID), or "" when the directory doesn't know it.
+func (store *MessageStore) IdentityDisplayName(jid string) string {
+	if jid == "" {
+		return ""
+	}
+	var name sql.NullString
+	err := store.db.QueryRow(
+		`SELECT display_name FROM identities
+		 WHERE (jid = ?1 OR lid = ?1 OR phone_jid = ?1) AND COALESCE(display_name, '') != ''
+		 LIMIT 1`,
+		jid,
+	).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name.String
+}
