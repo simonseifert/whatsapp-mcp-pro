@@ -28,7 +28,10 @@ import os
 import sqlite3
 import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from .utils import MESSAGES_DB_PATH, logger
 
@@ -83,7 +86,7 @@ def _get_model():
     return _model
 
 
-def _embed(texts: list[str]) -> np.ndarray:  # noqa: F821 (lazy numpy)
+def _embed(texts: list[str]) -> np.ndarray:
     global _last_model_use
     model = _get_model()
     _last_model_use = time.monotonic()
