@@ -130,6 +130,11 @@ when code/data were split as above.)
 - **recall is model-scoped.** Every `message_embeddings` query filters on
   `model`. Changing `MODEL_NAME` must re-embed; without the filter the backfill
   thinks it is done and `recall` np.stacks mismatched dimensions.
+- **Two media layouts.** Auto-download on receipt writes `store/<jid>/<filename>`
+  (both sanitised, see `AutoDownloadPath`); wa-dispatch and wa-assistant read that
+  directly, so don't move it. `/api/download` serves that copy first, then writes
+  `store/media/<jid>/<msgid><ext>` from the CDN URL, then whatsmeow's direct_path,
+  then a media retry to the sender's phone.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
 
