@@ -124,9 +124,39 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// RateLimitMiddleware limits requests per IP address
+// isAuthenticatedLoopback reports whether the request comes from this machine
+// and carries the valid API key. Such a caller has nothing left to brute-force.
+func isAuthenticatedLoopback(r *http.Request) bool {
+	expectedKey := os.Getenv("API_KEY")
+	if expectedKey == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-API-Key")), []byte(expectedKey)) == 1
+}
+
+// RateLimitMiddleware limits requests per IP address.
+//
+// Authenticated loopback callers are exempt. Every local client (the MCP
+// server, n8n, scripts) shares the 127.0.0.1 bucket, so one bulk job such as a
+// media backfill used to lock the MCP server out for the rest of the minute.
+// The limit exists to slow API-key guessing, and a caller that already holds
+// the key gains nothing from it. RemoteAddr is used rather than clientIP so a
+// forwarded header can never claim to be loopback.
 func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if isAuthenticatedLoopback(r) {
+			next(w, r)
+			return
+		}
+
 		// Get client IP
 		ip := clientIP(r)
 
