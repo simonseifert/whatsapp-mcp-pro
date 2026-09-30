@@ -113,12 +113,12 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	greq.Header.Set("User-Agent", "WhatsApp/2.24.0")
 	resp, err := httpClient.Do(greq)
 	if err != nil {
-		SendJSONError(w, "fetch failed: "+err.Error(), http.StatusBadGateway)
+		s.downloadViaWhatsmeow(w, r, req, "fetch failed: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		SendJSONError(w, fmt.Sprintf("CDN returned HTTP %d", resp.StatusCode), http.StatusBadGateway)
+		s.downloadViaWhatsmeow(w, r, req, fmt.Sprintf("CDN returned HTTP %d", resp.StatusCode))
 		return
 	}
 	enc, err := io.ReadAll(io.LimitReader(resp.Body, maxMediaBytes+1))
@@ -211,6 +211,30 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"path":    outPath,
 		"size":    len(plain),
+	})
+}
+
+// downloadViaWhatsmeow is the fallback when the stored CDN URL is dead. Those
+// URLs carry signed, expiring query params, so anything older than a few weeks
+// 403s. whatsmeow re-resolves the message's direct_path against fresh media
+// hosts, which works for as long as WhatsApp still holds the file.
+func (s *Server) downloadViaWhatsmeow(w http.ResponseWriter, r *http.Request, req downloadRequest, cdnErr string) {
+	path, _, err := s.client.DownloadMessageMedia(r.Context(), s.messageStore, filepath.Join("store", "media"), req.MessageID, req.ChatJID)
+	if err != nil {
+		SendJSONError(w, cdnErr+"; whatsmeow fallback: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	info, statErr := os.Stat(path)
+	size := int64(0)
+	if statErr == nil {
+		size = info.Size()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"path":    path,
+		"size":    size,
+		"via":     "whatsmeow",
 	})
 }
 
