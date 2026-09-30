@@ -37,6 +37,7 @@ from whatsapp import get_direct_chat_by_contact as whatsapp_get_direct_chat_by_c
 from whatsapp import get_group_info as whatsapp_get_group_info
 from whatsapp import get_last_interaction as whatsapp_get_last_interaction
 from whatsapp import get_message_context as whatsapp_get_message_context
+from whatsapp import get_poll_results as whatsapp_get_poll_results
 from whatsapp import get_profile_picture as whatsapp_get_profile_picture
 from whatsapp import leave_group as whatsapp_leave_group
 from whatsapp import list_all_contacts as whatsapp_list_all_contacts
@@ -732,6 +733,25 @@ def create_poll(chat_jid: str, question: str, options: list[str], multi_select: 
         A dictionary containing success, message_id, timestamp, chat_jid, question, options
     """
     return whatsapp_create_poll(chat_jid, question, options, multi_select)
+
+
+@tool("core", "Get Poll Results", read_only=True, idempotent=True, open_world=False)
+def get_poll_results(chat_jid: str, message_id: str) -> dict[str, Any]:
+    """Get who voted for what on a poll, and a per-option tally.
+
+    Only votes that arrive while the bridge runs are recorded, so polls older than
+    this feature show no votes.
+
+    Args:
+        chat_jid: The JID of the chat the poll was sent in
+        message_id: The ID of the poll message itself
+
+    Returns:
+        A dictionary with success, tally (option -> vote count) and votes
+        (voter_jid, selected_options, vote_timestamp_ms). A voter who retracted
+        their vote is listed with an empty selected_options.
+    """
+    return whatsapp_get_poll_results(chat_jid, message_id)
 
 
 # Phase 4: History Sync

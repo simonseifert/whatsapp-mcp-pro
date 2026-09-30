@@ -2128,6 +2128,36 @@ def create_poll(chat_jid: str, question: str, options: list[str], multi_select: 
         return {"success": False, "chat_jid": chat_jid, "error": f"Request error: {str(e)}"}
 
 
+def get_poll_results(chat_jid: str, message_id: str) -> dict[str, Any]:
+    """Get the current votes on a poll, plus a per-option tally.
+
+    A voter who retracted their vote is listed with an empty selected_options;
+    someone who never voted does not appear at all.
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/poll/results"
+        params = {"chat_jid": chat_jid, "message_id": message_id}
+        response = requests.get(url, params=params, headers=_get_headers(), timeout=30)
+        if response.status_code != 200:
+            return {"success": False, "chat_jid": chat_jid, "error": f"HTTP {response.status_code} - {response.text}"}
+
+        result = response.json()
+        votes = result.get("votes") or []
+        tally: dict[str, int] = {}
+        for vote in votes:
+            for option in vote.get("selected_options") or []:
+                tally[option] = tally.get(option, 0) + 1
+        return {
+            "success": result.get("success", False),
+            "chat_jid": chat_jid,
+            "message_id": message_id,
+            "tally": tally,
+            "votes": votes,
+        }
+    except requests.RequestException as e:
+        return {"success": False, "chat_jid": chat_jid, "error": f"Request error: {str(e)}"}
+
+
 # Phase 4: History Sync
 
 
