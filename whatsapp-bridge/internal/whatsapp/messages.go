@@ -912,6 +912,10 @@ func (c *Client) RequestChatHistory(chatJID string, oldestMsgID string, oldestMs
 		} else {
 			msgInfo.MessageSource.Sender = ownJID
 		}
+	} else if chat.Server != types.GroupServer {
+		// An incoming 1:1 message was written by the other side of the chat;
+		// anchoring it on our own JID names a message that doesn't exist.
+		msgInfo.MessageSource.Sender = chat
 	} else {
 		msgInfo.MessageSource.Sender = ownJID
 	}

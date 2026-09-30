@@ -353,3 +353,14 @@ func (store *MessageStore) GetPreviousMessageTime(chatJID string, currentTime ti
 	}
 	return prevTime, err
 }
+
+// OldestMessage returns the oldest stored message in a chat: the anchor an
+// on-demand history request needs. err is sql.ErrNoRows when the chat has none.
+func (store *MessageStore) OldestMessage(chatJID string) (id, sender string, isFromMe bool, timestamp time.Time, err error) {
+	var s sql.NullString
+	err = store.db.QueryRow(
+		"SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC LIMIT 1",
+		chatJID,
+	).Scan(&id, &s, &isFromMe, &timestamp)
+	return id, s.String, isFromMe, timestamp, err
+}

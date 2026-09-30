@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	waTypes "go.mau.fi/whatsmeow/types"
+
 	"whatsapp-bridge/internal/database"
 	"whatsapp-bridge/internal/types"
+	"whatsapp-bridge/internal/whatsapp"
 )
 
 // handleSendMessage handles POST /api/send for sending WhatsApp messages.
@@ -509,8 +512,22 @@ func (s *Server) handleGetGroupInfo(w http.ResponseWriter, r *http.Request) {
 			"participant_count": len(groupInfo.Participants),
 			"participants":      participants,
 			"created_at":        groupInfo.GroupCreated,
+			// A community parent and its announcement group share the
+			// community's name and never hold ordinary messages, so without
+			// these they look like empty duplicates of the real group chat.
+			"is_community":          groupInfo.IsParent,
+			"community_jid":         linkedParent(groupInfo.LinkedParentJID),
+			"is_announcement_group": groupInfo.IsDefaultSubGroup,
+			"is_announce_only":      groupInfo.IsAnnounce,
 		},
 	})
+}
+
+func linkedParent(jid waTypes.JID) string {
+	if jid.IsEmpty() {
+		return ""
+	}
+	return jid.String()
 }
 
 // handleMarkRead handles POST /api/read for sending read receipts (blue ticks).
@@ -1003,8 +1020,26 @@ func (s *Server) handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ChatJID == "" || req.OldestMsgID == "" || req.OldestMsgTimestamp == 0 {
-		SendJSONError(w, "chat_jid, oldest_msg_id, and oldest_msg_timestamp are required", http.StatusBadRequest)
+	if req.ChatJID == "" {
+		SendJSONError(w, "chat_jid is required", http.StatusBadRequest)
+		return
+	}
+	// Without an explicit anchor, ask for what precedes the oldest stored
+	// message. Callers used to have to look that up themselves, sender included,
+	// and group requests silently failed when they left the sender out.
+	if req.OldestMsgID == "" {
+		anchor, err := s.client.OldestHistoryAnchor(s.messageStore, req.ChatJID)
+		if err != nil {
+			SendJSONError(w, fmt.Sprintf("Cannot find an anchor message: %v", err), http.StatusBadRequest)
+			return
+		}
+		req.OldestMsgID = anchor.MsgID
+		req.OldestMsgFromMe = anchor.FromMe
+		req.OldestMsgSender = anchor.Sender
+		req.OldestMsgTimestamp = anchor.Timestamp.UnixMilli()
+	}
+	if req.OldestMsgTimestamp == 0 {
+		SendJSONError(w, "oldest_msg_timestamp is required with oldest_msg_id", http.StatusBadRequest)
 		return
 	}
 
@@ -1019,11 +1054,54 @@ func (s *Server) handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":  true,
-		"message":  "History request sent. Messages will arrive via HistorySync event.",
-		"chat_jid": req.ChatJID,
-		"count":    req.Count,
+		"success":           true,
+		"message":           "History request sent. Messages will arrive via HistorySync event.",
+		"chat_jid":          req.ChatJID,
+		"count":             req.Count,
+		"oldest_msg_id":     req.OldestMsgID,
+		"oldest_msg_before": time.UnixMilli(req.OldestMsgTimestamp).Format(time.RFC3339),
 	})
+}
+
+// handleHistoryBackfill starts (POST) or reports (GET) background backfills
+// that keep requesting older history until the phone has nothing older.
+//
+// POST body: chat_jid (required), until (YYYY-MM-DD, optional), max_batches
+// (optional, default 40, max 200). Each batch is 50 messages.
+func (s *Server) handleHistoryBackfill(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "jobs": whatsapp.BackfillStatuses()})
+	case http.MethodPost:
+		var req struct {
+			ChatJID    string `json:"chat_jid"`
+			Until      string `json:"until"`
+			MaxBatches int    `json:"max_batches"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" {
+			SendJSONError(w, "chat_jid is required", http.StatusBadRequest)
+			return
+		}
+		var until time.Time
+		if req.Until != "" {
+			t, err := time.Parse("2006-01-02", req.Until)
+			if err != nil {
+				SendJSONError(w, "until must be YYYY-MM-DD", http.StatusBadRequest)
+				return
+			}
+			until = t
+		}
+		job, err := s.client.StartBackfill(s.messageStore, req.ChatJID, until, req.MaxBatches)
+		if err != nil {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": err.Error(), "job": job})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "job": job})
+	default:
+		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // Phase 5: Advanced Features
