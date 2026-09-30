@@ -126,7 +126,7 @@ since unlike a terminal session it cannot be interrupted by one. The first call
 returns nothing and pins a cursor to now, so asking once never dumps your whole
 history into the conversation.
 
-Pro toolsets are opt-in: set `WHATSAPP_MCP_TOOLSETS=all` (the shared server does this automatically). See `.env.example` for bridge options (`API_KEY`, `API_BIND_HOST`, `PRESENCE_PING_ENABLED`, `DISABLE_SSRF_CHECK` for localhost webhooks). Anti-ban (`ANTIBAN_ENABLED`, off by default) and the send allowlist (`SEND_ALLOWED_JIDS`) are set the same way.
+Pro toolsets are opt-in: set `WHATSAPP_MCP_TOOLSETS=all` (the shared server does this automatically). See `.env.example` for bridge options (`API_KEY`, `API_BIND_HOST`, `PRESENCE_PING_ENABLED`, `WEBHOOK_ALLOWED_ADDRS` for localhost or tailnet webhooks). Anti-ban (`ANTIBAN_ENABLED`, off by default) and the send allowlist (`SEND_ALLOWED_JIDS`) are set the same way.
 
 ## wa-client: unlimited "WhatsApp Web", one device slot
 

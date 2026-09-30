@@ -54,6 +54,48 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
+// allowedPrivateTarget reports whether WEBHOOK_ALLOWED_ADDRS lets a webhook
+// reach this private address. Entries are comma-separated and match either an
+// exact ip:port ("127.0.0.1:5678") or a network with any port ("100.64.0.0/10",
+// or a bare IP). This replaces DISABLE_SSRF_CHECK for the common case of
+// delivering to n8n or a tailnet service: that switch also turned off the media
+// URL check and let a webhook reach cloud metadata or any local port.
+func allowedPrivateTarget(ip net.IP, port string) bool {
+	for _, entry := range strings.Split(os.Getenv("WEBHOOK_ALLOWED_ADDRS"), ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if host, p, err := net.SplitHostPort(entry); err == nil {
+			if allowed := net.ParseIP(host); allowed != nil && allowed.Equal(ip) && p == port {
+				return true
+			}
+			continue
+		}
+		if _, network, err := net.ParseCIDR(entry); err == nil {
+			if network.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if allowed := net.ParseIP(entry); allowed != nil && allowed.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// urlPort returns the URL's explicit port or the scheme default.
+func urlPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
 // ValidateWebhookURL checks if the webhook URL is safe (no SSRF)
 func ValidateWebhookURL(webhookURL string) error {
 	// Skip SSRF check if explicitly disabled (for testing)
@@ -88,7 +130,7 @@ func ValidateWebhookURL(webhookURL string) error {
 
 	// Check all resolved IPs
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
+		if isPrivateIP(ip) && !allowedPrivateTarget(ip, urlPort(u)) {
 			return fmt.Errorf("webhook URL resolves to private/reserved IP: %s -> %s", hostname, ip.String())
 		}
 	}

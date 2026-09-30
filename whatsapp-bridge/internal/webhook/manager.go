@@ -208,6 +208,27 @@ func (wm *Manager) DeliverConnectionEvent(payload *types.ConnectionEventPayload)
 	}
 }
 
+// senderName resolves a message's author the way the MCP tools do: the
+// identity directory first (address-book name or nickname), then the push
+// name, then the bare number. Senders arrive as LIDs more and more, so the
+// alternate JID is tried too.
+func (wm *Manager) senderName(msg *events.Message) string {
+	if wm.messageStore != nil {
+		for _, jid := range []string{msg.Info.Sender.ToNonAD().String(), msg.Info.SenderAlt.ToNonAD().String()} {
+			if jid == "" {
+				continue
+			}
+			if name := wm.messageStore.IdentityDisplayName(jid); name != "" {
+				return name
+			}
+		}
+	}
+	if msg.Info.PushName != "" {
+		return msg.Info.PushName
+	}
+	return msg.Info.Sender.User
+}
+
 // ProcessMessage processes a message and sends webhooks if triggers match
 func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatName string) {
 	startTime := time.Now()
@@ -225,9 +246,7 @@ func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatN
 	mediaType, filename, _, _, _, _, _, _ := whatsapp.ExtractMediaInfo(msg.Message)
 	quotedMsgID, quotedSender := whatsapp.ExtractQuotedContext(msg.Message)
 
-	// Determine sender name
-	senderName := msg.Info.Sender.User
-	// Note: We'll need to handle contact lookup when integrating with the client
+	senderName := wm.senderName(msg)
 
 	// Build base payload
 	basePayload := types.WebhookPayload{

@@ -117,3 +117,25 @@ func containsIgnoreCase(s, substr string) bool {
 			containsIgnoreCase(s[1:], substr[1:]) ||
 		len(s) > 0 && containsIgnoreCase(s[1:], substr))
 }
+
+func TestWebhookAllowedAddrs(t *testing.T) {
+	t.Setenv("DISABLE_SSRF_CHECK", "")
+	t.Setenv("WEBHOOK_ALLOWED_ADDRS", "127.0.0.1:5678, 100.64.0.0/10")
+	tests := []struct {
+		url string
+		ok  bool
+	}{
+		{"http://127.0.0.1:5678/webhook/x", true},
+		{"http://127.0.0.1:5679/webhook/x", false}, // exact ip:port only
+		{"http://127.0.0.1/webhook/x", false},
+		{"http://100.78.169.70:8084/api/webhook", true}, // tailnet range, any port
+		{"http://192.168.1.10:8080/", false},
+		{"http://169.254.169.254/latest/meta-data/", false},
+	}
+	for _, tt := range tests {
+		err := ValidateWebhookURL(tt.url)
+		if (err == nil) != tt.ok {
+			t.Errorf("ValidateWebhookURL(%q) error = %v, want ok=%v", tt.url, err, tt.ok)
+		}
+	}
+}
