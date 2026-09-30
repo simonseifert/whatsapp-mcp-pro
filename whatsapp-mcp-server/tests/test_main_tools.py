@@ -20,6 +20,7 @@ DEFAULT_TOOLS = {
     "send_reaction",
     "get_group_info",
     "create_poll",
+    "get_poll_results",
     "get_profile_picture",
 }
 
