@@ -11,7 +11,7 @@ Runs entirely on your own machine. Nothing goes to a third party.
 
 | | |
 |---|---|
-| **Ask** | 32 MCP tools in any Claude session — read, send, search, media, groups, polls |
+| **Ask** | 35 MCP tools in any Claude session — read, send, search, media, groups, polls |
 | **Browse** | [`wa-client`](#wa-client-unlimited-whatsapp-web-one-device-slot) — a WhatsApp-Web-style UI that costs **zero** extra linked-device slots |
 | **Talk to it** | [`wa-assistant`](#wa-assistant-text-yourself-get-claude-code-back) — message your own chat, Claude Code answers. Voice notes both ways |
 | **Have it act** | [`wa-dispatch`](#wa-dispatch-incoming-messages-start-the-work-optional) — a client's message opens a Claude session in that project and drafts the reply |
