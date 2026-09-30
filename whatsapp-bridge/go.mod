@@ -2,6 +2,8 @@ module whatsapp-bridge
 
 go 1.25.0
 
+toolchain go1.25.13
+
 require (
 	github.com/mattn/go-sqlite3 v1.14.48
 	github.com/mdp/qrterminal v1.0.1
