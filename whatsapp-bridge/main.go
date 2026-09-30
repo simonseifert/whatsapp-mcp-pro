@@ -158,6 +158,10 @@ func main() {
 			logger.Infof("[SYNC] ✓ Completed (Type: %v, %d conversations)", v.Data.SyncType, len(v.Data.Conversations))
 			identitySyncer.Trigger()
 
+		case *events.MediaRetry:
+			// A phone answering a request to re-upload purged media.
+			client.HandleMediaRetry(v)
+
 		case *events.Contact, *events.PushName, *events.BusinessName:
 			// Names changed upstream; coalesced into the next directory rebuild.
 			identitySyncer.Trigger()

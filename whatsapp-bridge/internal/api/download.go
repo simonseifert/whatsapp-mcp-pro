@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/hkdf"
+
+	"whatsapp-bridge/internal/whatsapp"
 )
 
 // maxMediaBytes caps the encrypted payload accepted from the WhatsApp CDN to
@@ -50,7 +52,11 @@ type downloadRequest struct {
 //   - message_id: WhatsApp message ID (required)
 //   - chat_jid:   chat JID containing the message (required)
 //
-// Response: { success: bool, path: string, size: int, message?: string }
+// Response: { success: bool, path: string, size: int, via: string, message?: string }
+//
+// path is absolute. via says where the bytes came from: "auto-download" (the
+// copy saved when the message arrived), "cdn" (the URL stored with the message)
+// or "whatsmeow" (direct_path re-resolved, for when that URL has expired).
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -81,8 +87,20 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info, ok := hkdfInfo[mediaType]
-	if !ok || url == "" || len(mediaKey) == 0 {
+	if !ok || len(mediaKey) == 0 {
 		SendJSONError(w, "no downloadable media for this message", http.StatusBadRequest)
+		return
+	}
+
+	// The bridge already saved most media on receipt, while its URL was fresh.
+	// Serving that copy is the only thing that still works once WhatsApp has
+	// purged the file from its servers.
+	if saved := whatsapp.AutoDownloadPath(req.ChatJID, req.MessageID, filename); fileNonEmpty(saved) {
+		writeDownloadResult(w, saved, "auto-download")
+		return
+	}
+	if url == "" {
+		s.downloadViaWhatsmeow(w, r, req, "no stored media URL")
 		return
 	}
 
@@ -91,7 +109,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// metadata or an internal service and this handler would dutifully GET it.
 	// Real WhatsApp media only ever lives on Meta CDNs — enforce that.
 	if err := validateCDNURL(url); err != nil {
-		SendJSONError(w, "refusing media URL: "+err.Error(), http.StatusBadRequest)
+		// whatsmeow picks the media host itself, so the fallback is not exposed
+		// to whatever the sender put in the URL.
+		s.downloadViaWhatsmeow(w, r, req, "refusing media URL: "+err.Error())
 		return
 	}
 
@@ -179,54 +199,86 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	plain = plain[:len(plain)-pad]
 
-	// Persist under store/media/<chat_jid>/<message_id><ext> (relative to bridge cwd).
-	storeDir := filepath.Join("store", "media", sanitizePath(req.ChatJID))
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		SendJSONError(w, "mkdir failed: "+err.Error(), http.StatusInternalServerError)
+	outPath, err := saveMedia(req.ChatJID, req.MessageID, mediaType, filename, plain)
+	if err != nil {
+		SendJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	ext := mediaExt[mediaType]
-	if mediaType == "document" && filename != "" {
-		if e := filepath.Ext(filename); e != "" {
-			ext = e
-		}
-	}
-	outPath := filepath.Join(storeDir, sanitizePath(req.MessageID)+ext)
-	// Atomic write: write to a sibling tmp file, then rename into place so partial
-	// writes never become visible and concurrent requests for the same message
-	// can't tear each other's output.
-	tmpPath := outPath + ".tmp"
-	if err := os.WriteFile(tmpPath, plain, 0o644); err != nil {
-		SendJSONError(w, "write failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := os.Rename(tmpPath, outPath); err != nil {
-		_ = os.Remove(tmpPath)
-		SendJSONError(w, "rename failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"success": true,
-		"path":    outPath,
-		"size":    len(plain),
-	})
+	writeDownloadResult(w, outPath, "cdn")
 }
 
-// downloadViaWhatsmeow is the fallback when the stored CDN URL is dead. Those
+// downloadViaWhatsmeow is the fallback when the stored CDN URL is unusable. Those
 // URLs carry signed, expiring query params, so anything older than a few weeks
 // 403s. whatsmeow re-resolves the message's direct_path against fresh media
 // hosts, which works for as long as WhatsApp still holds the file.
 func (s *Server) downloadViaWhatsmeow(w http.ResponseWriter, r *http.Request, req downloadRequest, cdnErr string) {
-	path, _, err := s.client.DownloadMessageMedia(r.Context(), s.messageStore, filepath.Join("store", "media"), req.MessageID, req.ChatJID)
+	data, mediaType, filename, err := s.client.FetchMessageMedia(r.Context(), s.messageStore, req.MessageID, req.ChatJID)
 	if err != nil {
 		SendJSONError(w, cdnErr+"; whatsmeow fallback: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	info, statErr := os.Stat(path)
-	size := int64(0)
-	if statErr == nil {
+	outPath, err := saveMedia(req.ChatJID, req.MessageID, mediaType, filename, data)
+	if err != nil {
+		SendJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeDownloadResult(w, outPath, "whatsmeow")
+}
+
+// saveMedia writes decrypted media to store/media/<chat_jid>/<message_id><ext>
+// under the bridge's working directory and returns the absolute path. Callers
+// such as the MCP server run in another working directory, so a relative path
+// is useless to them.
+func saveMedia(chatJID, messageID, mediaType, filename string, data []byte) (string, error) {
+	storeDir, err := filepath.Abs(filepath.Join("store", "media", sanitizePath(chatJID)))
+	if err != nil {
+		return "", fmt.Errorf("resolve media dir: %w", err)
+	}
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir failed: %w", err)
+	}
+	outPath := filepath.Join(storeDir, sanitizePath(messageID)+mediaExtension(mediaType, filename))
+	// Atomic write: write to a sibling tmp file, then rename into place so partial
+	// writes never become visible and concurrent requests for the same message
+	// can't tear each other's output.
+	tmpPath := outPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return "", fmt.Errorf("write failed: %w", err)
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("rename failed: %w", err)
+	}
+	return outPath, nil
+}
+
+// mediaExtension keeps a document's own extension, because ".bin" makes a PDF
+// useless to whoever opens it. The filename is sender-supplied, so the
+// extension is sanitised like every other path component.
+func mediaExtension(mediaType, filename string) string {
+	ext := mediaExt[mediaType]
+	if ext == "" {
+		ext = ".bin"
+	}
+	if mediaType == "document" && filename != "" {
+		if e := strings.TrimPrefix(filepath.Ext(filename), "."); e != "" && len(e) <= 10 {
+			ext = "." + sanitizePath(e)
+		}
+	}
+	return ext
+}
+
+func fileNonEmpty(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
+}
+
+func writeDownloadResult(w http.ResponseWriter, path, via string) {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	var size int64
+	if info, err := os.Stat(path); err == nil {
 		size = info.Size()
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -234,7 +286,7 @@ func (s *Server) downloadViaWhatsmeow(w http.ResponseWriter, r *http.Request, re
 		"success": true,
 		"path":    path,
 		"size":    size,
-		"via":     "whatsmeow",
+		"via":     via,
 	})
 }
 

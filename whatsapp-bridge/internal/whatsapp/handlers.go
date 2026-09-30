@@ -379,23 +379,27 @@ func (c *Client) historyMessageSender(chat types.JID, key *waCommon.MessageKey) 
 	return chat.ToNonAD().String(), isFromMe
 }
 
-// autoDownloadMedia downloads and saves media to disk immediately after receiving a message,
-// before the WhatsApp CDN URL expires. Runs as a goroutine; all errors are logged and ignored.
-func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
-	// Sanitize JID for filesystem (replace colons and other special chars)
-	sanitizedJID := regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(chatJID, "_")
-	outDir := filepath.Join("store", sanitizedJID)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		c.logger.Warnf("auto-download: mkdir %s: %v", outDir, err)
-		return
-	}
+var autoDownloadUnsafe = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
+// AutoDownloadPath is where autoDownloadMedia saves a message's media, relative
+// to the bridge's working directory: store/<chat_jid>/<filename>, both
+// sanitised. wa-dispatch and wa-assistant read this layout directly, so it must
+// not change; /api/download also checks it before going to the network.
+func AutoDownloadPath(chatJID, msgID, filename string) string {
 	if filename == "" {
 		filename = msgID + ".bin"
 	}
-	// Sanitize filename
-	safeFilename := regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(filename, "_")
-	outPath := filepath.Join(outDir, safeFilename)
+	return filepath.Join("store", autoDownloadUnsafe.ReplaceAllString(chatJID, "_"), autoDownloadUnsafe.ReplaceAllString(filename, "_"))
+}
+
+// autoDownloadMedia downloads and saves media to disk immediately after receiving a message,
+// before the WhatsApp CDN URL expires. Runs as a goroutine; all errors are logged and ignored.
+func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
+	outPath := AutoDownloadPath(chatJID, msgID, filename)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		c.logger.Warnf("auto-download: mkdir %s: %v", filepath.Dir(outPath), err)
+		return
+	}
 
 	// Skip if already downloaded
 	if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
