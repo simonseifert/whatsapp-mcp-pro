@@ -27,7 +27,7 @@ log "building bridge"
 log "go tests"
 (cd "$REPO/whatsapp-bridge" && go test ./... >/dev/null) || die "Go tests failed — not deploying"
 log "python deps + checks"
-(cd "$REPO/whatsapp-mcp-server" && uv sync --extra dev --quiet \
+(cd "$REPO/whatsapp-mcp-server" && uv sync --extra dev --extra pro --quiet \
   && uv run ruff check --quiet . \
   && uv run pytest -q --ignore=tests/test_recall.py >/dev/null) || die "Python checks failed — not deploying"
 
