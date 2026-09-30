@@ -3,17 +3,19 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY whatsapp-web-ui/package*.json ./
+# The web UI is a pnpm project (pnpm-lock.yaml, no package-lock.json), so
+# `npm ci` has nothing to install from and fails.
+RUN corepack enable && corepack prepare pnpm@10 --activate
 
-# Install dependencies
-RUN npm ci
+COPY whatsapp-web-ui/package.json whatsapp-web-ui/pnpm-lock.yaml ./
+
+RUN pnpm install --frozen-lockfile
 
 # Copy source files
 COPY whatsapp-web-ui/ ./
 
 # Build the static export
-RUN npm run build
+RUN pnpm run build
 
 # Production stage
 FROM nginx:alpine
