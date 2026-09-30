@@ -39,6 +39,7 @@ from whatsapp import get_last_interaction as whatsapp_get_last_interaction
 from whatsapp import get_message_context as whatsapp_get_message_context
 from whatsapp import get_poll_results as whatsapp_get_poll_results
 from whatsapp import get_profile_picture as whatsapp_get_profile_picture
+from whatsapp import history_backfill_status as whatsapp_history_backfill_status
 from whatsapp import leave_group as whatsapp_leave_group
 from whatsapp import list_all_contacts as whatsapp_list_all_contacts
 from whatsapp import list_chats as whatsapp_list_chats
@@ -60,6 +61,7 @@ from whatsapp import set_contact_nickname as whatsapp_set_contact_nickname
 
 # Phase 5: Advanced Features
 from whatsapp import set_presence as whatsapp_set_presence
+from whatsapp import start_history_backfill as whatsapp_start_history_backfill
 from whatsapp import subscribe_presence as whatsapp_subscribe_presence
 from whatsapp import unfollow_newsletter as whatsapp_unfollow_newsletter
 from whatsapp import update_blocklist as whatsapp_update_blocklist
@@ -109,6 +111,7 @@ GroupAction = Literal["create", "add_members", "remove_members", "promote_admin"
 BlocklistAction = Literal["block", "unblock"]
 NewsletterAction = Literal["follow", "unfollow", "create"]
 PresenceState = Literal["available", "unavailable"]
+HistoryAction = Literal["request", "backfill", "status"]
 ChatSort = Literal["last_active", "name"]
 DirectoryKind = Literal["user", "group", "newsletter", "broadcast"]
 DirectorySort = Literal["last_active", "name", "messages"]
@@ -759,29 +762,46 @@ def get_poll_results(chat_jid: str, message_id: str) -> dict[str, Any]:
 
 @tool("history", "Request History", read_only=False)
 def request_history(
-    chat_jid: str, oldest_msg_id: str, oldest_msg_timestamp: int, oldest_msg_from_me: bool = False, count: int = 50
+    chat_jid: str,
+    action: HistoryAction = "request",
+    count: int = 50,
+    until: str | None = None,
+    max_batches: int = 40,
+    oldest_msg_id: str | None = None,
+    oldest_msg_timestamp: int | None = None,
+    oldest_msg_from_me: bool = False,
 ) -> dict[str, Any]:
-    """Request older messages for a chat (on-demand history sync).
+    """Pull older messages for a chat from your phone (on-demand history sync).
 
-    This requests WhatsApp to sync older messages for a specific chat.
-    The messages will appear in the database after the sync completes.
-    Note: Only works if the phone has older messages available.
+    Every request makes the phone show a "Finished syncing" notification, so a
+    long backfill means many notifications.
 
     Args:
         chat_jid: The JID of the chat to request history for
-        oldest_msg_id: The ID of the oldest message currently in the chat
-        oldest_msg_timestamp: Unix timestamp in milliseconds of the oldest message
-        oldest_msg_from_me: Whether the oldest message was sent by you (default: False)
-        count: Number of messages to request (max 50, default: 50)
+        action: "request" asks once for up to `count` messages before the oldest
+            stored one. "backfill" starts a background job that keeps asking until
+            the phone has nothing older, the chat reaches `until`, or `max_batches`
+            requests were made. "status" lists backfill jobs (chat_jid is ignored).
+        count: Messages per request for action="request" (max 50, default 50)
+        until: For action="backfill": stop once messages reach this date (YYYY-MM-DD)
+        max_batches: For action="backfill": most requests to make (default 40, max 200)
+        oldest_msg_id: Optional explicit anchor for action="request". Omit it and
+            the bridge uses the oldest stored message, sender included.
+        oldest_msg_timestamp: Unix milliseconds of the explicit anchor
+        oldest_msg_from_me: Whether the explicit anchor was sent by you
 
     Returns:
-        A dictionary containing success status and message
+        action="request": success, message, oldest_msg_before.
+        action="backfill": the started job. action="status": all jobs.
 
     Hints:
-        - Use `list_messages` first to get the oldest_msg_id and oldest_msg_timestamp
-        - After requesting, wait a few seconds then use `list_messages` to see synced messages
-        - Use when `list_messages` returns fewer messages than expected
+        - Messages arrive asynchronously; check `list_messages` a few seconds later
+        - Use action="backfill" to recover months of history in one call
     """
+    if action == "status":
+        return whatsapp_history_backfill_status()
+    if action == "backfill":
+        return whatsapp_start_history_backfill(chat_jid, until, max_batches)
     return whatsapp_request_chat_history(chat_jid, oldest_msg_id, oldest_msg_timestamp, oldest_msg_from_me, count)
 
 
