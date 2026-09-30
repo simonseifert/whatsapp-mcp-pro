@@ -378,9 +378,20 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 	if quotedMessageID != "" && messageStore != nil {
 		content, sender, _, err := messageStore.GetMessageContentAndSender(quotedMessageID)
 		if err == nil {
+			// Resolve a bare LID sender (e.g. "250723665199309") to its phone JID so
+			// WhatsApp accepts the quoted Participant. Received messages store the
+			// sender as a bare LID number; the reply context needs the phone JID.
+			participant := sender
+			if !strings.Contains(sender, "@") {
+				lidJID := types.JID{User: sender, Server: types.HiddenUserServer}
+				if pn, altErr := c.Store.GetAltJID(context.Background(), lidJID); altErr == nil && !pn.IsEmpty() {
+					participant = pn.String()
+					c.logger.Debugf("Resolved quoted LID %s to %s", sender, participant)
+				}
+			}
 			contextInfo := &waE2E.ContextInfo{
 				StanzaID:    proto.String(quotedMessageID),
-				Participant: proto.String(sender),
+				Participant: proto.String(participant),
 				QuotedMessage: &waE2E.Message{
 					Conversation: proto.String(content),
 				},
@@ -391,7 +402,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 					msg.ExtendedTextMessage.ContextInfo = contextInfo
 				} else {
 					msg.ExtendedTextMessage.ContextInfo.StanzaID = proto.String(quotedMessageID)
-					msg.ExtendedTextMessage.ContextInfo.Participant = proto.String(sender)
+					msg.ExtendedTextMessage.ContextInfo.Participant = proto.String(participant)
 					msg.ExtendedTextMessage.ContextInfo.QuotedMessage = contextInfo.QuotedMessage
 				}
 			} else if msg.ImageMessage != nil {
