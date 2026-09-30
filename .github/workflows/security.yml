@@ -25,7 +25,9 @@ jobs:
       - name: Run govulncheck
         working-directory: whatsapp-bridge
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # Pinned: @latest moved to a release that needs a newer Go than the
+          # bridge's toolchain, and GOTOOLCHAIN=local forbids fetching one.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           govulncheck ./...
 
   python-security:
