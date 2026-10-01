@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import requests as _requests
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.utilities.types import Image
+from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import ToolAnnotations
 
 from lib.identity import directory_stats as whatsapp_directory_stats
@@ -69,8 +68,8 @@ from whatsapp import update_group as whatsapp_update_group
 
 _INLINE_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-# Initialize FastMCP server
-mcp = FastMCP("whatsapp-extended")
+# The name is what clients see as serverInfo.name; keep it stable.
+mcp = MCPServer("whatsapp-extended")
 
 ALL_TOOLSETS = {
     "core",
@@ -142,10 +141,10 @@ def tool(
             description=description,
             annotations=ToolAnnotations(
                 title=title,
-                readOnlyHint=read_only,
-                destructiveHint=destructive,
-                idempotentHint=idempotent,
-                openWorldHint=open_world,
+                read_only_hint=read_only,
+                destructive_hint=destructive,
+                idempotent_hint=idempotent,
+                open_world_hint=open_world,
             ),
         )(func)
 
@@ -1152,6 +1151,11 @@ def recall_index_status() -> dict[str, Any]:
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     if transport in {"sse", "streamable-http"}:
-        mcp.settings.host = os.getenv("HOST", "0.0.0.0")
-        mcp.settings.port = int(os.getenv("PORT", "8081"))
-    mcp.run(transport=cast(Literal["stdio", "sse", "streamable-http"], transport))
+        # mcp 2 takes transport settings on run(), not on mcp.settings.
+        mcp.run(
+            transport=cast(Literal["sse", "streamable-http"], transport),
+            host=os.getenv("HOST", "0.0.0.0"),
+            port=int(os.getenv("PORT", "8081")),
+        )
+    else:
+        mcp.run(transport="stdio")
