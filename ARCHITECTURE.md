@@ -19,7 +19,7 @@ This document describes the architectural principles, system boundaries, and ext
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        AI CLIENT (Claude / Codex)                      │
 └───────────────────────────────────┬────────────────────────────────────┘
-                                    │ FastMCP Protocol (STDIO / SSE)
+                                    │ MCP protocol (stdio / HTTP)  
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                      whatsapp-mcp-server (Python)                      │

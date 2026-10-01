@@ -11,6 +11,7 @@ regression fails here instead of in production.
 import importlib
 
 import pytest
+from mcp.types import CallToolResult
 
 # The read tools that return store data and are safe to call with no bridge.
 # Each maps to arguments that resolve against the temp DB fixtures.
@@ -60,13 +61,15 @@ async def test_read_tool_dispatches_without_validation_error(dispatch_main, tool
     """
     result = await dispatch_main.mcp.call_tool(tool_name, args)
 
-    # FastMCP returns (content_blocks, structured_result). The structured half is
-    # what gets schema-validated; None is only valid for the deliberate miss.
-    structured = result[1] if isinstance(result, tuple) else result
+    # call_tool returns a CallToolResult; its structured_content is what gets
+    # schema-validated. None is only valid for the deliberate miss.
+    assert isinstance(result, CallToolResult), result
+    assert not result.is_error, result.content
+    structured = result.structured_content
     if tool_name == "get_chat" and args["chat_jid"].startswith("does-not-exist"):
         assert structured is None or structured == {} or structured.get("result") is None
     else:
-        # FastMCP wraps a bare None return as {"result": None}; a plain
+        # MCPServer wraps a bare None return as {"result": None}; a plain
         # `is not None` check would wave that through and give false confidence
         # that the tool returned data. Require a real payload for hit cases.
         assert structured is not None

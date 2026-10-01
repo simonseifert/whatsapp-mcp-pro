@@ -38,11 +38,9 @@ if __name__ == "__main__":
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     port = int(os.environ.get("MCP_PORT", "8082"))
 
-    mcp.settings.host = host
-    mcp.settings.port = port
     # The SDK's DNS-rebinding protection only allows localhost Hosts by
     # default; without this, tailnet clients get 421 Misdirected Request.
-    mcp.settings.transport_security = TransportSecuritySettings(
+    transport_security = TransportSecuritySettings(
         allowed_hosts=[f"{host}:{port}"],
         allowed_origins=[f"http://{host}:{port}"],
     )
@@ -54,7 +52,7 @@ if __name__ == "__main__":
         tokens[os.environ["WA_MCP_READONLY_TOKEN"]] = "readonly"
 
     readonly_tools = {
-        t.name for t in mcp._tool_manager.list_tools() if t.annotations is not None and t.annotations.readOnlyHint
+        t.name for t in mcp._tool_manager.list_tools() if t.annotations is not None and t.annotations.read_only_hint
     }
 
     def _filter_tools_payload(payload):
@@ -203,5 +201,5 @@ if __name__ == "__main__":
     # Keep the recall index warm so first-call results are never partial.
     start_periodic_indexing(int(os.environ.get("RECALL_INDEX_INTERVAL", "600")))
 
-    app = ScopedAuth(mcp.streamable_http_app())
+    app = ScopedAuth(mcp.streamable_http_app(transport_security=transport_security, host=host))
     uvicorn.run(app, host=host, port=port, log_level="warning")
