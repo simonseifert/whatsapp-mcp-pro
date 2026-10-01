@@ -1,11 +1,16 @@
 """Pluggable speech-to-text backends for transcription tools + auto pipeline.
 
 Backend selection via WHISPER_BACKEND (default "auto"):
+    whisper-server  a whisper.cpp server at WHISPER_SERVER_URL (e.g. on a local
+                    GPU box) — fully local, model stays resident, no RAM here
     mlx             mlx-whisper — Apple Silicon only, fully local (~1.5 GB model)
     faster-whisper  CTranslate2 — cross-platform CPU/GPU, fully local
     groq            Groq API (whisper-large-v3-turbo) — needs GROQ_API_KEY,
                     near-zero RAM, ideal for small always-on boxes
     auto            first available in the order above
+
+If the chosen local backend fails and GROQ_API_KEY is set, the file is retried
+on Groq, so a stopped GPU server degrades to the cloud instead of to nothing.
 
 The auto-transcribe pipeline (start_auto_transcribe, opt-in via
 AUTO_TRANSCRIBE_VOICE=true in the shared server) transcribes incoming voice
@@ -29,6 +34,7 @@ MLX_MODEL = os.environ.get("MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-
 FW_MODEL = os.environ.get("FASTER_WHISPER_MODEL", "large-v3-turbo")
 GROQ_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+WHISPER_SERVER_URL = os.environ.get("WHISPER_SERVER_URL", "").rstrip("/")
 VOICE_PREFIX = "\U0001f3a4 "  # 🎤 marks auto-transcribed content
 
 _fw_model = None
@@ -43,6 +49,8 @@ def available_backend() -> str:
     b = os.environ.get("WHISPER_BACKEND", "auto").lower()
     if b != "auto":
         return b
+    if WHISPER_SERVER_URL:
+        return "whisper-server"
     try:
         import mlx_whisper  # noqa: F401
 
@@ -63,7 +71,21 @@ def available_backend() -> str:
 def transcribe_file(file_path: str, language: str | None = None) -> dict[str, Any]:
     """Transcribe an audio file with whichever backend is available."""
     backend = available_backend()
+    result = _run_backend(backend, file_path, language)
+    if result is None:
+        return _no_backend()
+    if not result.get("success") and backend != "groq" and os.environ.get("GROQ_API_KEY"):
+        logger.warning("[transcribe] %s failed (%s), retrying on groq", backend, result.get("message"))
+        fallback = _run_backend("groq", file_path, language)
+        if fallback is not None and fallback.get("success"):
+            return fallback
+    return result
+
+
+def _run_backend(backend: str, file_path: str, language: str | None) -> dict[str, Any] | None:
     try:
+        if backend == "whisper-server":
+            return _whisper_server(file_path, language)
         if backend == "mlx":
             return _mlx(file_path, language)
         if backend == "faster-whisper":
@@ -72,6 +94,10 @@ def transcribe_file(file_path: str, language: str | None = None) -> dict[str, An
             return _groq(file_path, language)
     except Exception as exc:
         return {"success": False, "backend": backend, "message": f"Transcription failed: {exc}"}
+    return None
+
+
+def _no_backend() -> dict[str, Any]:
     return {
         "success": False,
         "backend": "none",
@@ -80,6 +106,37 @@ def transcribe_file(file_path: str, language: str | None = None) -> dict[str, An
             "or faster-whisper (any OS), or set GROQ_API_KEY for the Groq API. "
             "Override with WHISPER_BACKEND."
         ),
+    }
+
+
+def _whisper_server(file_path: str, language: str | None) -> dict[str, Any]:
+    """POST the file to a whisper.cpp server started with --convert, which
+    accepts WhatsApp's ogg/opus as-is."""
+    import requests
+
+    if not WHISPER_SERVER_URL:
+        return {"success": False, "backend": "whisper-server", "message": "WHISPER_SERVER_URL not set"}
+    with open(file_path, "rb") as f:
+        r = requests.post(
+            f"{WHISPER_SERVER_URL}/inference",
+            files={"file": (os.path.basename(file_path), f)},
+            data={"response_format": "verbose_json", "language": language or "auto"},
+            timeout=300,
+        )
+    if r.status_code != 200:
+        return {
+            "success": False,
+            "backend": "whisper-server",
+            "message": f"whisper-server HTTP {r.status_code}: {r.text[:200]}",
+        }
+    body = r.json()
+    if "error" in body:
+        return {"success": False, "backend": "whisper-server", "message": str(body["error"])[:200]}
+    return {
+        "success": True,
+        "backend": "whisper-server",
+        "text": (body.get("text") or "").strip(),
+        "language": body.get("detected_language") or body.get("language"),
     }
 
 
