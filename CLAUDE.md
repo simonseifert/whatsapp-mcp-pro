@@ -134,7 +134,9 @@ when code/data were split as above.)
   (both sanitised, see `AutoDownloadPath`); wa-dispatch and wa-assistant read that
   directly, so don't move it. `/api/download` serves that copy first, then writes
   `store/media/<jid>/<msgid><ext>` from the CDN URL, then whatsmeow's direct_path,
-  then a media retry to the sender's phone.
+  then (only with `MEDIA_RETRY_ENABLED=true`) a media retry to the sender's
+  phone. Each retry pings the user's phone with "Finished syncing", so keep it off
+  for bulk jobs.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
 

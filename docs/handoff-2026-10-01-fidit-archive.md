@@ -10,6 +10,8 @@ All ten are addressed on `main`:
 1. Kept, and the fallback now also runs when the stored URL is missing or not a Meta CDN host.
 2. Media retry: a 403/404/410 from whatsmeow sends a media retry receipt and waits up to 25 s
    for the sender's phone to re-upload, then downloads from the new direct path and stores it.
+   Now opt-in (`MEDIA_RETRY_ENABLED=true`): the FIDIT media download sent 172 retries in ten
+   minutes and each one put a "Finished syncing" notification on the phone.
 3. `/api/download` always returns an absolute path.
 4. The CDN and whatsmeow paths share one writer (`store/media/<jid>/<msgid><ext>`). The
    auto-download layout is unchanged because wa-dispatch and wa-assistant read it directly, but
