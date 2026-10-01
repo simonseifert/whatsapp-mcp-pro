@@ -75,7 +75,7 @@ media before CDN links expire.
                      │      ▲                ▲                    │
                      │      │ REST           │ REST + webhook     │
                      │ whatsapp-mcp-server   wa-client            │
-                     │  (Python FastMCP)      (chat web UI :8084) │
+                     │  (Python MCPServer)    (chat web UI :8084) │
                      │   stdio  or  :8082     SSE push, schedule  │
                      └──────┬─────────────────────────────────────┘
                             │ streamable HTTP (+ bearer token)
@@ -83,7 +83,7 @@ media before CDN links expire.
 ```
 
 - **whatsapp-bridge** — Go daemon on [whatsmeow](https://github.com/tulir/whatsmeow). Pairs as a linked device (QR once), stores history in SQLite, exposes REST + webhooks. Binds 127.0.0.1 by default.
-- **whatsapp-mcp-server** — Python FastMCP. Run per-client via stdio, or (recommended) as the shared HTTP server.
+- **whatsapp-mcp-server** — Python MCP server (mcp 2.x `MCPServer`). Run per-client via stdio, or (recommended) as the shared HTTP server.
 - **wa-client** — the chat web UI. Optional but excellent.
 - **whatsapp-web-ui** — upstream's Next.js admin panel (pairing, webhook management). Not a chat client.
 
