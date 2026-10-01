@@ -85,3 +85,15 @@ Webhook config id 3, "FIDIT groups -> n8n": POSTs messages from four FIDIT chat 
 which pings ntfy topic `fidit`). It relies on the payload fields `event_type`,
 `message.chat_name`, `message.push_name`, `message.content`, `message.media_type`,
 `message.filename` and `message.is_from_me`.
+
+## Before switching the live `.env` to `WEBHOOK_ALLOWED_ADDRS` (note added 2026-10-01 00:58)
+
+The running bridge (PID started 00:17) still has `DISABLE_SSRF_CHECK=true`, and the `.env` has not
+been switched yet. The allowlist must cover both live webhooks or they stop silently:
+`127.0.0.1:5678` (n8n "FIDIT WhatsApp Watch", config id 3) and `100.78.169.70:8084` (wa-web push,
+config id 2). After deploying, send a message in any FIDIT chat and check `webhook_logs` for
+config 3 with a 200.
+
+Done 2026-10-01 11:05: `.env` switched (backup `.env.bak-20261001-ssrf`), bridge redeployed on
+Go 1.25.13, and both webhooks logged a 200 under the new settings (config 3 "Workflow was started",
+config 2 `{"success":true}`) one second after the restart.
