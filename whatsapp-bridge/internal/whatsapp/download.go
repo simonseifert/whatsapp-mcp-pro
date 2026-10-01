@@ -73,7 +73,7 @@ func (c *Client) FetchMessageMedia(ctx context.Context, store *database.MessageS
 	}
 
 	data, err = c.Client.Download(ctx, msg)
-	if isMediaGone(err) {
+	if isMediaGone(err) && os.Getenv("MEDIA_RETRY_ENABLED") == "true" {
 		data, err = c.retryMediaDownload(ctx, store, messageID, chatJID, msg, mediaKey)
 	}
 	if err != nil {
@@ -114,8 +114,13 @@ func (c *Client) HandleMediaRetry(evt *events.MediaRetry) {
 	}
 }
 
-// retryMediaDownload asks the phone that sent a message to re-upload its media
-// (a media retry receipt), waits for the new direct path, downloads from it and
+// retryMediaDownload asks the phone that sent a message to re-upload its media.
+//
+// Off unless MEDIA_RETRY_ENABLED=true: every retry makes the user's phone show
+// a "Finished syncing" notification, and a bulk media download on 2026-10-01
+// sent 172 of them in ten minutes.
+//
+// When on, it sends a media retry receipt, waits for the new direct path, downloads from it and
 // remembers it. This only works while the sender still has the file, and
 // their phone has to be online to answer.
 func (c *Client) retryMediaDownload(ctx context.Context, store *database.MessageStore, messageID, chatJID string, msg whatsmeow.DownloadableMessage, mediaKey []byte) ([]byte, error) {
