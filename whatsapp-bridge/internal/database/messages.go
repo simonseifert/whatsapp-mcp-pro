@@ -49,6 +49,21 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content
 	return err
 }
 
+// StoreMessageContext records what a stored message replied to and whether it was forwarded.
+// Kept separate from StoreMessage so its many call sites don't all grow four more arguments.
+func (store *MessageStore) StoreMessageContext(id, chatJID, quotedID, quotedSender, quotedText string, isForwarded bool) error {
+	if quotedID == "" && quotedText == "" && !isForwarded {
+		return nil
+	}
+	_, err := store.db.Exec(
+		`UPDATE messages SET quoted_message_id = NULLIF(?, ''), quoted_sender_name = NULLIF(?, ''),
+		        quoted_text_preview = NULLIF(?, ''), reply_to_message_id = NULLIF(?, ''), is_forwarded = ?
+		  WHERE id = ? AND chat_jid = ?`,
+		quotedID, quotedSender, quotedText, quotedID, isForwarded, id, chatJID,
+	)
+	return err
+}
+
 // GetMessageMedia retrieves media metadata for a single message.
 func (store *MessageStore) GetMessageMedia(id, chatJID string) (mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, err error) {
 	row := store.db.QueryRow(

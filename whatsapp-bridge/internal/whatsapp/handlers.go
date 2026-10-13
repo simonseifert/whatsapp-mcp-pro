@@ -212,6 +212,11 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 
 	if err != nil {
 		c.logger.Warnf("Failed to store message: %v", err)
+	} else {
+		rc := ExtractReplyContext(msg.Message)
+		if err := messageStore.StoreMessageContext(msg.Info.ID, chatJID, rc.QuotedID, rc.QuotedSender, rc.QuotedText, rc.IsForwarded); err != nil {
+			c.logger.Warnf("Failed to store reply context for %s: %v", msg.Info.ID, err)
+		}
 	}
 
 	// Auto-download media while CDN URL is still fresh
@@ -331,6 +336,10 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 					c.logger.Warnf("Failed to store history message: %v", err)
 				} else {
 					syncedCount++
+					rc := ExtractReplyContext(msg.Message.Message)
+					if err := messageStore.StoreMessageContext(msgID, chatJID, rc.QuotedID, rc.QuotedSender, rc.QuotedText, rc.IsForwarded); err != nil {
+						c.logger.Warnf("Failed to store reply context for %s: %v", msgID, err)
+					}
 					// Log successful message storage
 					if mediaType != "" {
 						c.logger.Debugf("Stored message: [%s] %s -> %s: [%s: %s] %s",
