@@ -104,3 +104,25 @@ func TestOldestMessage(t *testing.T) {
 		t.Errorf("empty chat: got %v, want sql.ErrNoRows", err)
 	}
 }
+
+func TestStoreMessageContext(t *testing.T) {
+	store := newTestMessageStore(t)
+	ts := time.Date(2026, 10, 13, 19, 43, 0, 0, time.UTC)
+	if err := store.StoreChat("g@g.us", "Friday", ts); err != nil {
+		t.Fatalf("store chat: %v", err)
+	}
+	if err := store.StoreMessage("M1", "g@g.us", "me", "Simon", "analyze this", ts, true, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := store.StoreMessageContext("M1", "g@g.us", "Q1", "123@s.whatsapp.net", "https://x.test/reel", true); err != nil {
+		t.Fatalf("store context: %v", err)
+	}
+	var qid, qtext, reply string
+	var fwd bool
+	if err := store.db.QueryRow("SELECT quoted_message_id, quoted_text_preview, reply_to_message_id, is_forwarded FROM messages WHERE id = 'M1'").Scan(&qid, &qtext, &reply, &fwd); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if qid != "Q1" || qtext != "https://x.test/reel" || reply != "Q1" || !fwd {
+		t.Fatalf("got qid=%q qtext=%q reply=%q fwd=%v", qid, qtext, reply, fwd)
+	}
+}

@@ -123,28 +123,59 @@ func ExtractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, ur
 	return "", "", "", "", nil, nil, nil, 0
 }
 
+// messageContextInfo returns the ContextInfo (quote, forward flags) of whichever message kind carries it.
+func messageContextInfo(msg *waE2E.Message) *waE2E.ContextInfo {
+	if msg == nil {
+		return nil
+	}
+	switch {
+	case msg.GetExtendedTextMessage() != nil:
+		return msg.GetExtendedTextMessage().GetContextInfo()
+	case msg.GetImageMessage() != nil:
+		return msg.GetImageMessage().GetContextInfo()
+	case msg.GetVideoMessage() != nil:
+		return msg.GetVideoMessage().GetContextInfo()
+	case msg.GetDocumentMessage() != nil:
+		return msg.GetDocumentMessage().GetContextInfo()
+	case msg.GetAudioMessage() != nil:
+		return msg.GetAudioMessage().GetContextInfo()
+	case msg.GetStickerMessage() != nil:
+		return msg.GetStickerMessage().GetContextInfo()
+	}
+	return nil
+}
+
 // ExtractQuotedContext returns the stanza ID and participant of the quoted/replied-to message.
 func ExtractQuotedContext(msg *waE2E.Message) (stanzaID string, participant string) {
-	if msg == nil {
-		return "", ""
-	}
-
-	var ctx *waE2E.ContextInfo
-	if ext := msg.GetExtendedTextMessage(); ext != nil {
-		ctx = ext.GetContextInfo()
-	} else if img := msg.GetImageMessage(); img != nil {
-		ctx = img.GetContextInfo()
-	} else if vid := msg.GetVideoMessage(); vid != nil {
-		ctx = vid.GetContextInfo()
-	} else if doc := msg.GetDocumentMessage(); doc != nil {
-		ctx = doc.GetContextInfo()
-	}
-
-	if ctx == nil {
-		return "", ""
-	}
-
+	ctx := messageContextInfo(msg)
 	return ctx.GetStanzaID(), ctx.GetParticipant()
+}
+
+// ReplyContext is what gets persisted next to a message so readers of the store can see what it
+// replied to and whether it was forwarded. Before this, only webhooks ever saw the quote.
+type ReplyContext struct {
+	QuotedID     string
+	QuotedSender string
+	QuotedText   string // text/caption of the quoted message, or "[image]" etc. when it has none
+	IsForwarded  bool
+}
+
+// ExtractReplyContext reads quote and forward info from a message's ContextInfo.
+func ExtractReplyContext(msg *waE2E.Message) ReplyContext {
+	ctx := messageContextInfo(msg)
+	if ctx == nil {
+		return ReplyContext{}
+	}
+	rc := ReplyContext{QuotedID: ctx.GetStanzaID(), QuotedSender: ctx.GetParticipant(), IsForwarded: ctx.GetIsForwarded()}
+	if q := ctx.GetQuotedMessage(); q != nil {
+		rc.QuotedText = ExtractTextContent(q)
+		if rc.QuotedText == "" {
+			if mt, _, _, _, _, _, _, _ := ExtractMediaInfo(q); mt != "" {
+				rc.QuotedText = "[" + mt + "]"
+			}
+		}
+	}
+	return rc
 }
 
 // AnalyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file

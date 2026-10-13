@@ -191,3 +191,42 @@ func TestValidateMediaPathBlocksSymlinkEscape(t *testing.T) {
 		t.Errorf("real in-dir file rejected: %v", err)
 	}
 }
+
+func TestExtractReplyContext(t *testing.T) {
+	quotedLink := &waE2E.Message{Conversation: proto.String("https://www.instagram.com/reel/abc/")}
+	reply := &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+		Text: proto.String("analyze this post"),
+		ContextInfo: &waE2E.ContextInfo{
+			StanzaID:      proto.String("QUOTED1"),
+			Participant:   proto.String("123@s.whatsapp.net"),
+			QuotedMessage: quotedLink,
+		},
+	}}
+	rc := ExtractReplyContext(reply)
+	if rc.QuotedID != "QUOTED1" || rc.QuotedSender != "123@s.whatsapp.net" || rc.QuotedText != "https://www.instagram.com/reel/abc/" || rc.IsForwarded {
+		t.Fatalf("reply context = %+v", rc)
+	}
+
+	fwdImage := &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype:    proto.String("image/jpeg"),
+		ContextInfo: &waE2E.ContextInfo{IsForwarded: proto.Bool(true)},
+	}}
+	if rc := ExtractReplyContext(fwdImage); !rc.IsForwarded || rc.QuotedID != "" {
+		t.Fatalf("forwarded image context = %+v", rc)
+	}
+
+	quotedPhoto := &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+		Text: proto.String("what is this"),
+		ContextInfo: &waE2E.ContextInfo{
+			StanzaID:      proto.String("Q2"),
+			QuotedMessage: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: proto.String("image/jpeg"), URL: proto.String("https://mmg.whatsapp.net/x")}},
+		},
+	}}
+	if rc := ExtractReplyContext(quotedPhoto); rc.QuotedText != "[image]" {
+		t.Fatalf("quoted photo text = %q, want [image]", rc.QuotedText)
+	}
+
+	if rc := ExtractReplyContext(&waE2E.Message{Conversation: proto.String("plain")}); rc != (ReplyContext{}) {
+		t.Fatalf("plain message context = %+v", rc)
+	}
+}
