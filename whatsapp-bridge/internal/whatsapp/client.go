@@ -192,7 +192,11 @@ func (c *Client) Connect() error {
 			if evt.Event == "code" {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				// Also leave the raw code where a local helper can render it as an image: the terminal QR
+				// only exists in the service journal, which no phone can scan.
+				_ = os.WriteFile("store/pair-qr.txt", []byte(evt.Code), 0o600)
 			} else if evt.Event == "success" {
+				_ = os.Remove("store/pair-qr.txt")
 				connected <- true
 				break
 			}
