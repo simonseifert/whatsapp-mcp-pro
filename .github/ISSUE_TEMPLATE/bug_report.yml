@@ -1,11 +1,30 @@
 name: 🐛 Bug Report
-description: Create a report to help us reproduce and fix a bug in the WhatsApp transport bridge
+description: Report a bug in the bridge, the MCP server or one of the optional interfaces
 title: '[Bug]: '
 labels: ['bug', 'triage']
 body:
   - type: markdown
     attributes:
-      value: Thanks for opening a bug report! Please provide as much details as possible.
+      value: |
+        Thanks for opening a bug report! Please provide as much detail as possible.
+
+        **Before pasting logs:** remove phone numbers, JIDs, message text, API keys and tokens. Security problems go through [private vulnerability reporting](https://github.com/simonseifert/whatsapp-mcp-pro/security/advisories/new), not a public issue.
+
+        **If your account was restricted or banned**, say so below and describe what was being sent and how often. This is an unofficial WhatsApp Web client and the risk can't be removed entirely.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Bridge (Go)
+        - MCP server (tools, recall, transcription)
+        - Identity directory
+        - wa-assistant / wa-dispatch / wa-client
+        - Web UI (whatsapp-web-ui)
+        - Setup, deployment or docs
+        - Not sure
+    validations:
+      required: true
   - type: textarea
     id: description
     attributes:
@@ -31,14 +50,19 @@ body:
       options:
         - macOS (Apple Silicon)
         - macOS (Intel)
-        - Linux (Docker)
         - Linux (Native)
+        - Linux (Docker)
         - Windows
     validations:
       required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.4.0-pro, or the output of `git rev-parse --short HEAD`
   - type: textarea
     id: logs
     attributes:
       label: Relevant Logs
-      description: Please paste any relevant error tracebacks or container logs.
+      description: Bridge and MCP server output around the failure, with personal data removed.
       render: shell
