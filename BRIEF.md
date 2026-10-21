@@ -32,13 +32,13 @@ and its README still contain a real phone JID (open question).
 
 Recommended answers in brackets.
 
-1. Remove the real phone JID from `wa-assistant/` and its README. [yes]
+1. Real phone numbers and private paths: removed from tracked files 2026-10-22 (no history rewrite, by choice). Done.
 2. Next from the reviews: the "Then" list in `docs/reviews/2026-10-21-full-review.md`
    (bare-sender participants, bare-number recipients, :8082 reachable from the
    LAN/Docker, token sprawl, send duplicates on timeout, deploy rollback holes,
    anti-ban caps, recall memory), plus the webhook raw-JID issue and the failing
    Security Scan CI job. [network fence and bridge-key rotation done 2026-10-22; next: MCP bearer tokens in 644 config.json files, send duplicates on timeout, anti-ban caps]
-3. wa-dispatch and wa-assistant don't run anywhere: mark them dormant in the README, or repoint them at the data dir? [mark dormant]
+3. wa-dispatch / wa-assistant / wa-client: marked dormant/retired in the README status table (2026-10-22). Done.
 4. Multi-instance: done, see DECISIONS.md D6.
 5. Should Claude sessions get Friday's number through MCP as well (a second MCP
    instance, `whatsapp-friday`)? [no for now; friday-core already owns that number]
