@@ -3,6 +3,7 @@
 import logging
 import os
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Load .env file from project root - check multiple locations
@@ -80,6 +81,28 @@ if ":" not in _bridge_host:
     _bridge_host = f"{_bridge_host}:8080"
 BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
+
+
+def to_sql_utc(value: str | None) -> str | None:
+    """ISO-8601 input -> the "YYYY-MM-DD HH:MM:SS" UTC form SQLite's datetime() yields.
+
+    The bridge stores "2026-10-21 20:54:59+02:00" (space, local offset), so a raw
+    string compare against an ISO "2026-10-21T00:00:00" is wrong: " " sorts
+    before "T" and the whole day falls out of `after`, and an offset mismatch
+    shifts the bound by hours. Compare ``datetime(timestamp)`` against this.
+
+    A value without an offset is taken as local time, matching how the bridge
+    records timestamps and how a person phrases "since 9 this morning".
+
+    Raises:
+        ValueError: when ``value`` is not ISO-8601.
+    """
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # naive -> local zone
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # Merge chains are one hop in practice (LID -> phone JID). The cap only exists
