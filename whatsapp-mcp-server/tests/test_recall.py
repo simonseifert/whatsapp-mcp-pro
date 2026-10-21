@@ -202,3 +202,37 @@ def test_missing_extra_reports_rather_than_crashes(recall_db, monkeypatch):
     result = recall_mod.recall("anything", limit=5)
     assert "error" in result
     assert "sentence_transformers" in result["error"] or "module" in result["error"].lower()
+
+
+# ------------------------------------------------------------- date filters
+
+
+def test_recall_date_filters_match_bridge_timestamp_format(recall_db):
+    """The bridge stores "YYYY-MM-DD HH:MM:SS+02:00": space separator, local offset.
+
+    Filters used to be raw string compares, so `after="<day>T00:00:00"` dropped
+    that whole day (" " sorts before "T") and `before` with a T kept all of it.
+    """
+    conn = sqlite3.connect(recall_db)
+    conn.execute("DELETE FROM messages")
+    conn.executemany(
+        "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, 0)",
+        [
+            ("day-before", "123456789@s.whatsapp.net", "x", "yesterday's note", "2026-10-20 12:00:00+00:00"),
+            ("on-the-day", "123456789@s.whatsapp.net", "x", "today's note", "2026-10-21 12:00:00+02:00"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    recall_mod._index_pending()
+
+    after = recall_mod.recall("note", after="2026-10-21T00:00:00Z")
+    assert [r["message_id"] for r in after["results"]] == ["on-the-day"]
+
+    before = recall_mod.recall("note", before="2026-10-21T00:00:00Z")
+    assert [r["message_id"] for r in before["results"]] == ["day-before"]
+
+
+def test_recall_rejects_unparseable_dates(recall_db):
+    result = recall_mod.recall("anything", after="last tuesday")
+    assert "error" in result
