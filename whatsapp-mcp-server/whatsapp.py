@@ -7,6 +7,7 @@ import os.path
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +36,7 @@ except ImportError:
 import audio
 from lib.bridge import _get_headers
 from lib.identity import Identity, directory_available, get_identity, list_identities
-from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, logger
+from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, canonical_chat_jid, logger
 
 # Use environment variable for bridge host, default to localhost:8080 for development
 # BRIDGE_HOST can be "hostname" (uses :8080) or "hostname:port" (uses specified port)
@@ -477,14 +478,14 @@ def list_messages(
             params.extend(forms)
 
         if chat_jid:
-            equiv = _resolve_equivalent_jids(chat_jid)
-            if len(equiv) > 1:
-                ph = ",".join("?" * len(equiv))
-                where_clauses.append(f"messages.chat_jid IN ({ph})")
-                params.extend(equiv)
-            else:
-                where_clauses.append("messages.chat_jid = ?")
-                params.append(chat_jid)
+            # A merged LID's messages now live under its twin; follow the
+            # merge, and keep the original too for a chat still split because
+            # its LID mapping has not landed yet.
+            canonical = canonical_chat_jid(conn, chat_jid)
+            equiv = sorted({chat_jid, *_resolve_equivalent_jids(canonical)})
+            ph = ",".join("?" * len(equiv))
+            where_clauses.append(f"messages.chat_jid IN ({ph})")
+            params.extend(equiv)
 
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
@@ -720,7 +721,8 @@ def list_chats(
         # A merged chat's messages now live under its twin; listing both would
         # show the same conversation twice, once of them empty.
         if _has_column(cursor, "chats", "merged_into"):
-            where_clauses.append("chats.merged_into IS NULL")
+            # COALESCE because the bridge reads NULL and '' alike as "not merged".
+            where_clauses.append("COALESCE(chats.merged_into, '') = ''")
 
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -1024,7 +1026,9 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
 
         query += " WHERE c.jid = ?"
 
-        cursor.execute(query, (chat_jid,))
+        # An old LID still resolves, but to the chat that holds its messages
+        # rather than the empty shell the merge left behind.
+        cursor.execute(query, (canonical_chat_jid(conn, chat_jid),))
         chat_data = cursor.fetchone()
 
         if not chat_data:
@@ -1058,9 +1062,17 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
-        equiv = [f for f in _sender_forms(f"{sender_phone_number}@s.whatsapp.net") if "@" in f]
+        forms = [f for f in _sender_forms(f"{sender_phone_number}@s.whatsapp.net") if "@" in f]
+        # Following each form's merge reaches the live twin even if only the
+        # merged LID was among the forms.
+        equiv = sorted({canonical_chat_jid(conn, f) for f in forms} | set(forms))
         jid_ph = ",".join("?" * len(equiv))
 
+        # Without the merged_into filter and an ORDER BY, LIMIT 1 picked
+        # whichever row SQLite met first, which on a real store was the empty
+        # merged shell for most merged pairs. Prefer the phone JID, which is
+        # what the bridge merges into, then the most recently active.
+        merged_filter = "AND COALESCE(c.merged_into, '') = ''" if _has_column(cursor, "chats", "merged_into") else ""
         cursor.execute(
             f"""
             SELECT
@@ -1073,7 +1085,8 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             FROM chats c
             LEFT JOIN messages m ON c.jid = m.chat_jid
                 AND c.last_message_time = m.timestamp
-            WHERE c.jid IN ({jid_ph}) AND c.jid NOT LIKE '%@g.us'
+            WHERE c.jid IN ({jid_ph}) AND c.jid NOT LIKE '%@g.us' {merged_filter}
+            ORDER BY (c.jid LIKE '%@s.whatsapp.net') DESC, c.last_message_time DESC
             LIMIT 1
         """,
             equiv,
@@ -1328,6 +1341,15 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
         The local file path if download was successful, None otherwise
     """
     try:
+        # The bridge looks the message up by (id, chat_jid); after a merge it
+        # sits under the twin, so an old LID would miss it.
+        try:
+            # Read-only: a missing store must fail here, not get created empty.
+            with closing(sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True)) as conn:
+                chat_jid = canonical_chat_jid(conn, chat_jid)
+        except sqlite3.Error as e:
+            logger.warning(f"Could not resolve merged chat for {chat_jid}: {e}")
+
         url = f"{WHATSAPP_API_BASE_URL}/download"
         payload = {"message_id": message_id, "chat_jid": chat_jid}
 

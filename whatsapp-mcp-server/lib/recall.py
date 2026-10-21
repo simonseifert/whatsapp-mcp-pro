@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
-from .utils import MESSAGES_DB_PATH, logger
+from .utils import MESSAGES_DB_PATH, canonical_chat_jid, logger
 
 MAX_RECALL_LIMIT = 200  # a semantic search returning more than this is a scan, not a search
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -363,8 +363,10 @@ def recall(
     # dimensionality, and np.stack over a mixed set raises rather than degrades.
     params: list[Any] = [MODEL_NAME]
     if chat_jid:
-        sql_parts.append(" AND m.chat_jid = ?")
-        params.append(chat_jid)
+        # A merged LID's messages and embeddings were moved to its twin.
+        jids = sorted({chat_jid, canonical_chat_jid(conn, chat_jid)})
+        sql_parts.append(f" AND m.chat_jid IN ({','.join('?' * len(jids))})")
+        params.extend(jids)
     if sender:
         sql_parts.append(" AND m.sender = ?")
         params.append(sender)
