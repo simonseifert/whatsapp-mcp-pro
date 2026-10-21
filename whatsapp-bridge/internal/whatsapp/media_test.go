@@ -151,7 +151,7 @@ func TestValidateMediaPathHonorsEnvAllowlist(t *testing.T) {
 			t.Errorf("validateMediaPath(%s) = %v, want nil", ok, err)
 		}
 	}
-	if err := validateMediaPath("/home/simonevil/pic.png"); err == nil {
+	if err := validateMediaPath("/home/aliceevil/pic.png"); err == nil {
 		t.Error("sibling of env-allowed dir accepted, want error")
 	}
 	t.Setenv("MEDIA_ALLOWED_DIRS", "")

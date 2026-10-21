@@ -104,8 +104,8 @@ def test_rejects_hidden_directories_below_an_allowed_root(media_dirs):
 def test_an_explicitly_allowed_dotted_dir_still_works(monkeypatch, tmp_path):
     """An operator who allowlists e.g. ~/.local/share/.../store meant it."""
     store = tmp_path / ".local" / "store"
-    (store / "491500000001_s.whatsapp.net").mkdir(parents=True)
-    f = store / "491500000001_s.whatsapp.net" / "voice.ogg"
+    (store / "4915112345678_s.whatsapp.net").mkdir(parents=True)
+    f = store / "4915112345678_s.whatsapp.net" / "voice.ogg"
     f.write_bytes(b"OggS")
     monkeypatch.setattr(whatsapp, "BRIDGE_DEFAULT_MEDIA_DIRS", ())
     monkeypatch.setenv("MEDIA_ALLOWED_DIRS", str(store))
@@ -146,12 +146,12 @@ def test_refuses_secret_looking_files(media_dirs, name):
 @pytest.mark.parametrize(
     "relative",
     [
-        "store/media/491500000001@s.whatsapp.net/ABC123.jpg",  # /api/download
-        "store/491500000001_s.whatsapp.net/photo.jpg",  # auto-download
-        "store/120363322317399301_g.us/clip.mp4",
-        "store/120363402588966290_newsletter/post.png",
-        "store/154713345548441_lid/voice.ogg",
-        "Store/Media/491500000001@s.whatsapp.net/ABC123.jpg",
+        "store/media/4915112345678@s.whatsapp.net/ABC123.jpg",  # /api/download
+        "store/4915112345678_s.whatsapp.net/photo.jpg",  # auto-download
+        "store/120363000000000001_g.us/clip.mp4",
+        "store/120363000000000002_newsletter/post.png",
+        "store/123456789012345_lid/voice.ogg",
+        "Store/Media/4915112345678@s.whatsapp.net/ABC123.jpg",
     ],
 )
 def test_accepts_media_inside_a_store(media_dirs, relative):
@@ -175,7 +175,7 @@ def test_accepts_media_inside_a_store(media_dirs, relative):
         "Store/backups/messages.tar.gz",
         # Every store segment counts, not just the first.
         "store/media/x/store/pair-qr.txt",
-        "store/491500000001_s.whatsapp.net/store/notes.txt",
+        "store/4915112345678_s.whatsapp.net/store/notes.txt",
     ],
 )
 def test_refuses_non_media_inside_a_store(media_dirs, relative):

@@ -1183,7 +1183,7 @@ def recall(
 
     Args:
         query: Natural-language query, any language.
-        chat_jid: Optional, restrict to one chat (e.g. "491500000002@s.whatsapp.net").
+        chat_jid: Optional, restrict to one chat (e.g. "4915112345678@s.whatsapp.net").
         sender: Optional sender JID/LID, restrict to one author.
         after: Optional ISO-8601 datetime; only messages with timestamp >= this.
         before: Optional ISO-8601 datetime; only messages with timestamp <= this.

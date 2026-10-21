@@ -15,19 +15,19 @@ func TestStoreAndGetPollOptions(t *testing.T) {
 		{
 			name:      "typical poll",
 			messageID: "3EB0POLL1",
-			chatJID:   "918668575753@s.whatsapp.net",
+			chatJID:   "4915187654321@s.whatsapp.net",
 			options:   []string{"Expected — dev/test, no action needed", "Not expected — please escalate/fix", "Need to discuss first"},
 		},
 		{
 			name:      "single option",
 			messageID: "3EB0POLL2",
-			chatJID:   "918668575753@s.whatsapp.net",
+			chatJID:   "4915187654321@s.whatsapp.net",
 			options:   []string{"Yes"},
 		},
 		{
 			name:      "empty options",
 			messageID: "3EB0POLL3",
-			chatJID:   "918668575753@s.whatsapp.net",
+			chatJID:   "4915187654321@s.whatsapp.net",
 			options:   nil,
 		},
 	}
@@ -58,7 +58,7 @@ func TestStoreAndGetPollOptions(t *testing.T) {
 
 func TestStorePollOptionsOverwritesPreviousSet(t *testing.T) {
 	store := newTestMessageStore(t)
-	const msgID, chatJID = "3EB0POLL", "918668575753@s.whatsapp.net"
+	const msgID, chatJID = "3EB0POLL", "4915187654321@s.whatsapp.net"
 
 	if err := store.StorePollOptions(msgID, chatJID, []string{"A", "B", "C"}); err != nil {
 		t.Fatalf("first StorePollOptions: %v", err)
@@ -85,7 +85,7 @@ func TestStorePollOptionsOverwritesPreviousSet(t *testing.T) {
 func TestGetPollOptionsUnknownPollReturnsEmptyNotError(t *testing.T) {
 	store := newTestMessageStore(t)
 
-	got, err := store.GetPollOptions("never-seen-this-poll", "918668575753@s.whatsapp.net")
+	got, err := store.GetPollOptions("never-seen-this-poll", "4915187654321@s.whatsapp.net")
 	if err != nil {
 		t.Fatalf("GetPollOptions on unknown poll should not error, got: %v", err)
 	}

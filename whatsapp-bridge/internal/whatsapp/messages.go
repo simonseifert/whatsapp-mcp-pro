@@ -109,7 +109,7 @@ var defaultMediaDirs = []string{
 
 // allowedMediaDirs resolves the media allowlist. MEDIA_ALLOWED_DIRS is a
 // comma-separated list of extra directories appended to the defaults, so a
-// native install can say MEDIA_ALLOWED_DIRS=/home/alice and let a local agent
+// native install can say MEDIA_ALLOWED_DIRS=$HOME and let a local agent
 // send files straight from its working tree. Resolved per call rather than
 // cached: it is not hot (only send/download touch it), and this keeps tests
 // and env changes honest.
@@ -152,7 +152,7 @@ func validateMediaPath(mediaPath string) error {
 	resolvedPath := resolveExistingPrefix(absPath)
 	roots := allowedMediaRoots()
 
-	// An allowed dir is usually broad (MEDIA_ALLOWED_DIRS=/home/alice), so being
+	// An allowed dir is usually broad (MEDIA_ALLOWED_DIRS=$HOME), so being
 	// inside it says nothing about whether the file is safe to upload to a chat.
 	// The caller is an LLM agent that message text can prompt-inject; refusing
 	// secrets here is the last stop before they reach WhatsApp. Both forms are

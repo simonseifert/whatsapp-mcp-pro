@@ -75,8 +75,8 @@ linked device.** Measured on one account:
 
 | device | self-chat filed under | messages |
 |---|---|---|
-| laptop (`:10`) | `11110000000001@lid` | 264 |
-| server (`:12`) | `491500000003@s.whatsapp.net` | 367 |
+| laptop (`:10`) | `123456789012345@lid` | 264 |
+| server (`:12`) | `4915112345678@s.whatsapp.net` | 367 |
 
 Same conversation, same final timestamp. A daemon watching only the jid the
 bridge reports would have found **nothing** on the laptop and looked simply
