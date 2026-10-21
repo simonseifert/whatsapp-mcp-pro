@@ -374,6 +374,7 @@ type SetPresenceRequest struct {
 // SubscribePresenceRequest represents request to subscribe to a contact's presence
 type SubscribePresenceRequest struct {
 	JID string `json:"jid"`
+	LID string `json:"lid,omitempty"`
 }
 
 // PresenceInfo represents presence information for a contact
@@ -407,6 +408,7 @@ type BlocklistRequest struct {
 // BlockedUser represents a blocked user
 type BlockedUser struct {
 	JID string `json:"jid"`
+	LID string `json:"lid,omitempty"`
 }
 
 // BlocklistResponse represents the blocklist response
