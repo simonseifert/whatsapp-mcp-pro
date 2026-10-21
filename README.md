@@ -17,7 +17,7 @@ before you point automation at a real account.
 A Go bridge pairs with your WhatsApp account as a linked device (the same way
 WhatsApp Web does), stores your history in SQLite on your machine, and exposes a
 local REST API. A Python MCP server sits on top and gives any MCP client (Claude
-Code, Claude Desktop, others) 35 tools to read, search, send, and manage chats.
+Code, Claude Desktop, others) 37 tools to read, search, send, and manage chats.
 Nothing goes to a third party unless you choose a hosted transcription backend.
 
 It is a fork of [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended)
@@ -109,6 +109,12 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
   known name, and activity stats. Exposed as `lookup_identity` (accepts a JID,
   LID, phone number or name), `search_directory`, and the `whatsapp://directory`
   resource.
+- **Naming unknown numbers.** `list_unnamed_contacts` ranks active people who
+  only show up as a number (no address-book name or nickname) and returns their
+  last few messages and shared groups; an agent infers names from strong
+  evidence or asks you, then `set_contact_names` stores them as local nicknames
+  (up to 50 per call, never sent to WhatsApp). The names show up at once in
+  `list_chats`, `list_messages` and the directory.
 - **LID chat merging.** A conversation split across a LID and a phone JID is
   folded into one chat (`MERGE_LID_CHATS=true`, the default), so search, recall
   and per-chat automation see all of it. Merged rows are kept and marked, so an
