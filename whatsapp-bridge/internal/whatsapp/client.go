@@ -187,6 +187,7 @@ func (c *Client) Connect() error {
 		qrChan, _ := c.GetQRChannel(context.Background())
 		err := c.Client.Connect()
 		if err != nil {
+			c.MarkDisconnected() // let the watchdog restart us; see connectWithRetry
 			return fmt.Errorf("failed to connect: %v", err)
 		}
 
@@ -233,8 +234,8 @@ func (c *Client) Connect() error {
 		})
 		defer c.RemoveEventHandler(handlerID)
 
-		if err := c.Client.Connect(); err != nil {
-			return fmt.Errorf("failed to connect: %v", err)
+		if err := c.connectWithRetry(); err != nil {
+			return err
 		}
 
 		select {
@@ -248,6 +249,32 @@ func (c *Client) Connect() error {
 
 	c.logger.Infof("✓ Connected to WhatsApp!")
 	return nil
+}
+
+// connectWithRetry dials WhatsApp, retrying with backoff before giving up.
+//
+// At boot the unit can start before DNS works ("lookup web.whatsapp.com: ...").
+// A failed dial used to return without marking the client disconnected, and the
+// watchdog only acts on a recorded disconnect, so the process sat alive, linked
+// and ingesting nothing until someone restarted it: Friday's bridge lost 3.5h
+// this way on 2026-10-21. Retry for ~2 minutes, then hand over to the watchdog.
+func (c *Client) connectWithRetry() error {
+	wait := 5 * time.Second
+	for attempt := 1; ; attempt++ {
+		err := c.Client.Connect()
+		if err == nil {
+			return nil
+		}
+		if attempt == 6 {
+			c.MarkDisconnected() // watchdog exits the process; systemd restarts it
+			return fmt.Errorf("failed to connect after %d attempts: %v", attempt, err)
+		}
+		c.logger.Warnf("Connect attempt %d failed (%v), retrying in %v", attempt, err, wait)
+		time.Sleep(wait)
+		if wait *= 2; wait > time.Minute {
+			wait = time.Minute
+		}
+	}
 }
 
 // Phase 5: Advanced Features
