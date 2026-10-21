@@ -39,3 +39,14 @@ Recommended answers in brackets.
    - the failing Security Scan CI job;
    - normalizing the `sender` column. [this order]
 3. wa-dispatch and wa-assistant don't run anywhere: mark them dormant in the README, or repoint them at the data dir? [mark dormant]
+4. **Multi-instance (waiting on Simon, 2026-10-21).** Two bridges already run (Simon's
+   number and Friday's), set up by hand and inconsistently: different health checks,
+   only one is deployed by `deploy-live.sh`, and only one is in the standby. Plan:
+   - make each number an instance of one `whatsapp-bridge@` template unit;
+   - give all instances one health check and one deploy;
+   - include every instance in the standby sync.
+
+   No Docker. [yes]
+5. Should Claude sessions get Friday's number through MCP as well (a second MCP
+   instance, `whatsapp-friday`)? [no for now; friday-core already owns that number]
+
