@@ -151,6 +151,7 @@ def test_refuses_secret_looking_files(media_dirs, name):
         "store/120363322317399301_g.us/clip.mp4",
         "store/120363402588966290_newsletter/post.png",
         "store/154713345548441_lid/voice.ogg",
+        "Store/Media/491500000001@s.whatsapp.net/ABC123.jpg",
     ],
 )
 def test_accepts_media_inside_a_store(media_dirs, relative):
@@ -168,6 +169,13 @@ def test_accepts_media_inside_a_store(media_dirs, relative):
         "store/session-backup.bin",
         "store/backups/messages.tar.gz",  # a subfolder that is not media
         "store/not-a-jid/photo.jpg",
+        # Case-insensitive filesystems (macOS standby) see these as store/.
+        "STORE/session-backup.bin",
+        "Store/history-export.json",
+        "Store/backups/messages.tar.gz",
+        # Every store segment counts, not just the first.
+        "store/media/x/store/pair-qr.txt",
+        "store/491500000001_s.whatsapp.net/store/notes.txt",
     ],
 )
 def test_refuses_non_media_inside_a_store(media_dirs, relative):

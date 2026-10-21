@@ -97,13 +97,19 @@ def _outside_store_media(resolved: str) -> bool:
     a second bridge's dir) and a file directly in store/ is never media.
     """
     parts = Path(resolved).parts
-    if _STORE_SEGMENT not in parts:
-        return False
-    below = parts[parts.index(_STORE_SEGMENT) + 1 :]
-    # At least <subfolder>/<file>: nothing directly in store/ is media.
-    if len(below) < 2:
-        return True
-    return not (below[0] == "media" or _STORE_JID_DIR.match(below[0]))
+    # casefold: macOS (the warm standby) is case-insensitive, so ".../Store/"
+    # is the same directory. Every "store" segment is checked, not just the
+    # first, so store/media/x/store/pair-qr.txt is refused too.
+    for i, part in enumerate(parts):
+        if part.casefold() != _STORE_SEGMENT:
+            continue
+        below = parts[i + 1 :]
+        # At least <subfolder>/<file>: nothing directly in store/ is media.
+        if len(below) < 2:
+            return True
+        if not (below[0].casefold() == "media" or _STORE_JID_DIR.match(below[0])):
+            return True
+    return False
 
 
 def _allowed_media_dirs() -> list[str]:
