@@ -109,6 +109,16 @@ frozen at Aug 25 since the code/data split without anyone noticing; its bridge w
 (id 2, "wa-web push") is disabled, not deleted. wa-dispatch and wa-assistant don't run
 on the Debian box. `MEDIA_RETRY_ENABLED=true` is set in the data `.env`.
 
+**The repo binary runs twice.** A second bridge for Friday's own number
+(`whatsapp-bridge-friday`, a systemd *user* unit, own data dir, REST :8083) executes
+the same `whatsapp-bridge/whatsapp-bridge`. `deploy-live.sh` doesn't restart it, so it
+picks up a new build on its next restart.
+
+**Everything around the code** (machines, standby/failover scripts, consumers, M1
+agents, runbooks) is in `~/Code/personal/infra/WHATSAPP-OPS.md`. It stays out of this
+public repo because it names hosts and topics. Project state lives in `BRIEF.md` and
+`DECISIONS.md` here.
+
 (History: the live install used to be a hand-copied `~/whatsapp-mcp-extended-pro`
 snapshot that drifted from the repo for weeks; that copy was retired 2026-08-21
 when code/data were split as above.)
