@@ -368,3 +368,47 @@ def test_confirmed_by_user_is_a_required_tool_parameter(main_all):
     params = main_all.mcp._tool_manager.get_tool("set_contact_names").parameters
     assert "confirmed_by_user" in params["required"]
     assert params["properties"]["confirmed_by_user"]["type"] == "boolean"
+
+
+def _seed(db: str, *rows: tuple[str, str, str | None]) -> None:
+    with sqlite3.connect(db) as conn:
+        naming.ensure_nickname_source_column(conn)
+        conn.executemany(
+            "INSERT INTO contact_nicknames (jid, nickname, source, updated_at) VALUES (?, ?, ?, ?)",
+            [(jid, nick, src, f"2026-10-2{i} 00:00:00") for i, (jid, nick, src) in enumerate(rows)],
+        )
+
+
+@pytest.mark.parametrize("legacy_source", [None, "", "user"])
+def test_agent_write_refused_by_user_row_under_the_other_jid_form(naming_store, legacy_source):
+    # The user's name is filed under the LID; the agent writes to the phone JID.
+    _seed(naming_store, ("111@lid", "Ivo", legacy_source))
+    result = naming.set_contact_names([{"jid": "385111@s.whatsapp.net", "name": "Bank"}], confirmed_by_user=False)
+    assert result["failed"] == 1
+    assert "user already named" in result["results"][0]["error"]
+    assert _nicknames(naming_store) == {"111@lid": "Ivo"}
+
+
+def test_agent_write_refused_even_when_an_agent_row_ranks_first_by_jid_form(naming_store):
+    # The canonical-JID agent row would win a jid-form-only ordering; the user
+    # row under the LID must still block the write and survive it.
+    _seed(naming_store, ("111@lid", "Ivo", "user"), ("385111@s.whatsapp.net", "Guess", "agent_inferred"))
+    result = naming.set_contact_names([{"jid": "385111@s.whatsapp.net", "name": "Bank"}], confirmed_by_user=False)
+    assert result["failed"] == 1
+    assert _nicknames(naming_store) == {"111@lid": "Ivo", "385111@s.whatsapp.net": "Guess"}
+
+
+def test_agent_write_cleans_up_only_agent_rows(naming_store):
+    _seed(naming_store, ("111@lid", "Old guess", "agent_inferred"))
+    result = naming.set_contact_names([{"jid": "385111@s.whatsapp.net", "name": "New guess"}], confirmed_by_user=False)
+    assert result["saved"] == 1
+    assert _nicknames(naming_store) == {"385111@s.whatsapp.net": "New guess"}
+
+
+def test_user_row_outranks_agent_row_in_display(naming_store):
+    _seed(naming_store, ("111@lid", "Ivo", "user"), ("385111@s.whatsapp.net", "Bank", "agent_inferred"))
+    found = identity.get_identity("385111")
+    assert found is not None
+    assert (found.display_name, found.name_source, found.nickname_source) == ("Ivo", "user", "user")
+    msgs = {m["id"]: m for m in whatsapp.list_messages(limit=50)}
+    assert (msgs["a1"]["sender_name"], msgs["a1"]["sender_name_source"]) == ("Ivo", "user")

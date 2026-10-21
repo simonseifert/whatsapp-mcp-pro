@@ -135,12 +135,23 @@ def ensure_nickname_source_column(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def _live_nickname_sql(field_expr: str) -> str:
-    """Correlated subquery: the freshest nickname row for ``raw``, under any of its JID forms."""
+def _user_first_sql(conn: sqlite3.Connection, alias: str = "n") -> str:
+    """ORDER BY term ranking user-provenance rows (NULL/empty source included) above agent_inferred."""
+    if not _has_source_column(conn):
+        return "NULL"  # a bare integer here would be read as a column index
+    return f"CASE WHEN COALESCE(NULLIF(TRIM({alias}.source), ''), '{SOURCE_USER}') = '{SOURCE_USER}' THEN 0 ELSE 1 END"
+
+
+def _live_nickname_sql(field_expr: str, rank_expr: str) -> str:
+    """Correlated subquery: the nickname row to use for ``raw``, under any of its JID forms.
+
+    A user nickname under the other JID form outranks an agent-inferred one
+    under the canonical JID; only then does the JID form, then recency, decide.
+    """
     return f"""(
     SELECT {field_expr} FROM contact_nicknames n
     WHERE n.jid IN (raw.jid, raw.lid, raw.phone_jid) AND TRIM(COALESCE(n.nickname, '')) <> ''
-    ORDER BY n.jid = raw.jid DESC, n.updated_at DESC
+    ORDER BY {rank_expr}, n.jid = raw.jid DESC, n.updated_at DESC
     LIMIT 1
 )"""
 
@@ -171,11 +182,12 @@ def identities_source(conn: sqlite3.Connection, columns: Sequence[str]) -> str:
     """
     has_table = _table_exists(conn, "contact_nicknames")
     if has_table:
-        live_nick = _live_nickname_sql("n.nickname")
+        rank = _user_first_sql(conn)
+        live_nick = _live_nickname_sql("n.nickname", rank)
         source_expr = (
             f"COALESCE(NULLIF(TRIM(n.source), ''), '{SOURCE_USER}')" if _has_source_column(conn) else f"'{SOURCE_USER}'"
         )
-        live_source = _live_nickname_sql(source_expr)
+        live_source = _live_nickname_sql(source_expr, rank)
     else:
         live_nick = live_source = "NULL"
     select: list[str] = []
@@ -282,8 +294,8 @@ def resolve_display_names(
                 chunk = missing[start : start + 500]
                 ph = ",".join("?" * len(chunk))
                 for jid, nickname, nick_source in conn.execute(
-                    f"SELECT jid, nickname, {source_col} FROM contact_nicknames WHERE jid IN ({ph}) "
-                    "ORDER BY updated_at",
+                    f"SELECT jid, nickname, {source_col} FROM contact_nicknames n WHERE jid IN ({ph}) "
+                    f"ORDER BY {_user_first_sql(conn)}, updated_at DESC",
                     tuple(chunk),
                 ).fetchall():
                     if _blank(nickname):
@@ -644,7 +656,16 @@ def set_contact_names(names: list[dict[str, Any]], confirmed_by_user: bool) -> d
             ).fetchone()
             if source == SOURCE_AGENT:
                 refusal = None
-                if prev and prev[1] == SOURCE_USER:
+                # Any user-provenance row counts, under any JID form, not just
+                # the top-ranked one: otherwise the cleanup below could delete a
+                # user nickname filed under the contact's other form.
+                user_row = conn.execute(
+                    f"SELECT 1 FROM contact_nicknames WHERE jid IN ({ph}) "
+                    "AND TRIM(COALESCE(nickname, '')) <> '' "
+                    f"AND COALESCE(NULLIF(TRIM(source), ''), '{SOURCE_USER}') = '{SOURCE_USER}' LIMIT 1",
+                    tuple(all_forms),
+                ).fetchone()
+                if user_row:
                     refusal = "the user already named this contact; an unconfirmed name cannot replace it"
                 elif has_book_name:
                     refusal = "this contact has an address-book name; an unconfirmed name cannot replace it"
@@ -653,9 +674,16 @@ def set_contact_names(names: list[dict[str, Any]], confirmed_by_user: bool) -> d
                     continue
             # One nickname per person: a stale one under the LID would otherwise
             # compete with this one when the bridge folds them into the directory.
+            # An agent-sourced write only ever clears agent-inferred rows; user
+            # rows are removed only by a user-confirmed write.
             if other_forms:
+                only_agent = (
+                    f" AND COALESCE(NULLIF(TRIM(source), ''), '{SOURCE_USER}') = '{SOURCE_AGENT}'"
+                    if source == SOURCE_AGENT
+                    else ""
+                )
                 conn.execute(
-                    f"DELETE FROM contact_nicknames WHERE jid IN ({','.join('?' * len(other_forms))})",
+                    f"DELETE FROM contact_nicknames WHERE jid IN ({','.join('?' * len(other_forms))}){only_agent}",
                     tuple(other_forms),
                 )
             conn.execute(
