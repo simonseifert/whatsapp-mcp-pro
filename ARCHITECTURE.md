@@ -64,7 +64,7 @@ Schema changes ship as append-only, idempotent SQL in
 
 ### whatsapp-mcp-server (Python)
 
-An MCP server (mcp 2.x `MCPServer`) exposing about 35 tools, grouped into
+An MCP server (mcp 2.x `MCPServer`) exposing about 37 tools, grouped into
 toolsets (`WHATSAPP_MCP_TOOLSETS`). Every tool carries MCP annotations
 (`readOnlyHint`, `destructiveHint`, ...). It reads `messages.db` directly for
 queries and calls the bridge's REST API for anything that acts on WhatsApp.
