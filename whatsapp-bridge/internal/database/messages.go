@@ -40,10 +40,30 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content
 		senderName = sender
 	}
 
+	// Upsert rather than INSERT OR REPLACE: the same message is re-delivered by
+	// history sync and the reconnect backfill, and REPLACE deletes the row first,
+	// wiping columns written after the original insert (voice-note transcripts,
+	// a direct_path refreshed by media retry, quote/edit/system metadata) and
+	// changing its rowid, which the recall index keys on. New non-empty text still
+	// wins so edits land; media fields keep the stored value once set.
 	_, err := store.db.Exec(
-		`INSERT OR REPLACE INTO messages
+		`INSERT INTO messages
 		(id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id, chat_jid) DO UPDATE SET
+			sender          = COALESCE(NULLIF(excluded.sender, ''), messages.sender),
+			sender_name     = COALESCE(NULLIF(excluded.sender_name, ''), messages.sender_name),
+			content         = COALESCE(NULLIF(excluded.content, ''), messages.content),
+			timestamp       = excluded.timestamp,
+			is_from_me      = excluded.is_from_me,
+			media_type      = COALESCE(NULLIF(messages.media_type, ''), excluded.media_type),
+			filename        = COALESCE(NULLIF(messages.filename, ''), excluded.filename),
+			url             = COALESCE(NULLIF(messages.url, ''), excluded.url),
+			direct_path     = COALESCE(NULLIF(messages.direct_path, ''), excluded.direct_path),
+			media_key       = COALESCE(messages.media_key, excluded.media_key),
+			file_sha256     = COALESCE(messages.file_sha256, excluded.file_sha256),
+			file_enc_sha256 = COALESCE(messages.file_enc_sha256, excluded.file_enc_sha256),
+			file_length     = COALESCE(NULLIF(messages.file_length, 0), excluded.file_length)`,
 		id, chatJID, sender, senderName, content, timestamp, isFromMe, mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err

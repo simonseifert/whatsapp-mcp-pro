@@ -126,3 +126,69 @@ func TestStoreMessageContext(t *testing.T) {
 		t.Fatalf("got qid=%q qtext=%q reply=%q fwd=%v", qid, qtext, reply, fwd)
 	}
 }
+
+func TestStoreMessageRedeliveryKeepsLaterWrites(t *testing.T) {
+	store := newTestMessageStore(t)
+	chat := "123@s.whatsapp.net"
+	ts := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(chat, "Alice", ts); err != nil {
+		t.Fatalf("store chat: %v", err)
+	}
+	store1 := func() {
+		t.Helper()
+		if err := store.StoreMessage("v1", chat, "123", "Alice", "", ts, false,
+			"audio", "audio_1.ogg", "https://mmg/old", "/v/old", []byte("k"), []byte("s"), []byte("e"), 42); err != nil {
+			t.Fatalf("store voice note: %v", err)
+		}
+	}
+	store1()
+	var rowid int64
+	if err := store.db.QueryRow("SELECT rowid FROM messages WHERE id = 'v1'").Scan(&rowid); err != nil {
+		t.Fatalf("read rowid: %v", err)
+	}
+
+	// Written after the original insert: a transcript, a refreshed direct_path, reply context.
+	if _, err := store.db.Exec("UPDATE messages SET content = 'hello', direct_path = '/v/fresh' WHERE id = 'v1'"); err != nil {
+		t.Fatalf("simulate later writes: %v", err)
+	}
+	if err := store.StoreMessageContext("v1", chat, "q1", "Bob", "earlier", false); err != nil {
+		t.Fatalf("store context: %v", err)
+	}
+
+	store1() // history sync / reconnect backfill re-delivers the same message
+
+	var content, directPath, quoted string
+	var gotRowid int64
+	if err := store.db.QueryRow(
+		"SELECT rowid, content, direct_path, COALESCE(quoted_message_id,'') FROM messages WHERE id = 'v1'",
+	).Scan(&gotRowid, &content, &directPath, &quoted); err != nil {
+		t.Fatalf("read message: %v", err)
+	}
+	if content != "hello" || directPath != "/v/fresh" || quoted != "q1" {
+		t.Fatalf("re-delivery clobbered data: content=%q direct_path=%q quoted=%q", content, directPath, quoted)
+	}
+	if gotRowid != rowid {
+		t.Fatalf("rowid changed %d -> %d (recall index keys on rowid)", rowid, gotRowid)
+	}
+}
+
+func TestStoreMessageNewTextOverwrites(t *testing.T) {
+	store := newTestMessageStore(t)
+	chat := "123@s.whatsapp.net"
+	ts := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(chat, "Alice", ts); err != nil {
+		t.Fatalf("store chat: %v", err)
+	}
+	for _, text := range []string{"first", "edited"} {
+		if err := store.StoreMessage("m1", chat, "123", "Alice", text, ts, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+			t.Fatalf("store %q: %v", text, err)
+		}
+	}
+	var content string
+	if err := store.db.QueryRow("SELECT content FROM messages WHERE id = 'm1'").Scan(&content); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if content != "edited" {
+		t.Fatalf("content = %q, want %q", content, "edited")
+	}
+}
