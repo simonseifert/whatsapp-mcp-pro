@@ -166,7 +166,7 @@ func (ds *DeliveryService) sendHTTPRequest(config *types.WebhookConfig, payload 
 		ds.logger.Errorf("HTTP request failed: %v", err)
 		return false, 0, err.Error()
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response body
 	responseBytes := make([]byte, 1024) // Limit response size

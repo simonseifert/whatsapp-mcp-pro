@@ -39,7 +39,7 @@ func (store *MessageStore) GetPollOptions(messageID, chatJID string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var options []string
 	for rows.Next() {
@@ -105,7 +105,7 @@ func (store *MessageStore) GetPollCurrentVotes(pollMessageID, chatJID string) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var votes []PollVote
 	for rows.Next() {

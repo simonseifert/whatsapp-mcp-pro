@@ -10,13 +10,13 @@ import (
 func TestUpdateWebhookConfig(t *testing.T) {
 	// Create a temporary database for testing
 	tempDB := "test_webhooks.db"
-	defer os.Remove(tempDB)
+	defer func() { _ = os.Remove(tempDB) }()
 
 	db, err := sql.Open("sqlite3", tempDB)
 	if err != nil {
 		t.Fatalf("Failed to open test database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Create tables
 	err = createTables(db)

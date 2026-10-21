@@ -30,20 +30,20 @@ func NewMessageStore() (*MessageStore, error) {
 	// Create tables if they don't exist
 	err = createTables(db)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
 	// The identity directory carries its own indexes, so it is built separately
 	// from the plain CREATE TABLE block above.
 	if err = createIdentityTable(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to create identity table: %v", err)
 	}
 
 	// Run migrations for existing databases
 	if err = runMigrations(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to run migrations: %v", err)
 	}
 

@@ -98,10 +98,10 @@ func TestValidateWebhookURL(t *testing.T) {
 func TestValidateWebhookURL_DisableCheck(t *testing.T) {
 	// Save and restore env var
 	original := os.Getenv("DISABLE_SSRF_CHECK")
-	defer os.Setenv("DISABLE_SSRF_CHECK", original)
+	defer func() { _ = os.Setenv("DISABLE_SSRF_CHECK", original) }()
 
 	// Enable SSRF bypass
-	os.Setenv("DISABLE_SSRF_CHECK", "true")
+	_ = os.Setenv("DISABLE_SSRF_CHECK", "true")
 
 	// Should now allow private IPs
 	err := ValidateWebhookURL("http://127.0.0.1/webhook")

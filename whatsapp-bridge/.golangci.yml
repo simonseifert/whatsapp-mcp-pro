@@ -1,0 +1,19 @@
+version: "2"
+linters:
+  # golangci-lint v2 defaults: errcheck, govet, ineffassign, staticcheck, unused.
+  settings:
+    staticcheck:
+      checks:
+        - all
+        # QF1008 ("could remove embedded field from selector") is unsafe here:
+        # client.go wraps whatsmeow methods under the same names, so dropping
+        # the explicit `.Client` turns a delegation into infinite recursion.
+        - -QF1008
+        # Style-only checks that weren't enforced before the v2 move.
+        - -ST1000
+        - -ST1003
+        - -ST1005
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
