@@ -103,6 +103,12 @@ sanctioned path: build + test, online store backup, `systemctl restart`, connect
 check. `/usr/local/sbin/standby-sync.sh` mirrors the data dir to the M1 warm
 standby and also points at `~/.local/share/whatsapp-mcp-pro`.
 
+**Live state of the optional parts (2026-10-21):** wa-client is retired. It ran on the
+M1 (`com.simon.wa-web` LaunchAgent, now `.plist.disabled-20261021`) and had shown data
+frozen at Aug 25 since the code/data split without anyone noticing; its bridge webhook
+(id 2, "wa-web push") is disabled, not deleted. wa-dispatch and wa-assistant don't run
+on the Debian box. `MEDIA_RETRY_ENABLED=true` is set in the data `.env`.
+
 (History: the live install used to be a hand-copied `~/whatsapp-mcp-extended-pro`
 snapshot that drifted from the repo for weeks; that copy was retired 2026-08-21
 when code/data were split as above.)
