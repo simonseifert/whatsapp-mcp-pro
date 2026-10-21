@@ -178,6 +178,13 @@ directory reads (`identities_source`) and owns display-name resolution for MCP
 output (`resolve_display_names`, nickname first). Use those rather than reading
 `identities.display_name` raw.
 
+Nicknames carry provenance in `contact_nicknames.source`, a column the MCP adds
+(guarded `ALTER TABLE`; NULL or missing = `user`). `agent_inferred` names show as
+"name (unverified)", never replace a `user` nickname or an address-book name, and
+exist because strangers' self-claims ("this is your bank") are a spoofing vector.
+The bridge does not read `source` yet, so its own directory rebuild and webhook
+sender names still treat an agent-inferred nickname like a user one.
+
 Every read degrades to empty when the table is missing or unsynced, and the
 contact tools fall back to their old per-source queries — a store can be older
 than the directory, and a bridge can be down.

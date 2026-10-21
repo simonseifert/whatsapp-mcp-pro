@@ -25,7 +25,8 @@ _COLUMNS = """
     first_name, full_name, push_name, business_name, nickname, display_name, chat_name,
     is_business, is_contact, has_chat, message_count,
     participant_count, is_announce, owner_jid,
-    first_seen, last_seen, sources, updated_at
+    first_seen, last_seen, sources, updated_at,
+    nickname_source, name_source
 """
 _COLUMN_NAMES = [c.strip() for c in _COLUMNS.split(",")]
 
@@ -58,6 +59,10 @@ class Identity:
     last_seen: str | None = None
     sources: list[str] = field(default_factory=list)
     updated_at: str | None = None
+    # Provenance, synthesised by lib.naming.identities_source: who set the
+    # nickname (user / agent_inferred), and where display_name came from.
+    nickname_source: str | None = None
+    name_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a dictionary for structured tool output.
@@ -69,6 +74,7 @@ class Identity:
         result: dict[str, Any] = {
             "jid": self.jid,
             "display_name": self.display_name,
+            "name_source": self.name_source,
             "kind": self.kind,
             "has_chat": self.has_chat,
             "message_count": self.message_count,
@@ -92,6 +98,7 @@ class Identity:
                     "is_business": self.is_business,
                     "names": {
                         "nickname": self.nickname,
+                        "nickname_source": self.nickname_source,
                         "full_name": self.full_name,
                         "first_name": self.first_name,
                         "push_name": self.push_name,
@@ -134,6 +141,8 @@ def _row_to_identity(row: tuple) -> Identity:
         last_seen=row[21],
         sources=[s for s in (row[22] or "").split(",") if s],
         updated_at=row[23],
+        nickname_source=row[24],
+        name_source=row[25],
     )
 
 
