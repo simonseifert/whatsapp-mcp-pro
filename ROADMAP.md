@@ -20,19 +20,19 @@ worth closing are listed below in value order.
 
 ## Next up (October 2026)
 
-- [ ] **Phone-offline ping** — alert when the primary phone has been unreachable long enough that the linked device will be dropped
-- [ ] **Send idempotency keys** — a client-supplied key so a retried `send_message` can't deliver twice
-- [ ] **OAuth 2.1 for the HTTP MCP** — so claude.ai and ChatGPT connectors can reach the shared server without a static bearer header
-- [ ] **Agent contact-naming loop** — let an agent propose names for unnamed identities and write them back as local nicknames
-- [ ] **Persistent media-retry queue** — survive restarts and pace retries instead of firing them inline
-- [ ] **463 reachout-timelock handling** — recognise WhatsApp's first-contact time lock, stop retrying, and surface it to the caller
+- [x] **Phone-offline ping** (v0.5.0-pro) — `phone_last_seen` / `phone_offline_days` in `/api/connection`, WARN past 7 days, ERROR past 12, one silent app-state key request a day to the user's own phone after `PHONE_OFFLINE_PING_AFTER`
+- [x] **Send idempotency keys** (v0.5.0-pro) — `idempotency_key` / `Idempotency-Key` on send, reaction and poll; replays return the stored result; MCP send tools use a fresh key per call and retry once on timeout
+- [x] **OAuth 2.1 for the HTTP MCP** (v0.5.0-pro, opt-in `MCP_OAUTH_ENABLED`) — so claude.ai and ChatGPT connectors can reach the shared server without a static bearer header
+- [x] **Agent contact-naming loop** (v0.5.0-pro) — `list_unnamed_contacts` + `set_contact_names`; unconfirmed names are `agent_inferred`, shown "(unverified)" and ignored by the bridge's directory and webhooks
+- [x] **Persistent media-retry queue** (v0.5.0-pro) — `media_requests` table, paced loop (`MEDIA_RETRY_MAX_PER_HOUR`), recovered files saved under `store/media/`, `GET /api/media-requests`
+- [x] **463 reachout-timelock handling** (v0.5.0-pro) — lock recorded and persisted, first-contact sends refused with 429 + `Retry-After`, `reachout_timelock_until` in `/api/connection`
 - [ ] **WhatsApp chat-export import** — load a phone's "Export chat" archive to fill history the linked device never received
 - [ ] **Edit history + call log** — keep prior versions of edited messages; expose calls as queryable records
 - [ ] **Prometheus `/metrics`** — messages/hr, webhook deliveries, send latency, recall index lag (see Observability below)
 
 ## Earlier "next" list (high value, low risk)
 
-- [x] **Media-retry path for expired media** (shipped, opt-in) — `internal/whatsapp/download.go` does `SendMediaRetryReceipt` → `events.MediaRetry` → `DecryptMediaRetryNotification` and refreshes `direct_path`. Opt-in via `MEDIA_RETRY_ENABLED=true`, because each retry shows "Finished syncing" on the phone. Enabled on the maintainer's install since 2026-10-21 (DECISIONS D3); it only recovers media the phone still has. A persistent retry queue is under Next up.
+- [x] **Media-retry path for expired media** (shipped, opt-in) — `internal/whatsapp/download.go` does `SendMediaRetryReceipt` → `events.MediaRetry` → `DecryptMediaRetryNotification` and refreshes `direct_path`. Opt-in via `MEDIA_RETRY_ENABLED=true`, because each retry shows "Finished syncing" on the phone. Enabled on the maintainer's install since 2026-10-21 (DECISIONS D3); it only recovers media the phone still has. The persistent retry queue shipped in v0.5.0-pro.
 - [~] **LID/PN JID normalization** — chat merge done (`MERGE_LID_CHATS`, default on; every MCP entry point follows `chats.merged_into` since 2026-10-22); `sender` column still open. Chat side: `NormalizeChatJID` + `MergeLIDChats` leave 0 split `@lid` chats (checked 2026-10-21). Still open: (1) the `sender` column mixes bare user parts (live path, `handlers.go`), full `@lid` and full `@s.whatsapp.net` JIDs (history path), and bare LID numbers can't be told from phone numbers; store `Sender.ToNonAD()`, prefer a phone `SenderAlt`, backfill via `identities.lid`. (2) webhooks carry the raw `msg.Info.Chat`, not the normalized `chat_jid` the row is stored under, which is why wa-assistant watches both. (3) history sync doesn't call `NormalizeChatJID` on `conversation.ID`.
 - [x] **Presence policy decision** (2026-07-19; superseded 2026-08-04; current default `WA_PRESENCE_MODE=human` + `PRESENCE_PING_ENABLED=false`) — upstream's presence manager now replaces our static gate: offline by default, online only transiently around real outgoing sends, `PresenceModeAlwaysOnline` to opt back in. `PRESENCE_PING_ENABLED` still governs the periodic ping. Original decision was **off by default**. Both the on-connect `SetPresence("available")` and the periodic ping are now gated behind `PRESENCE_PING_ENABLED` (default `false`), so the paired phone keeps its push notifications and the bridge stops painting an always-online fingerprint. Opt back in with `PRESENCE_PING_ENABLED=true` if you want to appear online to contacts. Future option (not done): mirror real activity mautrix-style.
 - [x] **Reply/quote in send_message** (upstream #57, merged in 2026-08-04) — `send_message` now takes `quoted_message_id` and `mentioned_jids`. Remaining: wa-client swipe-to-reply UI.
@@ -40,7 +40,7 @@ worth closing are listed below in value order.
 - [x] **Voice-note auto-transcription pipeline** (shipped 2026-07-06) — background loop transcribes incoming voice notes into `content`; recall indexes them; backend-pluggable (mlx / faster-whisper / Groq)
 - [ ] **Scheduled sends as MCP tools** (`schedule_message`, `list_scheduled`, `cancel_scheduled`) so agents can schedule, not just the web UI
 - [ ] **Upstream PRs**: tests fix (done in-fork), JID allowlist, scheduled sends — keep the fork mergeable and the upstream relationship warm
-- [~] **Releases + tags** — CHANGELOG.md has v0.4.0-pro; the tag and GitHub release are not cut yet
+- [~] **Releases + tags** — CHANGELOG.md has v0.4.0-pro and v0.5.0-pro; the tags and GitHub releases are not cut yet
 
 ## Mid-term
 

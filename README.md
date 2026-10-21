@@ -48,8 +48,12 @@ Read this before you pair a number you care about.
   low-risk pattern.
 - **What this repo does about it:**
   - Two send allowlists (`SEND_ALLOWED_JIDS` at the HTTP layer,
-    `WHATSAPP_ALLOWLIST_JIDS` at the send call). Matching is exact, never
-    substring. Set both before you let an agent send.
+    `WHATSAPP_ALLOWLIST_JIDS` at the send call), covering messages, reactions,
+    polls, edits and deletes. Matching is exact, never substring. Set both
+    before you let an agent send.
+  - After WhatsApp's error 463 (temporarily barred from starting new chats),
+    the bridge refuses first-contact sends until the lock lifts, instead of
+    retrying into a ban.
   - Opt-in pacing (`ANTIBAN_ENABLED=true`): randomised delays, typing
     simulation, a warm-up cap for new numbers, a risk score that pauses sending.
   - Presence stays offline by default and only goes online briefly around real
@@ -116,14 +120,15 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
   never sent to WhatsApp) and they show up at once in `list_chats`,
   `list_messages` and the directory. A stranger's own "this is your bank" is
   never taken as evidence: names you didn't confirm are stored as
-  `agent_inferred`, shown as "(unverified)", and can't replace a name you set
-  or one from your address book.
+  `agent_inferred`, shown as "(unverified)", can't replace a name you set or
+  one from your address book, and are left out of the bridge's directory and
+  webhook payloads.
 - **LID chat merging.** A conversation split across a LID and a phone JID is
   folded into one chat (`MERGE_LID_CHATS=true`, the default), so search, recall
   and per-chat automation see all of it. Merged rows are kept and marked, so an
   old LID still resolves.
 
-**Running it unattended**
+**Agents and remote access**
 
 - **Shared HTTP server** (`serve_http.py`). One always-on streamable-HTTP MCP
   for all your sessions, instead of one stdio process per session. Per-session
@@ -132,6 +137,27 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
 - **Scoped bearer tokens.** `WA_MCP_FULL_TOKEN` for trusted agents,
   `WA_MCP_READONLY_TOKEN` for dashboards. The read-only token can only list and
   call tools annotated `readOnlyHint=true`, enforced server-side.
+- **OAuth for claude.ai and ChatGPT connectors** (`MCP_OAUTH_ENABLED=true`, off
+  by default). Those connectors can't send a static header, so the shared
+  server can act as its own single-user OAuth 2.1 server: PKCE, dynamic client
+  registration, a consent page guarded by a passphrase, and a CLI approve path
+  so failed guesses can never lock you out. It needs a public HTTPS URL, which
+  puts your account on the internet behind that passphrase; grant read-only
+  unless the connector has to send. See
+  [SETUP.md](SETUP.md#remote-connector-via-oauth-optional).
+
+**Safety**
+
+- **Allowlists on everything that writes.** `SEND_ALLOWED_JIDS` and
+  `WHATSAPP_ALLOWLIST_JIDS` gate reactions, polls, edits and deletes as well as
+  messages, so an agent confined to one chat can't act in another.
+- **Reachout timelock.** When WhatsApp answers a send with error 463, the
+  account is temporarily barred from starting new chats, and pushing more
+  first contacts through is how a lock becomes a ban. The bridge remembers the
+  lock (WhatsApp's own end time when it sends one, else
+  `REACHOUT_TIMELOCK_DEFAULT`, 24h), refuses sends to contacts with no history
+  until then with 429 and `Retry-After`, and keeps replies and group messages
+  working. `/api/connection` shows `reachout_timelock_until`.
 - **Media guard.** `send_file` and `send_audio_message` read local paths only
   from `/tmp` and directories you list in `MEDIA_ALLOWED_DIRS`. Inside those it
   still refuses dotfiles and anything under a dot-directory, `.env`, `.pem`,
@@ -140,10 +166,32 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
   keys live). Both the bridge and the MCP server enforce this, and symlinks are
   resolved first. An agent reading untrusted message text can be prompt-injected;
   this is the last stop before a secret ends up in a chat.
+
+**Reliability**
+
+- **Sends are safe to retry.** `/api/send`, `/api/reaction` and
+  `/api/poll/create` take an idempotency key (`idempotency_key` or an
+  `Idempotency-Key` header). A repeat returns the stored result instead of
+  sending again; a repeat after a failure reuses the same WhatsApp message ID.
+  The MCP send tools use a fresh key per call, retry a timed-out request once
+  with it, and return it, so an agent can retry a whole call without a double
+  send. Failures come back as distinct codes (400/403/409/422/429/502/503/504)
+  rather than a blanket 500 that invites blind retries.
+- **Phone-offline warning.** A linked device stops working about 14 days after
+  the phone was last online, and no restart fixes that. The bridge tracks when
+  it last saw the phone and reports `phone_last_seen` and `phone_offline_days`
+  in `/api/connection`, logs a WARN past 7 days and an ERROR past 12, and after
+  `PHONE_OFFLINE_PING_AFTER` (7 days) sends one invisible request a day to your
+  own phone to wake it (`PHONE_PING_ENABLED=false` to stop that). Alert on
+  `phone_offline_days` in your health check.
 - **Media retry** (`MEDIA_RETRY_ENABLED=true`, off by default). When media has
   expired from WhatsApp's CDN (403/404), the bridge asks the sender's phone to
-  re-upload it. Each retry shows "Finished syncing" on your phone, so keep it off
-  for bulk jobs. It only recovers media the phone still has.
+  re-upload it. Requests are queued in the database and worked by a paced
+  background loop (`MEDIA_RETRY_MAX_PER_HOUR`, default 20), so they survive a
+  restart or an offline phone; a recovered file is saved and served from
+  `store/media/`. `GET /api/media-requests` shows the queue. Each retry shows
+  "Finished syncing" on your phone, which is why it is paced and opt-in. It
+  only recovers media the phone still has.
 - **One bridge per number.** To run a second number, run a second bridge process
   with its own data directory (its own `store/`), its own `API_PORT`, and its own
   service unit. The MCP server talks to one bridge (`BRIDGE_HOST`); run a second
@@ -253,15 +301,14 @@ confirm it either way.
 
 | Project | Engine | MCP | Semantic recall | Local transcription | Multi-account | Maintained |
 |---|---|---|---|---|---|---|
-| **whatsapp-mcp-pro** (this) | whatsmeow (Go) | yes, stdio + HTTP with scoped tokens | yes | yes (whisper.cpp server, mlx, faster-whisper) | one process per number | yes |
+| **whatsapp-mcp-pro** (this) | whatsmeow (Go) | yes, stdio + HTTP with scoped tokens, optional OAuth 2.1 | yes | yes (whisper.cpp server, mlx, faster-whisper) | one process per number | yes |
 | [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) | whatsmeow (Go) | yes, stdio | no | no | no | no, last push Jul 2025 |
 | [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) | whatsmeow (Go) | yes, stdio + HTTP | reference plugin, not in core | reference plugin, not in core | — | yes (upstream of this fork) |
 | [verygoodplugins/whatsapp-mcp](https://github.com/verygoodplugins/whatsapp-mcp) | whatsmeow (Go) | yes, stdio + HTTP/SSE | — | yes (whisper.cpp) | — | yes (maintained lharries successor) |
 | [aldinokemal/go-whatsapp-web-multidevice](https://github.com/aldinokemal/go-whatsapp-web-multidevice) (GOWA) | whatsmeow (Go), REST gateway | yes, built in, optional OAuth 2.1 | — | — | yes, many devices in one process | yes |
 | [openclaw/wacli](https://github.com/openclaw/wacli) | whatsmeow (Go), CLI | — | no, FTS5 keyword search | — | yes, named accounts | yes |
 
-Pick GOWA if you need many numbers behind one REST gateway or a remote MCP
-connector with OAuth. Pick wacli if you want a terminal tool. Pick this if you
+Pick GOWA if you need many numbers behind one REST gateway. Pick wacli if you want a terminal tool. Pick this if you
 want to ask questions of your own history.
 
 ## Troubleshooting
@@ -281,7 +328,19 @@ Short answers; details in [SETUP.md](SETUP.md#troubleshooting).
   and scan.
 - **`download_media` fails with 403/404 on old media.** The CDN copy expired. Set
   `MEDIA_RETRY_ENABLED=true` to ask the phone to re-upload it; it only works if
-  the phone still has the file.
+  the phone still has the file. A request that isn't answered at once stays
+  queued; check `GET /api/media-requests` and download again later.
+- **A send returns 504.** The bridge gave up waiting (`SEND_TIMEOUT_SECONDS`,
+  25 s; `SEND_MEDIA_TIMEOUT_SECONDS`, 150 s, for files). The message may still
+  have gone out. Retry with the same `idempotency_key` (the MCP tools return
+  it): if it was delivered, you get the stored result instead of a second copy.
+- **A send to a new contact returns 429 with `Retry-After`.** WhatsApp put the
+  account in a reachout timelock (error 463). Replies in existing chats still
+  work; wait until `reachout_timelock_until` from `/api/connection` and don't
+  work around it, since more first contacts during a lock invite a ban.
+- **`phone_offline_days` keeps growing.** The phone hasn't been online. Open
+  WhatsApp on it before about 14 days, or WhatsApp unlinks the bridge and you
+  have to pair again.
 - **"refusing sensitive file" or "media path outside allowed directories".** The
   media guard. Put the file in `/tmp` or a directory listed in
   `MEDIA_ALLOWED_DIRS`; secrets and databases are refused even there.
