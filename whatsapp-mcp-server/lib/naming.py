@@ -147,11 +147,16 @@ def _live_nickname_sql(field_expr: str, rank_expr: str) -> str:
 
     A user nickname under the other JID form outranks an agent-inferred one
     under the canonical JID; only then does the JID form, then recency, decide.
+
+    The JID-form tiebreak prefers the phone form rather than comparing with
+    raw.jid: SQLite rejects an outer-query column in a correlated subquery's
+    ORDER BY ("no such column: raw.jid") on most builds, including Ubuntu's,
+    and the canonical JID is the phone form whenever one is known anyway.
     """
     return f"""(
     SELECT {field_expr} FROM contact_nicknames n
     WHERE n.jid IN (raw.jid, raw.lid, raw.phone_jid) AND TRIM(COALESCE(n.nickname, '')) <> ''
-    ORDER BY {rank_expr}, n.jid = raw.jid DESC, n.updated_at DESC
+    ORDER BY {rank_expr}, n.jid LIKE '%@s.whatsapp.net' DESC, n.updated_at DESC
     LIMIT 1
 )"""
 
