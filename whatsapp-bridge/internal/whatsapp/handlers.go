@@ -1,8 +1,13 @@
 package whatsapp
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -401,18 +406,113 @@ func AutoDownloadPath(chatJID, msgID, filename string) string {
 	return filepath.Join("store", autoDownloadUnsafe.ReplaceAllString(chatJID, "_"), autoDownloadUnsafe.ReplaceAllString(filename, "_"))
 }
 
+// AutoDownloadPaths returns every place autoDownloadMedia may have saved a
+// message's media, in lookup order: the AutoDownloadPath layout, then the same
+// directory with the message ID prefixed to the name.
+//
+// The second form exists because ExtractMediaInfo names images, video and audio
+// by the receive time to the second, so two messages arriving in the same
+// second share a filename. The first one keeps the plain name (readers of that
+// layout are unaffected); later ones go to the ID-prefixed name, which is
+// derivable from the same (chat, id, filename) row and therefore findable.
+func AutoDownloadPaths(chatJID, msgID, filename string) []string {
+	primary := AutoDownloadPath(chatJID, msgID, filename)
+	alt := filepath.Join(filepath.Dir(primary), autoDownloadUnsafe.ReplaceAllString(msgID, "_")+"_"+filepath.Base(primary))
+	return []string{primary, alt}
+}
+
+// FileMatchesSHA256 reports whether the file at path hashes to want. An empty
+// want means the message carried no hash, so there is nothing to disprove and
+// the file is accepted, which is what the bridge did before hashes were checked.
+func FileMatchesSHA256(path string, want []byte) (bool, error) {
+	if len(want) == 0 {
+		return true, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false, fmt.Errorf("hash %s: %w", path, err)
+	}
+	return bytes.Equal(h.Sum(nil), want), nil
+}
+
+// FindAutoDownloaded returns the first non-empty AutoDownloadPaths candidate
+// whose content matches fileSHA256 (any non-empty one when the hash is
+// unknown), or "" if none does.
+func FindAutoDownloaded(paths []string, fileSHA256 []byte) string {
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			continue
+		}
+		if ok, err := FileMatchesSHA256(p, fileSHA256); err == nil && ok {
+			return p
+		}
+	}
+	return ""
+}
+
+// saveAutoDownload writes data to the first free AutoDownloadPaths slot. The
+// primary name is claimed with os.Link, which fails if the name exists, so two
+// same-second messages downloading concurrently cannot overwrite each other
+// the way a stat-then-write did. Returns the path the data now lives at.
+func saveAutoDownload(paths []string, data, fileSHA256 []byte) (string, error) {
+	primary, alt := paths[0], paths[1]
+	tmp, err := os.CreateTemp(filepath.Dir(primary), ".autodl-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once renamed away
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if werr != nil {
+		return "", fmt.Errorf("write temp: %w", werr)
+	}
+	if cerr != nil {
+		return "", fmt.Errorf("close temp: %w", cerr)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return "", fmt.Errorf("chmod temp: %w", err)
+	}
+
+	err = os.Link(tmpPath, primary)
+	if err == nil {
+		return primary, nil
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		return "", fmt.Errorf("link %s: %w", primary, err)
+	}
+	// Someone holds the primary name. If it is this message (a duplicate
+	// event), keep it; otherwise it is another message's file and this one
+	// moves to the ID-prefixed name.
+	if ok, herr := FileMatchesSHA256(primary, fileSHA256); herr == nil && ok {
+		return primary, nil
+	}
+	if err := os.Rename(tmpPath, alt); err != nil {
+		return "", fmt.Errorf("rename to %s: %w", alt, err)
+	}
+	return alt, nil
+}
+
 // autoDownloadMedia downloads and saves media to disk immediately after receiving a message,
 // before the WhatsApp CDN URL expires. Runs as a goroutine; all errors are logged and ignored.
 func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
-	outPath := AutoDownloadPath(chatJID, msgID, filename)
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		c.logger.Warnf("auto-download: mkdir %s: %v", filepath.Dir(outPath), err)
+	paths := AutoDownloadPaths(chatJID, msgID, filename)
+	if err := os.MkdirAll(filepath.Dir(paths[0]), 0o755); err != nil {
+		c.logger.Warnf("auto-download: mkdir %s: %v", filepath.Dir(paths[0]), err)
 		return
 	}
 
-	// Skip if already downloaded
-	if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
-		c.logger.Infof("auto-download: %s already exists, skipping", outPath)
+	// Skip only if *this* message's bytes are already on disk. A bare "file
+	// exists" check skipped every message that shared a same-second filename
+	// with an earlier one, leaving it pointing at the wrong media.
+	if existing := FindAutoDownloaded(paths, fileSHA256); existing != "" {
+		c.logger.Infof("auto-download: %s already exists, skipping", existing)
 		return
 	}
 
@@ -455,8 +555,9 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 		return
 	}
 
-	if err := os.WriteFile(outPath, data, 0o644); err != nil {
-		c.logger.Warnf("auto-download: write %s: %v", outPath, err)
+	outPath, err := saveAutoDownload(paths, data, fileSHA256)
+	if err != nil {
+		c.logger.Warnf("auto-download: %s/%s: %v", chatJID, msgID, err)
 		return
 	}
 
