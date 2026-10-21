@@ -88,6 +88,19 @@ func (c *Client) prepareMessageID(want string, beforeDispatch func(string)) type
 // the bookkeeping: a 463 arms the reachout timelock (which records its own
 // antiban event); anything else is reported to antiban as a failed send.
 func (c *Client) sendFailure(to types.JID, msgType antiban.MessageType, err error, format string) *SendError {
+	if IsReachoutTimelockError(err) && to.Server == types.HiddenUserServer {
+		// The server also answers 463 to a send addressed straight to a LID it
+		// can't route (no phone mapping yet; see SendMessage). Arming the
+		// reachout lock on that would block every new contact for a day over
+		// one unroutable address, so it is reported as a failed send instead.
+		// A real timelock still arrives via NotifyAccountReachoutTimelock.
+		c.antiban.AfterSendFailed(msgType, err)
+		return &SendError{
+			Kind: SendErrUpstream,
+			Err: fmt.Errorf("WhatsApp refused the send to %s with error 463; for a LID address this usually means no phone-number mapping is known yet, so it was not treated as a reachout timelock: %w",
+				to, err),
+		}
+	}
 	if IsReachoutTimelockError(err) {
 		until := c.recordReachoutTimelock(to)
 		return &SendError{
