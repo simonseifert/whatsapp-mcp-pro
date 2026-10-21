@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mdp/qrterminal"
@@ -60,6 +61,9 @@ type Client struct {
 	// Called just before AutoReconnect circuit breaker gives up (30 consecutive failures).
 	// Use to fire an out-of-band alert before the process exits via watchdog.
 	circuitBreakerCallback func()
+
+	// Persistent media retry queue; nil unless StartMediaRetryQueue ran.
+	mediaRetryQueue atomic.Pointer[MediaRetryQueue]
 }
 
 // NewClient creates a new WhatsApp client with default configuration.
