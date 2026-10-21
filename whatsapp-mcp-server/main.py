@@ -384,7 +384,7 @@ def send_message(
         message: The message text to send
         mentioned_jids: Optional list of JIDs to mention in the message (e.g. ["123456789@s.whatsapp.net"])
         quoted_message_id: Optional ID of a message to quote or reply to
-        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
+        idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
 
     Returns:
         A dictionary with success, message_id, deduplicated, idempotency_key, and on
@@ -423,7 +423,7 @@ def send_file(
                  the server cannot read your filesystem. Requires filename.
         filename: Name for the file, including extension (e.g. "screenshot.png"). Required
                  with file_content_base64; the extension determines how WhatsApp shows it.
-        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
+        idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
 
     Returns:
         A dictionary containing success status and a status message
@@ -452,7 +452,7 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file).
                  Same path rules as send_file: /tmp or a MEDIA_ALLOWED_DIRS directory only.
-        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
+        idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
 
     Returns:
         A dictionary containing success status and a status message
@@ -867,7 +867,7 @@ def create_poll(
         question: The poll question
         options: List of poll options (2-12 options required)
         multi_select: If True, allows multiple selections; if False, single selection only (default: False)
-        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
+        idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
 
     Returns:
         A dictionary containing success, message_id, timestamp, chat_jid, question, options
