@@ -65,7 +65,7 @@ bring them back.
 ## Commands
 
 ```bash
-# Bridge (Go 1.25+)
+# Bridge (Go 1.26+, go.mod pins the toolchain; it auto-downloads)
 cd whatsapp-bridge && go build -o whatsapp-bridge . && ./whatsapp-bridge
 go build ./... && go vet ./... && go test ./...
 
@@ -111,8 +111,8 @@ on the Debian box. `MEDIA_RETRY_ENABLED=true` is set in the data `.env`.
 
 **The repo binary runs twice.** A second bridge for Friday's own number
 (`whatsapp-bridge-friday`, a systemd *user* unit, own data dir, REST :8083) executes
-the same `whatsapp-bridge/whatsapp-bridge`. `deploy-live.sh` doesn't restart it, so it
-picks up a new build on its next restart.
+the same `whatsapp-bridge/whatsapp-bridge`. `deploy-live.sh` restarts and checks it too,
+listed in `OTHER_BRIDGES` in the data dir's `deploy.env`, and rolls both back together.
 
 **Everything around the code** (machines, standby/failover scripts, consumers, M1
 agents, runbooks) is in `~/Code/personal/infra/WHATSAPP-OPS.md`. It stays out of this
