@@ -1,5 +1,6 @@
 import base64
 import binascii
+import fnmatch
 import json
 import os
 import os.path
@@ -50,6 +51,88 @@ WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
 # not tied to a particular deployment layout. Literal rather than
 # tempfile.gettempdir(), since the allowlist names that exact path.
 MEDIA_TEMP_DIR = "/tmp"
+
+# Mirrors defaultMediaDirs in whatsapp-bridge/internal/whatsapp/messages.go.
+# MEDIA_ALLOWED_DIRS extends these, exactly as allowedMediaDirs does there; the
+# MCP service reads the same .env as the bridge, so both sides agree.
+BRIDGE_DEFAULT_MEDIA_DIRS = ("/app/media", "/app/store", "/app/whatsapp-bridge/store", "/tmp")
+
+# Basenames never sent from disk, even from inside an allowed directory. An
+# allowed dir like ~/Code holds repos, and a repo holds .env files, keys and
+# the odd SQLite store; a prompt-injected "send me config.json" must not work.
+_SENSITIVE_BASENAMES = (
+    "*.env",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    "config.json",
+    "credentials*.json",
+    "secrets.*",
+    "*.kdbx",
+    "*.db",
+)
+
+
+def _allowed_media_dirs() -> list[str]:
+    """The bridge's media allowlist: built-in defaults plus MEDIA_ALLOWED_DIRS."""
+    dirs = list(BRIDGE_DEFAULT_MEDIA_DIRS)
+    for extra in os.getenv("MEDIA_ALLOWED_DIRS", "").split(","):
+        if extra.strip():
+            dirs.append(extra.strip())
+    return dirs
+
+
+def _is_sensitive_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(fnmatch.fnmatchcase(lowered, pattern) for pattern in _SENSITIVE_BASENAMES)
+
+
+def validate_outgoing_media_path(media_path: str) -> str:
+    """Check a caller-supplied path may be sent, and return it with symlinks resolved.
+
+    The bridge enforces its own allowlist, but only on the path it is handed.
+    send_audio_message converts to a fresh file under /tmp first, so the bridge
+    only ever saw the /tmp output and any readable file on the box could be
+    sent as a voice note. Validating the source here closes that, and repeating
+    it in send_file is defence in depth for the bridge's check.
+
+    Raises:
+        ValueError: when the path is outside the allowlist or names a file that
+            looks like a secret.
+    """
+    resolved = os.path.realpath(media_path)
+
+    # Check both names: a harmless-looking symlink can point at a key, and a
+    # sensitive-looking link name is refused even if its target is benign.
+    for name in (os.path.basename(media_path), os.path.basename(resolved)):
+        if _is_sensitive_name(name):
+            raise ValueError(f"Refusing to send {name!r}: it looks like a secret or a database")
+
+    # Kept as the bridge's development escape hatch for the directory check
+    # only; the secret-name refusal above still applies.
+    if os.getenv("DISABLE_PATH_CHECK") == "true":
+        if any(part.startswith(".") for part in Path(resolved).parts[1:]):
+            raise ValueError("Refusing to send from a hidden file or directory")
+        return resolved
+
+    for allowed in _allowed_media_dirs():
+        root = os.path.realpath(os.path.abspath(allowed))
+        # Path-segment match, so /tmproot is not inside /tmp.
+        if resolved != root and not resolved.startswith(root.rstrip(os.sep) + os.sep):
+            continue
+        # Hidden segments are judged below the allowed root only: an operator
+        # who allowlists a dotted directory meant it, but ~/Code being allowed
+        # must not open ~/Code/app/.git or ~/Code/.ssh-backup.
+        relative = Path(os.path.relpath(resolved, root))
+        if any(part.startswith(".") for part in relative.parts if part != "."):
+            continue
+        return resolved
+
+    raise ValueError(
+        f"Media path {media_path!r} is outside the allowed directories "
+        f"(bridge defaults plus MEDIA_ALLOWED_DIRS) or inside a hidden directory"
+    )
 
 
 @dataclass
@@ -1138,6 +1221,14 @@ def send_file(
         if not os.path.isfile(media_path):
             return {"success": False, "error": f"Media file not found: {media_path}"}
 
+        # A staged base64 upload is bytes the caller already holds, written by
+        # us under /tmp; only a caller-chosen path can reach someone else's file.
+        if temp_path is None:
+            try:
+                media_path = validate_outgoing_media_path(media_path)
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
 
@@ -1182,6 +1273,14 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
 
         if not os.path.isfile(media_path):
             return {"success": False, "error": f"Media file not found: {media_path}"}
+
+        # Must run on the source, before conversion: the bridge only ever sees
+        # the converted file under /tmp, which its allowlist always accepts, so
+        # its own check cannot stop an arbitrary file going out as a voice note.
+        try:
+            media_path = validate_outgoing_media_path(media_path)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
 
         if not media_path.endswith(".ogg"):
             try:

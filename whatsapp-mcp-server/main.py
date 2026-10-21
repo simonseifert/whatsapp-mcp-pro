@@ -390,7 +390,9 @@ def send_file(
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the media file to send (image, video, document).
-                 This is a path on the *server*, so it only works for files already there.
+                 This is a path on the *server*, so it only works for files already there,
+                 inside /tmp or a MEDIA_ALLOWED_DIRS directory. Hidden paths and
+                 secret-looking files (.env, keys, *.db) are refused.
         file_content_base64: The file's bytes, base64-encoded. Use this for a local file —
                  the server cannot read your filesystem. Requires filename.
         filename: Name for the file, including extension (e.g. "screenshot.png"). Required
@@ -414,7 +416,8 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
-        media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file)
+        media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file).
+                 Same path rules as send_file: /tmp or a MEDIA_ALLOWED_DIRS directory only.
 
     Returns:
         A dictionary containing success status and a status message
