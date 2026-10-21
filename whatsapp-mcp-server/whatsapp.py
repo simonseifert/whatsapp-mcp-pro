@@ -113,6 +113,41 @@ class Chat:
         }
 
 
+def _resolve_equivalent_jids(jid: str) -> list[str]:
+    """Resolve a JID to its LID/phone equivalent(s) using whatsmeow_lid_map.
+
+    WhatsApp migrated one-to-one chats to LID addressing. A single conversation
+    can be split across two chat_jid values in messages.db:
+      - Phone format: 34663060433@s.whatsapp.net
+      - LID format:   154713345548441@lid
+
+    Returns a list including the original JID plus any equivalent found.
+    Groups (@g.us) and unknown suffixes pass through unchanged.
+    """
+    if "@" not in jid:
+        return [jid]
+    bare, suffix = jid.split("@", 1)
+    if suffix not in ("s.whatsapp.net", "lid"):
+        return [jid]
+    try:
+        conn = sqlite3.connect(WHATSAPP_DB_PATH)
+        cursor = conn.cursor()
+        if suffix == "s.whatsapp.net":
+            row = cursor.execute("SELECT lid FROM whatsmeow_lid_map WHERE pn = ?", (bare,)).fetchone()
+            if row:
+                return [jid, f"{row[0]}@lid"]
+        else:
+            row = cursor.execute("SELECT pn FROM whatsmeow_lid_map WHERE lid = ?", (bare,)).fetchone()
+            if row:
+                return [jid, f"{row[0]}@s.whatsapp.net"]
+        return [jid]
+    except sqlite3.Error:
+        return [jid]
+    finally:
+        if "conn" in locals():
+            conn.close()
+
+
 @dataclass
 class Contact:
     phone_number: str
@@ -143,6 +178,14 @@ class MessageContext:
     message: Message
     before: list[Message]
     after: list[Message]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert MessageContext to dictionary."""
+        return {
+            "message": self.message.to_dict(),
+            "before": [message.to_dict() for message in self.before],
+            "after": [message.to_dict() for message in self.after],
+        }
 
 
 def _has_column(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
@@ -346,12 +389,19 @@ def list_messages(
             params.append(before_dt)
 
         if sender_phone_number:
-            where_clauses.append("messages.sender = ?")
-            params.append(sender_phone_number)
+            forms = _sender_forms(sender_phone_number)
+            where_clauses.append(f"messages.sender IN ({','.join('?' * len(forms))})")
+            params.extend(forms)
 
         if chat_jid:
-            where_clauses.append("messages.chat_jid = ?")
-            params.append(chat_jid)
+            equiv = _resolve_equivalent_jids(chat_jid)
+            if len(equiv) > 1:
+                ph = ",".join("?" * len(equiv))
+                where_clauses.append(f"messages.chat_jid IN ({ph})")
+                params.extend(equiv)
+            else:
+                where_clauses.append("messages.chat_jid = ?")
+                params.append(chat_jid)
 
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
@@ -732,6 +782,9 @@ def _sender_forms(handle: str) -> list[str]:
     forms = {handle}
     bare = handle.split("@")[0]
     forms.update({bare, f"{bare}@s.whatsapp.net", f"{bare}@lid"})
+    for equivalent in _resolve_equivalent_jids(handle if "@" in handle else f"{bare}@s.whatsapp.net"):
+        forms.add(equivalent)
+        forms.add(equivalent.split("@")[0])
     identity = get_identity(handle)
     if identity:
         for candidate in (identity.jid, identity.lid, identity.phone_jid, identity.phone):
@@ -751,11 +804,12 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
     """
     try:
         forms = _sender_forms(jid)
+        placeholders = ",".join("?" * len(forms))
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute(
-            """
+            f"""
             SELECT DISTINCT
                 c.jid,
                 c.name,
@@ -769,7 +823,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
             WHERE m.sender IN ({placeholders}) OR c.jid IN ({placeholders})
             ORDER BY c.last_message_time DESC
             LIMIT ? OFFSET ?
-        """.format(placeholders=",".join("?" * len(forms))),
+        """,
             (*forms, *forms, limit, page * limit),
         )
 
@@ -802,11 +856,12 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
     """Get most recent message involving the contact."""
     try:
         forms = _sender_forms(jid)
+        placeholders = ",".join("?" * len(forms))
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute(
-            """
+            f"""
             SELECT
                 m.timestamp,
                 m.sender,
@@ -823,7 +878,7 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
             WHERE m.sender IN ({placeholders}) OR c.jid IN ({placeholders})
             ORDER BY m.timestamp DESC
             LIMIT 1
-        """.format(placeholders=",".join("?" * len(forms))),
+        """,
             (*forms, *forms),
         )
 
@@ -920,8 +975,11 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
+        equiv = [f for f in _sender_forms(f"{sender_phone_number}@s.whatsapp.net") if "@" in f]
+        jid_ph = ",".join("?" * len(equiv))
+
         cursor.execute(
-            """
+            f"""
             SELECT
                 c.jid,
                 c.name,
@@ -932,10 +990,10 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             FROM chats c
             LEFT JOIN messages m ON c.jid = m.chat_jid
                 AND c.last_message_time = m.timestamp
-            WHERE c.jid LIKE ? ESCAPE '\\' AND c.jid NOT LIKE '%@g.us'
+            WHERE c.jid IN ({jid_ph}) AND c.jid NOT LIKE '%@g.us'
             LIMIT 1
         """,
-            (f"%{_like_escape(sender_phone_number)}%",),
+            equiv,
         )
 
         chat_data = cursor.fetchone()
