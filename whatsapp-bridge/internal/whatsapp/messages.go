@@ -226,15 +226,23 @@ var sensitiveNamePatterns = []string{
 	"config.json",
 	"credentials*.json",
 	"secrets.*",
+	// SQLite databases anywhere: the bridge's session keys and history are
+	// one, and so is nearly every other app's local state. ".db" is matched as
+	// a substring below so WAL/SHM/journal sidecars, which hold recent writes
+	// in the clear, are covered too.
+	"*.sqlite",
+	"*.sqlite3",
+	"*.sqlite-*",
 }
 
-// storeDBSuffixes are SQLite files plus their sidecars. The WAL holds recent
-// writes in the clear, so it leaks the session as surely as the .db does.
-var storeDBSuffixes = []string{".db", ".db-wal", ".db-shm", ".db-journal"}
-
 // checkSensitivePath refuses dotfiles, anything under a dot-directory, known
-// secret filenames, and SQLite files under a "store" directory (the bridge's
-// own session keys and message history).
+// secret filenames, databases, and files sitting directly in a "store"
+// directory.
+//
+// Media legitimately lives one level down (store/media/<jid>/..., and
+// auto-downloads in store/<jid>/...); the top of store/ holds the session DB,
+// pair-qr.txt and similar bridge state, none of which belongs in a chat. The
+// Python MCP server applies the same rules so both layers agree.
 //
 // The dot rule only looks at segments below the matched allowed root: the
 // operator chose the root, and a data dir such as ~/.local/share/... listed in
@@ -260,15 +268,12 @@ func checkSensitivePath(p string, roots []string) error {
 		}
 	}
 
-	for _, suffix := range storeDBSuffixes {
-		if !strings.HasSuffix(base, suffix) {
-			continue
-		}
-		for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(p)), "/") {
-			if strings.EqualFold(seg, "store") {
-				return fmt.Errorf("refusing sensitive file: database under a store directory")
-			}
-		}
+	if strings.Contains(base, ".db") {
+		return fmt.Errorf("refusing sensitive file: database file")
+	}
+
+	if strings.EqualFold(filepath.Base(filepath.Dir(p)), "store") {
+		return fmt.Errorf("refusing sensitive file: directly inside a store directory")
 	}
 	return nil
 }
