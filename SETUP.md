@@ -227,6 +227,88 @@ off and the bind address is the only protection. Clients must connect using
 exactly the host you bound; the server answers other `Host` headers with
 421 Misdirected Request.
 
+### Remote connector via OAuth (optional)
+
+claude.ai custom connectors and ChatGPT cannot send a static bearer header;
+they only speak OAuth. `MCP_OAUTH_ENABLED=true` makes the shared server its
+own single-user OAuth 2.1 authorization server (PKCE, dynamic client
+registration, protected-resource metadata, refresh-token rotation). It is off
+by default and the static tokens above keep working either way.
+
+**Only do this behind a public HTTPS URL**, and understand what it means: your
+WhatsApp account becomes reachable from the internet, guarded by one
+passphrase. A full-access grant lets whoever holds it send messages as you.
+Pick **read-only** on the consent page unless the connector really has to
+send, and set the send allowlists (`SEND_ALLOWED_JIDS`,
+`WHATSAPP_ALLOWLIST_JIDS`) before granting full access.
+
+1. Give the server a public HTTPS URL that forwards to `127.0.0.1:8082`
+   (keep `MCP_HOST=127.0.0.1`; the tunnel or proxy connects locally):
+   - Tailscale Funnel: `tailscale funnel --bg 8082` serves
+     `https://<machine>.<tailnet>.ts.net`.
+   - A reverse proxy (Caddy, nginx) with a real certificate. It must pass the
+     public hostname through as `Host` (nginx: `proxy_set_header Host $host;`),
+     or every request gets 421.
+   - Either way every request then reaches the server from the proxy's
+     address. Set `MCP_TRUSTED_PROXY=127.0.0.1` (the proxy's address) so the
+     consent page's per-address backoff reads the real client from
+     `X-Forwarded-For`; without it all visitors share one address. Never list
+     an address untrusted clients can connect from: the header is forgeable.
+2. In the server's `.env`:
+   ```bash
+   MCP_OAUTH_ENABLED=true
+   MCP_PUBLIC_URL=https://<machine>.<tailnet>.ts.net   # origin only, no /mcp
+   MCP_OAUTH_PASSPHRASE=$(openssl rand -base64 24)     # min 12 chars; falls back to WA_MCP_FULL_TOKEN
+   ```
+   The server refuses to start if the URL is not https (localhost excepted),
+   has a path, or the passphrase is missing or short. Clients and hashed
+   tokens persist in `oauth.db` next to the store dir (mode 600,
+   `MCP_OAUTH_DB` to move it), so a restart does not log connectors out.
+
+   Only clients whose redirect URI points at an allowed host can register or
+   reach the consent page: `MCP_OAUTH_ALLOWED_REDIRECT_HOSTS`, default
+   `claude.ai,claude.com,chatgpt.com,localhost,127.0.0.1`, exact host match.
+   Add a host only for a client you trust; removing one cuts off its clients
+   at the next sign-in.
+3. Restart the MCP server and check
+   `https://<host>/.well-known/oauth-protected-resource/mcp` returns JSON.
+4. claude.ai: **Settings → Connectors → Add custom connector**, URL
+   `https://<host>/mcp`, leave the OAuth client ID/secret empty, **Add**, then
+   **Connect**. A consent page from your server opens: enter the passphrase,
+   choose read-only or full, **Approve**. ChatGPT works the same way from its
+   connector settings (developer mode), with OAuth as the auth type.
+
+**Reading the consent page.** The large host is where access goes; trust that,
+not the name, which any client can set to "Claude" when it registers (the page
+marks it unverified). The page only works in the browser that started the
+sign-in: a cookie set by `/authorize` is checked on approval, so a consent
+link someone sends you cannot be approved. If you did not just click Connect
+somewhere, close it.
+
+**Wrong passphrases** cost the sender an increasing wait (2 s, 4 s, 8 s ... up
+to 15 min, counted per IPv4 address or per IPv6 /64, and not cleared by a
+success within the hour), and three wrong tries kill that consent request.
+Against guessing from many addresses there is a global budget: after 20 wrong
+passphrases in an hour from all sources (`MCP_OAUTH_FAILURE_BUDGET`,
+`MCP_OAUTH_FAILURE_WINDOW`) the page stops accepting passphrases until the
+window slides, and the server logs a warning. None of this can lock you out:
+approving from a shell on the server always works. Run the command the page
+shows, then press **Continue after server approval**:
+
+```bash
+cd whatsapp-mcp-server
+.venv/bin/python -m lib.oauth approve <req_id> --scope read   # or --scope full
+```
+
+Access tokens live an hour (`MCP_OAUTH_ACCESS_TTL`), refresh tokens 30 days
+(`MCP_OAUTH_REFRESH_TTL`) and rotate on every use; a reused old refresh token
+revokes that whole grant. To see or cut off connectors:
+
+```bash
+.venv/bin/python -m lib.oauth list
+.venv/bin/python -m lib.oauth revoke <client_id>    # takes effect immediately
+```
+
 ### Verify any of them
 
 Ask the client: *"list my whatsapp chats"*. It should return real chat names.
