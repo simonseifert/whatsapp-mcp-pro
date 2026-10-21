@@ -9,8 +9,17 @@
 
 set -u
 
-REPO="${WABRIDGE_REPO:-/Users/alice/Code/tools/whatsapp-mcp-extended-pro}"
-DB="$REPO/whatsapp-bridge/store/messages.db"
+# Where the bridge keeps store/ and .env. A code/data split install (bridge
+# WorkingDirectory pointed outside the repo) sets WA_DATA_DIR; otherwise the
+# in-repo layout applies: store/ under whatsapp-bridge/, .env at the repo root.
+REPO="${WABRIDGE_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+if [[ -n "${WA_DATA_DIR:-}" ]]; then
+    DB="${WABRIDGE_DB:-$WA_DATA_DIR/store/messages.db}"
+    ENV_FILE="${WABRIDGE_ENV:-$WA_DATA_DIR/.env}"
+else
+    DB="${WABRIDGE_DB:-$REPO/whatsapp-bridge/store/messages.db}"
+    ENV_FILE="${WABRIDGE_ENV:-$REPO/.env}"
+fi
 STALE_MIN="${WABRIDGE_STALE_MIN:-30}"   # minutes of no messages == zombie
 
 # ANSI colors. Bypass with NO_COLOR=1 if piping to a file.
@@ -73,13 +82,12 @@ fi
 # Ask the bridge whether it is actually on the websocket. Process-alive,
 # port-bound and recent-messages can ALL look fine while `connected` is false:
 # a cold start where DNS was not ready yet leaves the process up and silent.
-# That state cost the M1 49 hours of ingestion on 2026-08-02, and the warmup
+# That state once cost a host 49 hours of ingestion on 2026-08-02, and the warmup
 # grace below hid the same thing on the laptop on 2026-08-03 — so this check
 # has to come before the grace, not after it.
 connected="unknown"
-if [[ -f "$REPO/.env" ]]; then
-    # shellcheck disable=SC1091
-    api_key=$(grep -m1 '^API_KEY=' "$REPO/.env" | cut -d= -f2-)
+if [[ -f "$ENV_FILE" ]]; then
+    api_key=$(grep -m1 '^API_KEY=' "$ENV_FILE" | cut -d= -f2-)
     resp=$(curl -sf -m 5 -H "X-API-Key: ${api_key}" http://127.0.0.1:8080/api/connection 2>/dev/null)
     if [[ -n "$resp" ]]; then
         case "$resp" in
@@ -128,8 +136,8 @@ if (( rc == 1 )) && [[ -n "$pid" ]]; then
     echo "${DIM}  fix: kill ${pid}   (wrapper will relaunch in ~5s)${RESET}"
 fi
 if [[ "$connected" == "no" ]]; then
-    echo "${DIM}  fix: launchctl kickstart -k gui/$(id -u)/com.simon.whatsapp-bridge${RESET}"
-    echo "${DIM}       (com.simon.wa-conn-guard does this automatically every 5 min)${RESET}"
+    echo "${DIM}  fix: restart the bridge service (systemctl restart whatsapp-bridge,${RESET}"
+    echo "${DIM}       or launchctl kickstart -k gui/$(id -u)/<your bridge LaunchAgent label>)${RESET}"
 fi
 
 exit "$rc"

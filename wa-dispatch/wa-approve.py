@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """wa-approve — approve drafted WhatsApp replies from your phone.
 
-Runs on M1 (always-on, next to the bridge and ntfy). A Claude session that has
+Runs on the bridge host (always-on, next to the bridge and ntfy). A Claude session that has
 drafted a reply POSTs it here; the service pushes an ntfy notification carrying
 the draft text plus Send / Discard action buttons. Tapping Send makes the phone
 call back here, and this service relays the message through the local bridge.

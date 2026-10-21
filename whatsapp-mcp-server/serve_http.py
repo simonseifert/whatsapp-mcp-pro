@@ -1,9 +1,10 @@
 """Shared streamable-HTTP entrypoint for the WhatsApp MCP server.
 
-One always-on instance under launchd (com.simon.whatsapp-mcp) replaces the
-per-Claude-session `ssh m1 uv run main.py` stdio spawns. Those leaked: the
-stdio server does not exit on stdin EOF, so every finished session orphaned
-a python here (82 of them = 44 GB = the 2026-07-03 jetsam storm + panic).
+One always-on instance (a systemd unit or launchd agent) replaces spawning
+`uv run main.py` over stdio once per Claude session, e.g. via ssh to the box
+that holds the store. Those leaked: the stdio server does not exit on stdin
+EOF, so every finished session orphaned a python process (82 of them took
+44 GB and crashed the host once).
 
 Scoped access: if WA_MCP_FULL_TOKEN / WA_MCP_READONLY_TOKEN are set (.env),
 requests need `Authorization: Bearer <token>`. The read-only token can only

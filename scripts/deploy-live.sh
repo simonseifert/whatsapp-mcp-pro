@@ -13,7 +13,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA="${WA_DATA_DIR:-/home/alice/.local/share/whatsapp-mcp-pro}"
+DATA="${WA_DATA_DIR:-$HOME/.local/share/whatsapp-mcp-pro}"
 
 log() { printf '\033[1m[deploy]\033[0m %s\n' "$*"; }
 die() { printf '\033[31m[deploy] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -65,10 +65,18 @@ sudo systemctl restart whatsapp-bridge.service
 sudo systemctl restart whatsapp-mcp.service
 
 # ── 5. Verify every bridge on this binary comes back connected ──────────────
-# Other numbers run the same binary from their own data dirs (Friday's is a
-# user unit). They must be restarted onto the new build and checked too, or a
-# bad build only shows up at their next unrelated restart.
-OTHER_BRIDGES="${OTHER_BRIDGES:-friday|whatsapp-bridge-friday|8083|/home/alice/.local/share/whatsapp-friday/.env}"
+# Other numbers can run the same binary from their own data dirs (one process
+# per number, each a systemd *user* unit). They must be restarted onto the new
+# build and checked too, or a bad build only shows up at their next unrelated
+# restart. One per line, `name|user-unit|rest-port|path/to/.env`, set either in
+# the environment or as one `OTHER_BRIDGES=...` line per bridge in
+# "$DATA/deploy.env" (kept out of the repo because it names machines and paths).
+# The file is parsed, not sourced: an unquoted `a|b|c` would run as a pipeline.
+# Empty means this box runs a single bridge.
+if [ -z "${OTHER_BRIDGES:-}" ] && [ -f "$DATA/deploy.env" ]; then
+  OTHER_BRIDGES="$(sed -nE "s/^[[:space:]]*OTHER_BRIDGES=[\"']?([^\"']*)[\"']?[[:space:]]*\$/\1/p" "$DATA/deploy.env")"
+fi
+OTHER_BRIDGES="${OTHER_BRIDGES:-}"
 
 wait_connected() {  # wait_connected <port> <env file>
   local key state

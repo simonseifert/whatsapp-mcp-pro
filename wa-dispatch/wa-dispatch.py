@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """wa-dispatch — route incoming WhatsApp messages to per-project Claude sessions.
 
-Runs on M3 (where the tmux Claude sessions live). Polls M1's messages.db over the
-existing M3->M1 SSH link (the same read-only query friday/wa-notify uses), routes
-each new message to a project via routes.json, and either:
+Runs on the workstation where the tmux Claude sessions live. Polls the bridge
+host's messages.db (locally, or read-only over SSH when the bridge runs on
+another machine), routes each new message to a project via routes.json, and
+either:
 
   - spawns a detached tmux session running Claude in prepare-ahead mode if the
     project's session is cold, or
@@ -283,7 +284,7 @@ def poll_requests(routes, dry_run):
 
     wa-client runs next to the bridge, on a host that cannot reach this laptop,
     so the button only records a request. Reading it here on the existing poll
-    keeps the one-way M3->bridge direction and avoids opening anything inbound.
+    keeps the one-way workstation->bridge direction and avoids opening anything inbound.
     """
     cmd = (["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
             cfg.get("BRIDGE_SSH_HOST"), "cat %s 2>/dev/null" % REQUESTS_FILE]
