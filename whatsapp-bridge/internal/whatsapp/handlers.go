@@ -400,10 +400,27 @@ var autoDownloadUnsafe = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 // sanitised. wa-dispatch and wa-assistant read this layout directly, so it must
 // not change; /api/download also checks it before going to the network.
 func AutoDownloadPath(chatJID, msgID, filename string) string {
-	if filename == "" {
-		filename = msgID + ".bin"
+	name := safePathPart(filename)
+	if name == "" {
+		name = safePathPart(msgID) + ".bin"
 	}
-	return filepath.Join("store", autoDownloadUnsafe.ReplaceAllString(chatJID, "_"), autoDownloadUnsafe.ReplaceAllString(filename, "_"))
+	return filepath.Join("store", safePathPart(chatJID), name)
+}
+
+// safePathPart sanitises one path segment for the auto-download layout. The
+// character filter alone still lets ".", ".." and dotfile names through, and
+// filepath.Join would resolve ".." into the parent directory: a sender-chosen
+// document name of ".." must not be able to write outside store/<chat>/.
+// Returns "" for anything unusable so callers pick their own fallback.
+func safePathPart(s string) string {
+	s = autoDownloadUnsafe.ReplaceAllString(s, "_")
+	if s == "" || s == "." || s == ".." || strings.HasPrefix(s, ".") {
+		if t := strings.TrimLeft(s, "."); t != "" {
+			return "_" + t
+		}
+		return ""
+	}
+	return s
 }
 
 // AutoDownloadPaths returns every place autoDownloadMedia may have saved a
@@ -417,7 +434,11 @@ func AutoDownloadPath(chatJID, msgID, filename string) string {
 // derivable from the same (chat, id, filename) row and therefore findable.
 func AutoDownloadPaths(chatJID, msgID, filename string) []string {
 	primary := AutoDownloadPath(chatJID, msgID, filename)
-	alt := filepath.Join(filepath.Dir(primary), autoDownloadUnsafe.ReplaceAllString(msgID, "_")+"_"+filepath.Base(primary))
+	id := safePathPart(msgID)
+	if id == "" {
+		id = "msg"
+	}
+	alt := filepath.Join(filepath.Dir(primary), id+"_"+filepath.Base(primary))
 	return []string{primary, alt}
 }
 
@@ -442,10 +463,11 @@ func FileMatchesSHA256(path string, want []byte) (bool, error) {
 
 // FindAutoDownloaded returns the first non-empty AutoDownloadPaths candidate
 // whose content matches fileSHA256 (any non-empty one when the hash is
-// unknown), or "" if none does.
+// unknown), or "" if none does. Lstat, not Stat: a symlink planted at a
+// candidate name must not be served as this message's media.
 func FindAutoDownloaded(paths []string, fileSHA256 []byte) string {
 	for _, p := range paths {
-		info, err := os.Stat(p)
+		info, err := os.Lstat(p)
 		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 			continue
 		}
@@ -456,18 +478,27 @@ func FindAutoDownloaded(paths []string, fileSHA256 []byte) string {
 	return ""
 }
 
-// saveAutoDownload writes data to the first free AutoDownloadPaths slot. The
-// primary name is claimed with os.Link, which fails if the name exists, so two
-// same-second messages downloading concurrently cannot overwrite each other
-// the way a stat-then-write did. Returns the path the data now lives at.
+// saveAutoDownload writes data to the first free AutoDownloadPaths slot. Both
+// names are claimed with os.Link, which fails if the name exists, so nothing
+// already on disk is ever overwritten: two same-second messages downloading
+// concurrently cannot clobber each other the way a stat-then-write did.
+// Returns the path the data now lives at.
 func saveAutoDownload(paths []string, data, fileSHA256 []byte) (string, error) {
 	primary, alt := paths[0], paths[1]
+	// Belt and braces on top of safePathPart: both names must be plain files in
+	// one directory, never "." / ".." / a dotfile that could step out of it.
+	dir := filepath.Dir(primary)
+	for _, p := range []string{primary, alt} {
+		if b := filepath.Base(p); filepath.Dir(p) != dir || b == "." || b == ".." || strings.HasPrefix(b, ".") {
+			return "", fmt.Errorf("refusing auto-download path %q", p)
+		}
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(primary), ".autodl-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // no-op once renamed away
+	defer os.Remove(tmpPath) // the data lives on under the linked name
 	_, werr := tmp.Write(data)
 	cerr := tmp.Close()
 	if werr != nil {
@@ -493,8 +524,16 @@ func saveAutoDownload(paths []string, data, fileSHA256 []byte) (string, error) {
 	if ok, herr := FileMatchesSHA256(primary, fileSHA256); herr == nil && ok {
 		return primary, nil
 	}
-	if err := os.Rename(tmpPath, alt); err != nil {
-		return "", fmt.Errorf("rename to %s: %w", alt, err)
+	// Link, not Rename: Rename would silently replace whatever already sits at
+	// the alt name. If it exists, it is either this message from an earlier
+	// event (keep it) or something we must not clobber.
+	if err := os.Link(tmpPath, alt); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			if ok, herr := FileMatchesSHA256(alt, fileSHA256); herr == nil && ok {
+				return alt, nil
+			}
+		}
+		return "", fmt.Errorf("link %s: %w", alt, err)
 	}
 	return alt, nil
 }
