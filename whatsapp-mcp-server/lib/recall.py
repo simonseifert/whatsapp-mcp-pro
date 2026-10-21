@@ -28,6 +28,7 @@ import os
 import sqlite3
 import threading
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -81,7 +82,15 @@ def _get_model():
             # (graphics)" still held with the model unloaded. At this volume
             # (~264 embeddings/day, batches of 64) CPU encode is sub-second, so
             # the GPU bought nothing and cost a gigabyte on an 8GB box.
-            _model = SentenceTransformer(MODEL_NAME, device=os.environ.get("RECALL_DEVICE", "cpu"))
+            device = os.environ.get("RECALL_DEVICE", "cpu")
+            # Cache first: otherwise every load phones the HF Hub to revalidate
+            # (an unauthenticated request per restart, and a stall when offline).
+            # Only the very first run on a machine needs the network.
+            try:
+                _model = SentenceTransformer(MODEL_NAME, device=device, local_files_only=True)
+            except OSError:
+                logger.info("[recall] %s not cached locally, downloading", MODEL_NAME)
+                _model = SentenceTransformer(MODEL_NAME, device=device)
             logger.info("[recall] embedding model loaded in %.1fs", time.time() - t0)
     return _model
 
@@ -359,12 +368,20 @@ def recall(
     if sender:
         sql_parts.append(" AND m.sender = ?")
         params.append(sender)
-    if after:
-        sql_parts.append(" AND m.timestamp >= ?")
-        params.append(after)
-    if before:
-        sql_parts.append(" AND m.timestamp <= ?")
-        params.append(before)
+    # The bridge stores "2026-10-21 20:54:59+02:00" (space, local offset), so a
+    # raw string compare against an ISO "2026-10-21T00:00:00" is wrong: " " sorts
+    # before "T" and the whole day falls out of `after`. Compare in UTC instead.
+    try:
+        after_utc = _to_sql_utc(after)
+        before_utc = _to_sql_utc(before)
+    except ValueError as exc:
+        return {"error": f"after/before must be ISO-8601 datetimes: {exc}"}
+    if after_utc:
+        sql_parts.append(" AND datetime(m.timestamp) >= ?")
+        params.append(after_utc)
+    if before_utc:
+        sql_parts.append(" AND datetime(m.timestamp) <= ?")
+        params.append(before_utc)
     if is_from_me is not None:
         sql_parts.append(" AND m.is_from_me = ?")
         params.append(1 if is_from_me else 0)
@@ -403,6 +420,20 @@ def recall(
         )
 
     return {"results": results, "index_status": index_status()}
+
+
+def _to_sql_utc(value: str | None) -> str | None:
+    """ISO-8601 input -> the "YYYY-MM-DD HH:MM:SS" UTC form SQLite's datetime() yields.
+
+    A value without an offset is taken as local time, matching how the bridge
+    records timestamps and how a person phrases "since 9 this morning".
+    """
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # naive -> local zone
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # Deliberately NO import-time indexer kickoff: recall / recall_index_status
