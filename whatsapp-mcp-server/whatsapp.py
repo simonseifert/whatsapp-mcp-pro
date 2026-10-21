@@ -37,6 +37,7 @@ except ImportError:
 import audio
 from lib.bridge import _get_headers
 from lib.identity import Identity, directory_available, get_identity, list_identities
+from lib.naming import resolve_display_names
 from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
 # Use environment variable for bridge host, default to localhost:8080 for development
@@ -188,6 +189,7 @@ class Message:
     media_type: str | None = None
     filename: str | None = None
     file_length: int | None = None
+    sender_name: str | None = None  # resolved display name (nickname first), when one is known
 
     def to_dict(self) -> dict[str, Any]:
         """Convert Message to dictionary for structured output."""
@@ -201,6 +203,8 @@ class Message:
             "is_from_me": self.is_from_me,
             "media_type": self.media_type,
         }
+        if self.sender_name:
+            result["sender_name"] = self.sender_name
         # Include media metadata if present
         if self.media_type:
             result["filename"] = self.filename
@@ -343,17 +347,13 @@ def _identity_to_contact(identity: Identity) -> Contact:
 def get_sender_name(sender_jid: str) -> str:
     """Get the best available name for a sender using both contact and chat data."""
     try:
-        # First check for custom nickname
-        nickname = get_contact_nickname(sender_jid)
-        if nickname:
-            return nickname
-
-        # The directory already merged the LID and phone-JID halves of this
-        # person, so it resolves senders the raw contact store cannot: a sender
-        # seen only as a LID still gets their address-book name.
-        identity = get_identity(sender_jid)
-        if identity and identity.display_name and identity.display_name != identity.jid:
-            return identity.display_name
+        # Nickname first, then the directory, which already merged the LID and
+        # phone-JID halves of this person: a sender seen only as a LID still
+        # gets their address-book name, and a nickname set on either half counts.
+        with closing(sqlite3.connect(MESSAGES_DB_PATH)) as names_conn:
+            resolved = resolve_display_names(names_conn, [sender_jid]).get(sender_jid)
+        if resolved:
+            return resolved
 
         # Try to get rich contact information from WhatsApp store
         whatsapp_conn = sqlite3.connect(WHATSAPP_DB_PATH)
@@ -562,6 +562,17 @@ def list_messages(
             )
             result.append(message)
 
+        # Names in one batch rather than a lookup per row. A nickname also
+        # replaces a one-to-one chat's stored name, which is often just the number.
+        names = resolve_display_names(conn, {m.sender for m in result if not m.is_from_me})
+        dm_nicks = resolve_display_names(
+            conn, {m.chat_jid for m in result if not m.chat_jid.endswith("@g.us")}, nickname_only=True
+        )
+        for message in result:
+            if not message.is_from_me:
+                message.sender_name = names.get(message.sender)
+            message.chat_name = dm_nicks.get(message.chat_jid, message.chat_name)
+
         if include_context and result:
             # Add context for each message
             messages_with_context = []
@@ -762,6 +773,14 @@ def list_chats(
         if query:
             where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
             params.extend([f"%{query}%", f"%{query}%"])
+            if cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='contact_nicknames'").fetchone():
+                # A chat found by the local name the user gave it, not only by
+                # the name WhatsApp stored.
+                where_clauses[-1] = (
+                    "(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ? OR chats.jid IN ("
+                    "SELECT jid FROM contact_nicknames WHERE LOWER(nickname) LIKE LOWER(?)))"
+                )
+                params.append(f"%{query}%")
 
         # A merged chat's messages now live under its twin; listing both would
         # show the same conversation twice, once of them empty.
@@ -783,6 +802,9 @@ def list_chats(
 
         cursor.execute(" ".join(query_parts), tuple(params))
         chats = cursor.fetchall()
+        nicknames = resolve_display_names(
+            conn, {row[0] for row in chats if not row[0].endswith("@g.us")}, nickname_only=True
+        )
 
         result = []
         for chat_data in chats:
@@ -793,7 +815,7 @@ def list_chats(
 
             chat = Chat(
                 jid=chat_data[0],
-                name=chat_data[1],
+                name=nicknames.get(chat_data[0], chat_data[1]),
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=last_message,
                 last_message_id=last_message_id,

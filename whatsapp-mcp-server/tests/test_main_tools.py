@@ -22,10 +22,12 @@ DEFAULT_TOOLS = {
     "create_poll",
     "get_poll_results",
     "get_profile_picture",
+    "list_unnamed_contacts",
 }
 
 ALL_TOOLS = DEFAULT_TOOLS | {
     "manage_nickname",
+    "set_contact_names",
     "edit_message",
     "delete_message",
     "mark_read",

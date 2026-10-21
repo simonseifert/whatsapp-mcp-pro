@@ -12,10 +12,13 @@ from typing import Any, Literal, cast
 import requests as _requests
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import ToolAnnotations
+from typing_extensions import TypedDict
 
 from lib.identity import directory_stats as whatsapp_directory_stats
 from lib.identity import get_identity as whatsapp_get_identity
 from lib.identity import list_identities as whatsapp_list_identities
+from lib.naming import list_unnamed_contacts as naming_list_unnamed_contacts
+from lib.naming import set_contact_names as naming_set_contact_names
 from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
 from lib.utils import logger
 
@@ -560,6 +563,74 @@ def manage_nickname(action: NicknameAction, jid: str | None = None, nickname: st
     if action == "get":
         return {"success": True, "jid": jid, "nickname": whatsapp_get_contact_nickname(jid)}
     return whatsapp_remove_contact_nickname(jid)
+
+
+class ContactName(TypedDict):
+    """One name to store: the identity's JID (any form) and the local label."""
+
+    jid: str
+    name: str
+
+
+@tool("core", "List Unnamed Contacts", read_only=True, idempotent=True, open_world=False)
+def list_unnamed_contacts(limit: int = 20, min_messages: int = 1, include_groups: bool = False) -> dict[str, Any]:
+    """List active people who show up only as a number: no address-book name, no nickname.
+
+    Step 1 of the naming loop. Each entry has the canonical jid, phone and lid
+    when known, the self-chosen push_name if any, message_count, last_active
+    (UTC), recent_messages (last 3 with them, ~120 chars each, "from" me/them,
+    "where" direct or the group's name) and shared_groups (groups they post in).
+    Ranked by most recent activity.
+
+    The naming loop:
+      1. Call this tool.
+      2. For each entry, infer a name ONLY from strong evidence in the context:
+         a signature ("- Ana"), a self-introduction ("this is Marko from ..."),
+         someone addressing them by name in a reply, a clear role in a group
+         (e.g. the landlord in "Flat 3"). A push_name is self-chosen and may be a
+         nickname or a joke; treat it as a hint, not proof.
+      3. When unsure, do not guess: show the user the jid, phone and snippets
+         and ask who it is.
+      4. Call `set_contact_names` with the confirmed names only.
+
+    Args:
+        limit: How many to return (default 20, max 50).
+        min_messages: Skip identities with fewer messages than this (default 1).
+        include_groups: Also list groups that have no subject (default False).
+    """
+    return naming_list_unnamed_contacts(limit=limit, min_messages=min_messages, include_groups=include_groups)
+
+
+@tool(
+    "contacts_write",
+    "Set Contact Names",
+    read_only=False,
+    destructive=False,
+    idempotent=True,
+    open_world=False,
+)
+def set_contact_names(names: list[ContactName]) -> dict[str, Any]:
+    """Store local nicknames for up to 50 contacts at once. Step 2 of the naming loop.
+
+    Only sets local labels (the same store `manage_nickname` uses); nothing is
+    sent to WhatsApp and the phone's address book is untouched. The name then
+    wins everywhere this server shows a name: list_chats, list_messages
+    sender_name, lookup_identity and search_directory.
+
+    Set a name only when the evidence is strong (from `list_unnamed_contacts`
+    context) or the user confirmed it. Never guess; ask the user instead.
+
+    Args:
+        names: List of {"jid": ..., "name": ...}. jid may be any known form
+            (phone JID, @lid, bare number) and must already exist in the
+            directory or chats; it is stored under the canonical JID. name is
+            1-64 characters; control characters are stripped.
+
+    Returns:
+        success, saved, failed, and per-item results with jid, success, name or
+        error, and the previous nickname when one was replaced.
+    """
+    return naming_set_contact_names([dict(item) for item in names])
 
 
 # Phase 1 Features: Reactions, Edit, Delete, Group Info, Mark Read
