@@ -364,8 +364,15 @@ def send_message(
     message: str,
     mentioned_jids: list[str] | None = None,
     quoted_message_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
+
+    Retries are deduplicated. If idempotency_key is omitted, one is derived from
+    (recipient, text, quoted message, mentions) plus a 10-minute time bucket, so repeating the identical call within
+    ~10 minutes (e.g. after a timeout) returns the first result with
+    "deduplicated": true instead of sending again. To deliberately send the same
+    text twice, pass a fresh idempotency_key (or vary the content).
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -373,11 +380,13 @@ def send_message(
         message: The message text to send
         mentioned_jids: Optional list of JIDs to mention in the message (e.g. ["123456789@s.whatsapp.net"])
         quoted_message_id: Optional ID of a message to quote or reply to
+        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
 
     Returns:
-        A dictionary containing success status and a status message
+        A dictionary with success, message_id, deduplicated, idempotency_key, and on
+        failure error, http_status, code (e.g. "reachout_timelock"), retryable, hint
     """
-    return whatsapp_send_message(recipient, message, mentioned_jids, quoted_message_id)
+    return whatsapp_send_message(recipient, message, mentioned_jids, quoted_message_id, idempotency_key)
 
 
 @tool("media", "Send File", read_only=False)
@@ -386,10 +395,17 @@ def send_file(
     media_path: str | None = None,
     file_content_base64: str | None = None,
     filename: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
 
     Provide the file either as a path on the server, or inline as base64.
+
+    Retries are deduplicated. If idempotency_key is omitted, one is derived from
+    (recipient, file bytes, file name) plus a 10-minute time bucket, so repeating the identical call within
+    ~10 minutes (e.g. after a timeout) returns the first result with
+    "deduplicated": true instead of sending again. To deliberately send the same
+    file twice, pass a fresh idempotency_key (or vary the content).
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -402,6 +418,7 @@ def send_file(
                  the server cannot read your filesystem. Requires filename.
         filename: Name for the file, including extension (e.g. "screenshot.png"). Required
                  with file_content_base64; the extension determines how WhatsApp shows it.
+        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
 
     Returns:
         A dictionary containing success status and a status message
@@ -411,23 +428,30 @@ def send_file(
         - To send an image you just created locally, base64-encode it and pass
           file_content_base64 with a filename
     """
-    return whatsapp_send_file(recipient, media_path, file_content_base64, filename)
+    return whatsapp_send_file(recipient, media_path, file_content_base64, filename, idempotency_key)
 
 
 @tool("media", "Send Audio Message", read_only=False)
-def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
+def send_audio_message(recipient: str, media_path: str, idempotency_key: str | None = None) -> dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
+
+    Retries are deduplicated. If idempotency_key is omitted, one is derived from
+    (recipient, audio file bytes) plus a 10-minute time bucket, so repeating the identical call within
+    ~10 minutes (e.g. after a timeout) returns the first result with
+    "deduplicated": true instead of sending again. To deliberately send the same
+    audio twice, pass a fresh idempotency_key (or vary the content).
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file).
                  Same path rules as send_file: /tmp or a MEDIA_ALLOWED_DIRS directory only.
+        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
 
     Returns:
         A dictionary containing success status and a status message
     """
-    return whatsapp_audio_voice_message(recipient, media_path)
+    return whatsapp_audio_voice_message(recipient, media_path, idempotency_key)
 
 
 @tool("media", "Download Media", read_only=True, idempotent=True, open_world=False)
@@ -566,18 +590,23 @@ def manage_nickname(action: NicknameAction, jid: str | None = None, nickname: st
 
 
 @tool("send", "Send Reaction", read_only=False)
-def send_reaction(chat_jid: str, message_id: str, emoji: str) -> dict[str, Any]:
+def send_reaction(chat_jid: str, message_id: str, emoji: str, idempotency_key: str | None = None) -> dict[str, Any]:
     """Send an emoji reaction to a WhatsApp message.
+
+    Setting the same reaction twice is harmless, so no key is derived
+    automatically (an automatic key would turn react / remove / react-again into
+    a no-op). Pass idempotency_key only if you want strict once-only semantics.
 
     Args:
         chat_jid: The JID of the chat containing the message
         message_id: The ID of the message to react to
         emoji: The emoji to react with (empty string to remove reaction)
+        idempotency_key: Optional dedupe key
 
     Returns:
         A dictionary containing success status, chat_jid, message_id, emoji, and action
     """
-    return whatsapp_send_reaction(chat_jid, message_id, emoji)
+    return whatsapp_send_reaction(chat_jid, message_id, emoji, idempotency_key)
 
 
 @tool("message_admin", "Edit Message", read_only=False)
@@ -724,19 +753,32 @@ def manage_group(
 
 
 @tool("send", "Create Poll", read_only=False)
-def create_poll(chat_jid: str, question: str, options: list[str], multi_select: bool = False) -> dict[str, Any]:
+def create_poll(
+    chat_jid: str,
+    question: str,
+    options: list[str],
+    multi_select: bool = False,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
     """Create and send a poll to a WhatsApp chat.
+
+    Retries are deduplicated. If idempotency_key is omitted, one is derived from
+    (chat, question, options, multi_select) plus a 10-minute time bucket, so repeating the identical call within
+    ~10 minutes (e.g. after a timeout) returns the first result with
+    "deduplicated": true instead of sending again. To deliberately send the same
+    poll twice, pass a fresh idempotency_key (or vary the content).
 
     Args:
         chat_jid: The JID of the chat to send the poll to
         question: The poll question
         options: List of poll options (2-12 options required)
         multi_select: If True, allows multiple selections; if False, single selection only (default: False)
+        idempotency_key: Optional dedupe key; auto-derived when omitted (see above)
 
     Returns:
         A dictionary containing success, message_id, timestamp, chat_jid, question, options
     """
-    return whatsapp_create_poll(chat_jid, question, options, multi_select)
+    return whatsapp_create_poll(chat_jid, question, options, multi_select, idempotency_key)
 
 
 @tool("core", "Get Poll Results", read_only=True, idempotent=True, open_world=False)
