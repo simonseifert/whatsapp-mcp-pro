@@ -211,3 +211,31 @@ func TestClassifySendError(t *testing.T) {
 		})
 	}
 }
+
+// A 463 on a send addressed straight to a LID usually means the server can't
+// route that LID (no phone mapping yet), not a reachout timelock. Arming the
+// lock there would block every new contact for a day over one bad address.
+func TestSendFailure463OnlyArmsLockForPhoneRecipients(t *testing.T) {
+	err463 := fmt.Errorf("%w %d", whatsmeow.ErrServerReturnedError, 463)
+	tests := []struct {
+		name     string
+		to       types.JID
+		wantLock bool
+		wantKind SendErrorKind
+	}{
+		{"phone recipient arms the lock", types.NewJID("4915199999999", types.DefaultUserServer), true, SendErrReachoutTimelock},
+		{"LID recipient does not", types.NewJID("123456789012345", types.HiddenUserServer), false, SendErrUpstream},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newOfflineClient(newReachoutTestStore(t))
+			se := c.sendFailure(tt.to, antiban.Text, err463, "send: %w")
+			if se == nil || se.Kind != tt.wantKind {
+				t.Fatalf("kind = %v, want %v", se, tt.wantKind)
+			}
+			if locked := !c.ReachoutTimelockUntil().IsZero(); locked != tt.wantLock {
+				t.Fatalf("lock armed = %v, want %v", locked, tt.wantLock)
+			}
+		})
+	}
+}
