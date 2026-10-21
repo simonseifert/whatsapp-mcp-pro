@@ -30,6 +30,12 @@ type activeCall struct {
 	IsFromMe  bool
 }
 
+// exitStreamReplaced is the exit code when another client took over this
+// session. It differs from the generic 1 (watchdog, fatal startup) so a
+// systemd unit can set RestartPreventExitStatus=3: restarting here would just
+// steal the session back and the two bridges would evict each other forever.
+const exitStreamReplaced = 3
+
 var (
 	activeCalls   = make(map[string]*activeCall)
 	activeCallsMu sync.Mutex
@@ -263,9 +269,9 @@ func main() {
 		case *events.StreamReplaced:
 			// Another process has taken over this session (e.g. duplicate docker-compose up).
 			// Exit immediately — two processes sharing one WhatsApp session causes split-brain.
-			logger.Errorf("✗ Stream replaced — another process took this session, exiting")
+			logger.Errorf("✗ Stream replaced — another process took this session, exiting with code %d", exitStreamReplaced)
 			client.MarkDisconnected()
-			os.Exit(1)
+			os.Exit(exitStreamReplaced)
 
 		case *events.StreamError:
 			client.Antiban().RecordEvent(antiban.EventStreamError)
