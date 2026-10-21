@@ -162,3 +162,47 @@ func TestSaveAutoDownloadCollision(t *testing.T) {
 		}
 	}
 }
+
+// A sender picks the document filename. ".." must not climb out of the chat
+// directory and a dotfile name must not land as a hidden file.
+func TestAutoDownloadPathsRejectsDotNames(t *testing.T) {
+	chatDir := filepath.Join("store", "123_s.whatsapp.net")
+	tests := []struct{ name, filename, wantBase string }{
+		{"dotdot", "..", "MSG1.bin"},
+		{"dot", ".", "MSG1.bin"},
+		{"empty", "", "MSG1.bin"},
+		{"dotfile", ".env", "_env"},
+		{"traversal chars", "../../etc/passwd", "__.._etc_passwd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := AutoDownloadPaths("123@s.whatsapp.net", "MSG1", tt.filename)
+			for _, p := range paths {
+				if filepath.Dir(p) != chatDir {
+					t.Fatalf("%q escaped %q", p, chatDir)
+				}
+			}
+			if got := filepath.Base(paths[0]); got != tt.wantBase {
+				t.Errorf("primary base = %q, want %q", got, tt.wantBase)
+			}
+		})
+	}
+}
+
+// The ID-prefixed name must never overwrite a file that is already there.
+func TestSaveAutoDownloadDoesNotClobberAlt(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "a.jpg"), filepath.Join(dir, "B_a.jpg")}
+	if err := os.WriteFile(paths[0], []byte("someone else"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths[1], []byte("also someone else"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := saveAutoDownload(paths, []byte("message B"), sum256([]byte("message B"))); err == nil {
+		t.Fatal("expected an error rather than overwriting the existing alt file")
+	}
+	if got, _ := os.ReadFile(paths[1]); string(got) != "also someone else" {
+		t.Errorf("alt file was overwritten: %q", got)
+	}
+}
