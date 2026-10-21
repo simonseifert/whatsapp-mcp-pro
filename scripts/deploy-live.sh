@@ -22,8 +22,13 @@ die() { printf '\033[31m[deploy] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 [ -f "$DATA/store/whatsapp.db" ] || die "session store missing at $DATA/store — refusing to restart"
 
 # ── 1. Build & test before touching a running service ───────────────────────
+# Build to a side file: the unit executes $BIN directly, and Restart=always / the
+# health timer can relaunch it at any moment, so it must only ever be replaced by
+# a binary that has already passed the tests.
+BIN="$REPO/whatsapp-bridge/whatsapp-bridge"
+trap 'rm -f "$BIN.new"' EXIT
 log "building bridge"
-(cd "$REPO/whatsapp-bridge" && go build -o whatsapp-bridge .)
+(cd "$REPO/whatsapp-bridge" && go build -o whatsapp-bridge.new .)
 log "go tests"
 (cd "$REPO/whatsapp-bridge" && go test ./... >/dev/null) || die "Go tests failed — not deploying"
 log "python deps + checks"
@@ -40,12 +45,25 @@ for db in messages.db whatsapp.db; do
 done
 ls -dt "$DATA/backups"/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf   # keep 5
 
-# ── 3. Restart (bridge first, MCP follows via its dependency) ───────────────
+# ── 3. Swap in the new binary, keeping the old one for rollback ─────────────
+[ -f "$BIN" ] && cp -p "$BIN" "$BIN.prev"
+mv -f "$BIN.new" "$BIN"
+
+rollback() {
+  [ -f "$BIN.prev" ] || die "$1 — and no $BIN.prev to roll back to (backup: $BACKUP_DIR)"
+  log "rolling back to previous binary"
+  mv -f "$BIN.prev" "$BIN"
+  sudo systemctl restart whatsapp-bridge.service
+  sudo systemctl restart whatsapp-mcp.service
+  die "$1 — rolled back to the previous bridge binary (backup: $BACKUP_DIR)"
+}
+
+# ── 4. Restart (bridge first, MCP follows via its dependency) ───────────────
 log "restarting services"
 sudo systemctl restart whatsapp-bridge.service
 sudo systemctl restart whatsapp-mcp.service
 
-# ── 4. Verify the bridge comes back connected ───────────────────────────────
+# ── 5. Verify the bridge comes back connected ───────────────────────────────
 API_KEY="$(grep -E '^API_KEY=' "$DATA/.env" | head -1 | cut -d= -f2-)"
 log "waiting for bridge to report connected"
 for _ in $(seq 1 30); do
@@ -59,4 +77,4 @@ for _ in $(seq 1 30); do
   fi
   sleep 4
 done
-die "bridge not connected within 2 min — journalctl -u whatsapp-bridge -n 50 (backup: $BACKUP_DIR)"
+rollback "bridge not connected within 2 min — see journalctl -u whatsapp-bridge -n 50"
