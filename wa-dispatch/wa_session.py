@@ -411,7 +411,7 @@ def in_cooldown(proj: str, cooldown_min: int):
     return int(remaining) if remaining > 0 else 0
 
 
-# ---------- M1 DB poll ----------
+# ---------- bridge DB poll ----------
 
 def prepare_running(proj: str) -> bool:
     """True if a headless prepare-run is already in flight for this project."""
