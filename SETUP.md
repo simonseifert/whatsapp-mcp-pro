@@ -343,6 +343,26 @@ curl -sf -m 5 -H "X-API-Key: $API_KEY" http://127.0.0.1:8080/api/connection \
   | grep -q '"connected":true' || systemctl restart whatsapp-bridge
 ```
 
+**Phone offline.** A linked device keeps working only while your phone comes
+online now and then; WhatsApp unlinks it after about 14 days without the phone,
+and restarting the bridge does not help. `/api/connection` reports this too:
+
+| Field | Meaning |
+|---|---|
+| `phone_last_seen` | RFC3339 time the bridge last saw traffic only the phone sends (its read receipts, messages typed on it, media re-uploads). `null` if not seen since tracking began. |
+| `phone_offline_days` | Days since then (one decimal). When `phone_last_seen` is `null`, counted from when tracking began, so a lower bound. `null` only if tracking is not running. |
+
+Alert well before 14, for example at 10:
+
+```bash
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:8080/api/connection \
+  | jq -e '(.phone_offline_days // 0) < 10' >/dev/null || echo "open WhatsApp on the phone"
+```
+
+The bridge also logs a WARN once a day past 7 days and an ERROR past 12, and
+after `PHONE_OFFLINE_PING_AFTER` (default `7d`) sends the phone one invisible
+request a day to wake it (`PHONE_PING_ENABLED=false` turns that off).
+
 `scripts/deploy-live.sh` is the maintainer's build, test, back up, restart and
 verify script for this layout. It rolls back to the previous binary if any bridge
 fails to report `connected`. Set `WA_DATA_DIR` and `OTHER_BRIDGES` before
