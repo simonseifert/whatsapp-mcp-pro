@@ -75,14 +75,14 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		mediaType, url, filename string
-		mediaKey                 []byte
+		mediaKey, fileSHA256     []byte
 	)
 	row := s.messageStore.GetDB().QueryRow(
-		`SELECT media_type, url, media_key, COALESCE(filename, '')
+		`SELECT media_type, url, media_key, COALESCE(filename, ''), file_sha256
 		 FROM messages WHERE id = ? AND chat_jid = ?`,
 		req.MessageID, req.ChatJID,
 	)
-	if err := row.Scan(&mediaType, &url, &mediaKey, &filename); err != nil {
+	if err := row.Scan(&mediaType, &url, &mediaKey, &filename, &fileSHA256); err != nil {
 		SendJSONError(w, "message not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
@@ -94,8 +94,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	// The bridge already saved most media on receipt, while its URL was fresh.
 	// Serving that copy is the only thing that still works once WhatsApp has
-	// purged the file from its servers.
-	if saved := whatsapp.AutoDownloadPath(req.ChatJID, req.MessageID, filename); fileNonEmpty(saved) {
+	// purged the file from its servers. Saved names are only unique to the
+	// second, so the copy must hash to this message's file_sha256; one that
+	// doesn't belongs to another message and the network paths below run.
+	if saved := whatsapp.FindAutoDownloaded(whatsapp.AutoDownloadPaths(req.ChatJID, req.MessageID, filename), fileSHA256); saved != "" {
 		writeDownloadResult(w, saved, "auto-download")
 		return
 	}
@@ -266,11 +268,6 @@ func mediaExtension(mediaType, filename string) string {
 		}
 	}
 	return ext
-}
-
-func fileNonEmpty(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 func writeDownloadResult(w http.ResponseWriter, path, via string) {
