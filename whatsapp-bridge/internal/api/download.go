@@ -140,7 +140,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		s.downloadViaWhatsmeow(w, r, req, "fetch failed: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		s.downloadViaWhatsmeow(w, r, req, fmt.Sprintf("CDN returned HTTP %d", resp.StatusCode))
 		return

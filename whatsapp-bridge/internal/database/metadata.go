@@ -53,7 +53,7 @@ func (store *MessageStore) GetChatMetadata(chatJID string) (map[string]interface
 		GROUP BY media_type
 	`, chatJID)
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		mediaCountByType := make(map[string]int)
 		for rows.Next() {
 			if err := rows.Scan(&mediaType, &count); err == nil && mediaType.Valid {

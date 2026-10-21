@@ -120,7 +120,7 @@ func main() {
 		logger.Errorf("Failed to initialize message store: %v", err)
 		os.Exit(1)
 	}
-	defer messageStore.Close()
+	defer func() { _ = messageStore.Close() }()
 
 	// Create WhatsApp client with config (Phase 4: HistorySyncConfig)
 	client, err := whatsapp.NewClientWithConfig(logger, cfg)

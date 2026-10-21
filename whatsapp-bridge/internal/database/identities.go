@@ -167,7 +167,7 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 	if err != nil {
 		return fmt.Errorf("prepare identity upsert: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, row := range rows {
 		if row.DisplayName == "" {
@@ -223,7 +223,7 @@ func (store *MessageStore) PruneIdentities(keep []string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("prepare keep insert: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	for _, jid := range keep {
 		if _, err = stmt.Exec(jid); err != nil {
 			return 0, fmt.Errorf("record kept identity %s: %w", jid, err)
@@ -248,7 +248,7 @@ func (store *MessageStore) GetChatRows() ([]ChatRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query chats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []ChatRow
 	for rows.Next() {
@@ -276,7 +276,7 @@ func (store *MessageStore) GetChatStats() (map[string]ChatStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query chat stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make(map[string]ChatStats)
 	for rows.Next() {
@@ -330,7 +330,7 @@ func (store *MessageStore) GetNicknames() (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query nicknames: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make(map[string]string)
 	for rows.Next() {

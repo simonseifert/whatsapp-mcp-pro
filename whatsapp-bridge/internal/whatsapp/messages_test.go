@@ -64,7 +64,7 @@ func TestValidateMediaPath(t *testing.T) {
 		{"sibling prefix of /tmp", "/tmpfoo/file.jpg", true, "outside allowed"},
 	}
 
-	os.Unsetenv("DISABLE_PATH_CHECK")
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -89,7 +89,7 @@ func TestValidateMediaPath(t *testing.T) {
 }
 
 func TestValidateMediaPath_SymlinkEscape(t *testing.T) {
-	os.Unsetenv("DISABLE_PATH_CHECK")
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
 
 	// A directory inside the allowlist (/tmp) containing a symlink that points
 	// outside it. os.ReadFile would follow the link, so validation must resolve
@@ -99,7 +99,7 @@ func TestValidateMediaPath_SymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot create temp dir under /tmp: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	// A real file inside the allowed dir must still be accepted.
 	realFile := filepath.Join(dir, "real.jpg")
@@ -122,9 +122,9 @@ func TestValidateMediaPath_SymlinkEscape(t *testing.T) {
 
 func TestValidateMediaPath_DisableCheck(t *testing.T) {
 	original := os.Getenv("DISABLE_PATH_CHECK")
-	defer os.Setenv("DISABLE_PATH_CHECK", original)
+	defer func() { _ = os.Setenv("DISABLE_PATH_CHECK", original) }()
 
-	os.Setenv("DISABLE_PATH_CHECK", "true")
+	_ = os.Setenv("DISABLE_PATH_CHECK", "true")
 
 	if err := validateMediaPath("/home/user/file.txt"); err != nil {
 		t.Errorf("With DISABLE_PATH_CHECK=true, validateMediaPath should allow external paths, got: %v", err)
@@ -191,7 +191,7 @@ func TestValidateMediaPath_SymlinkToSensitive(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot create temp dir under /tmp: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	secret := filepath.Join(dir, "prod.env")
 	photo := filepath.Join(dir, "photo.jpg")
@@ -230,9 +230,9 @@ func TestValidateMediaPath_SymlinkToSensitive(t *testing.T) {
 
 func TestValidateMediaPath_TraversalAlwaysBlocked(t *testing.T) {
 	original := os.Getenv("DISABLE_PATH_CHECK")
-	defer os.Setenv("DISABLE_PATH_CHECK", original)
+	defer func() { _ = os.Setenv("DISABLE_PATH_CHECK", original) }()
 
-	os.Setenv("DISABLE_PATH_CHECK", "true")
+	_ = os.Setenv("DISABLE_PATH_CHECK", "true")
 
 	if err := validateMediaPath("/app/media/../../../etc/passwd"); err == nil {
 		t.Error("Path traversal should be blocked even with DISABLE_PATH_CHECK=true")

@@ -64,7 +64,7 @@ func (store *MessageStore) GetAllWebhookConfigs() ([]*types.WebhookConfig, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var configs []*types.WebhookConfig
 	for rows.Next() {
@@ -210,7 +210,7 @@ func (store *MessageStore) GetWebhookTriggers(webhookConfigID int) ([]types.Webh
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var triggers []types.WebhookTrigger
 	for rows.Next() {
@@ -266,7 +266,7 @@ func (store *MessageStore) GetWebhookLogs(webhookConfigID int, limit int) ([]*ty
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var logs []*types.WebhookLog
 	for rows.Next() {

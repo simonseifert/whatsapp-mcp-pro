@@ -105,7 +105,7 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]types.Messa
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []types.Message
 	for rows.Next() {
@@ -152,7 +152,7 @@ func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	chats := make(map[string]time.Time)
 	for rows.Next() {
@@ -313,7 +313,7 @@ func (store *MessageStore) GetMediaCountByType(chatJID string) (map[string]int, 
 	if err != nil {
 		return make(map[string]int), err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[string]int)
 	for rows.Next() {
@@ -340,7 +340,7 @@ func (store *MessageStore) GetRecentMedia(chatJID string, limit int) ([]string, 
 	if err != nil {
 		return []string{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var result []string
 	for rows.Next() {

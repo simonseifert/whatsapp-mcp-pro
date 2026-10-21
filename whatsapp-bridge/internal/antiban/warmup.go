@@ -147,7 +147,7 @@ func (w *WarmUp) saveState() error {
 	}()
 
 	if _, err := tmpFile.Write(data); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {
