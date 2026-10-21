@@ -1023,7 +1023,7 @@ def check_inbox(
     """
     import sqlite3
 
-    from lib.utils import MESSAGES_DB_PATH
+    from lib.utils import MESSAGES_DB_PATH, canonical_chat_jid
 
     cursor_file = os.path.join(os.path.dirname(MESSAGES_DB_PATH), ".inbox-cursor")
     try:
@@ -1031,11 +1031,17 @@ def check_inbox(
             state = json.load(fh)
     except Exception:
         state = {}
-    key = chat_jid or "*"
-    since = int(state.get(key) or 0)
 
     conn = sqlite3.connect(MESSAGES_DB_PATH)
     conn.row_factory = sqlite3.Row
+    # A merged LID's messages now arrive under its twin; key the cursor on the
+    # twin too so both spellings share one position.
+    requested_jid = chat_jid
+    if chat_jid:
+        chat_jid = canonical_chat_jid(conn, chat_jid)
+    key = chat_jid or "*"
+    # A cursor saved under the old LID before the merge still counts.
+    since = int(state.get(key) or (requested_jid and state.get(requested_jid)) or 0)
     try:
         if since == 0:
             # First call must not dump the entire history at someone.

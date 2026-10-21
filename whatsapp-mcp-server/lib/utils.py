@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sqlite3
 from pathlib import Path
 
 # Load .env file from project root - check multiple locations
@@ -79,3 +80,43 @@ if ":" not in _bridge_host:
     _bridge_host = f"{_bridge_host}:8080"
 BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
+
+
+# Merge chains are one hop in practice (LID -> phone JID). The cap only exists
+# so a corrupt store with a cycle cannot spin a tool call forever.
+_MAX_MERGE_HOPS = 8
+
+
+def canonical_chat_jid(conn: sqlite3.Connection, jid: str) -> str:
+    """Follow chats.merged_into from ``jid`` to the chat that now holds its messages.
+
+    The bridge folds a LID-filed chat into its phone-JID twin and keeps the old
+    row as an empty shell stamped with merged_into (see MergeChat in
+    whatsapp-bridge/internal/database/identities.go). A caller holding the old
+    LID would otherwise read the shell and see no messages. Takes the caller's
+    connection rather than a path so it reads whichever store the caller does.
+
+    Returns ``jid`` unchanged when it is not merged, unknown, the store predates
+    the column, or the chain loops.
+    """
+    if not jid:
+        return jid
+    current = jid
+    seen = {jid}
+    for _ in range(_MAX_MERGE_HOPS):
+        try:
+            row = conn.execute("SELECT merged_into FROM chats WHERE jid = ?", (current,)).fetchone()
+        except sqlite3.OperationalError:
+            # A store from before merged_into existed has nothing to follow.
+            return current
+        # The bridge treats NULL and '' alike as "not merged".
+        if not row or not row[0]:
+            return current
+        nxt = row[0]
+        if nxt in seen:
+            logger.warning("chats.merged_into loops at %s (from %s); using the original JID", nxt, jid)
+            return jid
+        seen.add(nxt)
+        current = nxt
+    logger.warning("chats.merged_into chain from %s exceeds %d hops; using the original JID", jid, _MAX_MERGE_HOPS)
+    return jid
