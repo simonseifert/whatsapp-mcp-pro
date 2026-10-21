@@ -350,13 +350,7 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> dic
         - Useful after finding a message via search to see full context
     """
     context = whatsapp_get_message_context(message_id, before, after)
-    # MessageContext is a dataclass of Message dataclasses; structured output
-    # validation only accepts plain dicts, so convert the whole tree.
-    return {
-        "message": context.message.to_dict(),
-        "before": [m.to_dict() for m in context.before],
-        "after": [m.to_dict() for m in context.after],
-    }
+    return context.to_dict()
 
 
 @tool("send", "Send Message", read_only=False)
@@ -1149,7 +1143,7 @@ def recall_index_status() -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    transport = cast(Literal["stdio", "sse", "streamable-http"], os.getenv("MCP_TRANSPORT", "stdio"))
     if transport in {"sse", "streamable-http"}:
         # mcp 2 takes transport settings on run(), not on mcp.settings.
         mcp.run(
