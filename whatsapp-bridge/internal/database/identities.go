@@ -325,8 +325,14 @@ func parseStoredTime(v sql.NullString) *time.Time {
 }
 
 // GetNicknames returns every user-defined nickname keyed by JID.
+//
+// Names an agent inferred but the user never confirmed (source
+// 'agent_inferred', written by the MCP's set_contact_names) are left out: the
+// MCP shows them marked "(unverified)", but the directory and webhook sender
+// names must not present a stranger's self-claimed name ("this is your bank")
+// as if the user had set it. The column is added by the MCP, so it may be absent.
 func (store *MessageStore) GetNicknames() (map[string]string, error) {
-	rows, err := store.db.Query("SELECT jid, nickname FROM contact_nicknames")
+	rows, err := store.db.Query("SELECT jid, nickname FROM contact_nicknames" + store.userNicknameFilter())
 	if err != nil {
 		return nil, fmt.Errorf("query nicknames: %w", err)
 	}
@@ -478,4 +484,16 @@ func (store *MessageStore) IdentityDisplayName(jid string) string {
 		return ""
 	}
 	return name.String
+}
+
+// userNicknameFilter returns a WHERE clause that keeps only user-provenance
+// nickname rows, or "" when the source column doesn't exist yet (every row is
+// then user-set: the column only appears once the MCP writes agent names).
+func (store *MessageStore) userNicknameFilter() string {
+	var n int
+	err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('contact_nicknames') WHERE name = 'source'`).Scan(&n)
+	if err != nil || n == 0 {
+		return ""
+	}
+	return " WHERE COALESCE(NULLIF(TRIM(source), ''), 'user') = 'user'"
 }

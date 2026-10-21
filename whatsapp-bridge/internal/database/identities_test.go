@@ -365,3 +365,38 @@ func TestIdentityDisplayNameMatchesEitherJIDForm(t *testing.T) {
 		t.Errorf("unknown jid: got %q, want empty", got)
 	}
 }
+
+// Agent-inferred nicknames (unconfirmed, written by the MCP) must not reach the
+// directory: a stranger's self-claimed name would otherwise look user-set.
+func TestGetNicknamesSkipsAgentInferred(t *testing.T) {
+	store := newTestMessageStore(t)
+	if _, err := store.db.Exec(`INSERT INTO contact_nicknames (jid, nickname) VALUES ('1@s.whatsapp.net', 'Before column')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetNicknames()
+	if err != nil || got["1@s.whatsapp.net"] != "Before column" {
+		t.Fatalf("without source column: %v %v", got, err)
+	}
+
+	if _, err := store.db.Exec(`ALTER TABLE contact_nicknames ADD COLUMN source TEXT`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO contact_nicknames (jid, nickname, source) VALUES
+		('2@s.whatsapp.net', 'Mama', 'user'),
+		('3@s.whatsapp.net', 'Your Bank', 'agent_inferred')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.GetNicknames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["1@s.whatsapp.net"] != "Before column" || got["2@s.whatsapp.net"] != "Mama" {
+		t.Fatalf("user names missing: %v", got)
+	}
+	if _, ok := got["3@s.whatsapp.net"]; ok {
+		t.Fatalf("agent-inferred name leaked into the directory: %v", got)
+	}
+	if info, err := store.GetContactInfo("3@s.whatsapp.net"); err != nil || info.Nickname == "Your Bank" {
+		t.Fatalf("GetContactInfo returned the agent-inferred name: %+v %v", info, err)
+	}
+}
