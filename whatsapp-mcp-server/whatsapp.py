@@ -37,7 +37,7 @@ except ImportError:
 import audio
 from lib.bridge import _get_headers
 from lib.identity import Identity, directory_available, get_identity, list_identities
-from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, canonical_chat_jid, logger
+from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
 # Use environment variable for bridge host, default to localhost:8080 for development
 # BRIDGE_HOST can be "hostname" (uses :8080) or "hostname:port" (uses specified port)
@@ -490,21 +490,24 @@ def list_messages(
         params: list[Any] = []
 
         # Add filters
+        # Compared in UTC via datetime(): the stored text is "YYYY-MM-DD
+        # HH:MM:SS+02:00", and a string compare against a bound with a "T" or
+        # another offset silently drops or admits hours of messages.
         if after:
             try:
-                after_dt = datetime.fromisoformat(after)
+                after_utc = to_sql_utc(after)
             except ValueError:
                 raise ValueError(f"Invalid date format for 'after': {after}. Please use ISO-8601 format.")
-            where_clauses.append("messages.timestamp > ?")
-            params.append(after_dt)
+            where_clauses.append("datetime(messages.timestamp) > ?")
+            params.append(after_utc)
 
         if before:
             try:
-                before_dt = datetime.fromisoformat(before)
+                before_utc = to_sql_utc(before)
             except ValueError:
                 raise ValueError(f"Invalid date format for 'before': {before}. Please use ISO-8601 format.")
-            where_clauses.append("messages.timestamp < ?")
-            params.append(before_dt)
+            where_clauses.append("datetime(messages.timestamp) < ?")
+            params.append(before_utc)
 
         if sender_phone_number:
             forms = _sender_forms(sender_phone_number)
@@ -617,14 +620,16 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
             file_length=msg_data[10],
         )
 
-        # Get messages before
+        # Get messages before. Compared through datetime() because one chat's
+        # history mixes offsets (+01:00 in winter, +02:00 in summer), and as
+        # text those misorder across the DST change.
         cursor.execute(
             """
             SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.chat_jid = ? AND messages.timestamp < ?
-            ORDER BY messages.timestamp DESC
+            WHERE messages.chat_jid = ? AND datetime(messages.timestamp) < datetime(?)
+            ORDER BY datetime(messages.timestamp) DESC
             LIMIT ?
         """,
             (msg_data[7], msg_data[0], before),
@@ -653,8 +658,8 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
             SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.chat_jid = ? AND messages.timestamp > ?
-            ORDER BY messages.timestamp ASC
+            WHERE messages.chat_jid = ? AND datetime(messages.timestamp) > datetime(?)
+            ORDER BY datetime(messages.timestamp) ASC
             LIMIT ?
         """,
             (msg_data[7], msg_data[0], after),
