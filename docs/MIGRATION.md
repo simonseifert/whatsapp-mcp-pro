@@ -307,7 +307,7 @@ After running migration:
 
 ## Questions?
 
-See [PHASE_1_PLAN.md](./PHASE_1_PLAN.md) for detailed schema information or check logs:
+See the SQL files in [`whatsapp-bridge/migrations/`](../whatsapp-bridge/migrations/) for the exact schema changes, or check logs:
 
 ```bash
 docker-compose logs whatsapp-bridge --tail=50
