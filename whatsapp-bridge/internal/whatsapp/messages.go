@@ -124,7 +124,7 @@ func allowedMediaDirs() []string {
 }
 
 // validateMediaPath checks if the path resolves to a location within an
-// allowed directory. It resolves symlinks before matching so a symlink planted
+// allowed directory and is not a secret (see checkSensitivePath). It resolves symlinks before matching so a symlink planted
 // inside an allowed directory cannot redirect os.ReadFile to an arbitrary file,
 // and it matches on path-segment boundaries so a sibling directory that merely
 // shares a name prefix (e.g. /tmproot vs /tmp) is not treated as inside the
@@ -140,14 +140,9 @@ func validateMediaPath(mediaPath string) error {
 		return fmt.Errorf("path traversal not allowed")
 	}
 
-	// Allow if DISABLE_PATH_CHECK is set (for development)
-	if os.Getenv("DISABLE_PATH_CHECK") == "true" {
-		return nil
-	}
-
 	absPath, err := filepath.Abs(filepath.Clean(mediaPath))
 	if err != nil {
-		return fmt.Errorf("invalid media path: %v", err)
+		return fmt.Errorf("invalid media path: %w", err)
 	}
 
 	// os.ReadFile follows symlinks, so validation must see the real destination.
@@ -155,27 +150,127 @@ func validateMediaPath(mediaPath string) error {
 	// a symlink planted anywhere along the path while still permitting a leaf
 	// file that has not been created yet.
 	resolvedPath := resolveExistingPrefix(absPath)
+	roots := allowedMediaRoots()
 
-	// Check if the resolved path is within an allowed directory, matching on
-	// path-segment boundaries rather than a raw string prefix.
-	sep := string(os.PathSeparator)
-	for _, allowedDir := range allowedMediaDirs() {
-		allowedAbs, err := filepath.Abs(allowedDir)
-		if err != nil {
-			continue
-		}
-		// Resolve symlinks in the allowed directory too (e.g. macOS /tmp is a
-		// symlink to /private/tmp); skip entries that do not exist rather than
-		// failing the whole check.
-		if resolvedAllowed, err := filepath.EvalSymlinks(allowedAbs); err == nil {
-			allowedAbs = resolvedAllowed
-		}
-		if resolvedPath == allowedAbs || strings.HasPrefix(resolvedPath, allowedAbs+sep) {
-			return nil
+	// An allowed dir is usually broad (MEDIA_ALLOWED_DIRS=/home/alice), so being
+	// inside it says nothing about whether the file is safe to upload to a chat.
+	// The caller is an LLM agent that message text can prompt-inject; refusing
+	// secrets here is the last stop before they reach WhatsApp. Both forms are
+	// checked because either can be the innocent-looking one: photo.jpg
+	// symlinked to .env, or a link named .env pointing at a photo. This runs
+	// before DISABLE_PATH_CHECK on purpose: that flag relaxes the directory
+	// allowlist for development, not secret protection.
+	for _, p := range []string{absPath, resolvedPath} {
+		if err := checkSensitivePath(p, roots); err != nil {
+			return err
 		}
 	}
 
-	return fmt.Errorf("media path outside allowed directories")
+	// Allow if DISABLE_PATH_CHECK is set (for development)
+	if os.Getenv("DISABLE_PATH_CHECK") == "true" {
+		return nil
+	}
+
+	if longestContainingRoot(resolvedPath, roots) == "" {
+		return fmt.Errorf("media path outside allowed directories")
+	}
+	return nil
+}
+
+// allowedMediaRoots returns the allowlist as absolute paths, each in both its
+// literal and symlink-resolved form (e.g. macOS /tmp is a symlink to
+// /private/tmp). Entries that do not exist keep only their literal form rather
+// than failing the whole check.
+func allowedMediaRoots() []string {
+	var roots []string
+	for _, dir := range allowedMediaDirs() {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		roots = append(roots, abs)
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil && resolved != abs {
+			roots = append(roots, resolved)
+		}
+	}
+	return roots
+}
+
+// longestContainingRoot returns the most specific root that p lies in, or ""
+// if none. Matching is on path-segment boundaries, not a raw string prefix, so
+// /tmpfoo is not inside /tmp. Most specific wins so that a data dir listed
+// below a broad home dir decides which segments count as "inside" it.
+func longestContainingRoot(p string, roots []string) string {
+	sep := string(os.PathSeparator)
+	best := ""
+	for _, root := range roots {
+		inside := p == root || strings.HasPrefix(p, strings.TrimSuffix(root, sep)+sep)
+		if inside && len(root) > len(best) {
+			best = root
+		}
+	}
+	return best
+}
+
+// sensitiveNamePatterns are basenames (matched lower-cased) that hold keys,
+// credentials or password vaults. Leading-dot names such as .env and .netrc
+// are caught separately by the hidden-segment rule.
+var sensitiveNamePatterns = []string{
+	"*.env",
+	"*.pem",
+	"*.key",
+	"*.p12",
+	"*.kdbx",
+	"id_rsa*",
+	"id_ed25519*",
+	"config.json",
+	"credentials*.json",
+	"secrets.*",
+}
+
+// storeDBSuffixes are SQLite files plus their sidecars. The WAL holds recent
+// writes in the clear, so it leaks the session as surely as the .db does.
+var storeDBSuffixes = []string{".db", ".db-wal", ".db-shm", ".db-journal"}
+
+// checkSensitivePath refuses dotfiles, anything under a dot-directory, known
+// secret filenames, and SQLite files under a "store" directory (the bridge's
+// own session keys and message history).
+//
+// The dot rule only looks at segments below the matched allowed root: the
+// operator chose the root, and a data dir such as ~/.local/share/... listed in
+// MEDIA_ALLOWED_DIRS must keep working. With no matching root (reachable only
+// under DISABLE_PATH_CHECK) every segment is checked.
+func checkSensitivePath(p string, roots []string) error {
+	rel := p
+	if root := longestContainingRoot(p, roots); root != "" {
+		if r, err := filepath.Rel(root, p); err == nil {
+			rel = r
+		}
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.HasPrefix(seg, ".") && seg != "." {
+			return fmt.Errorf("refusing sensitive file: hidden path segment %q", seg)
+		}
+	}
+
+	base := strings.ToLower(filepath.Base(p))
+	for _, pattern := range sensitiveNamePatterns {
+		if ok, _ := filepath.Match(pattern, base); ok {
+			return fmt.Errorf("refusing sensitive file: name matches %q", pattern)
+		}
+	}
+
+	for _, suffix := range storeDBSuffixes {
+		if !strings.HasSuffix(base, suffix) {
+			continue
+		}
+		for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(p)), "/") {
+			if strings.EqualFold(seg, "store") {
+				return fmt.Errorf("refusing sensitive file: database under a store directory")
+			}
+		}
+	}
+	return nil
 }
 
 // resolveExistingPrefix returns absPath with its longest existing ancestor
