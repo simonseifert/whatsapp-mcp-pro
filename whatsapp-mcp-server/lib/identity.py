@@ -15,6 +15,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
+from lib.naming import identities_source
 from lib.utils import MESSAGES_DB_PATH, logger
 
 IdentityKind = str  # user | group | newsletter | broadcast
@@ -26,6 +27,7 @@ _COLUMNS = """
     participant_count, is_announce, owner_jid,
     first_seen, last_seen, sources, updated_at
 """
+_COLUMN_NAMES = [c.strip() for c in _COLUMNS.split(",")]
 
 
 @dataclass
@@ -175,7 +177,7 @@ def get_identity(value: str) -> Identity | None:
             return None
         cursor = conn.execute(
             f"""
-            SELECT {_COLUMNS} FROM identities
+            SELECT {_COLUMNS} FROM {identities_source(conn, _COLUMN_NAMES)}
             WHERE jid = ? OR lid = ? OR phone_jid = ? OR phone = ?
                OR lid = ? OR phone_jid = ?
                OR LOWER(display_name) = LOWER(?)
@@ -263,7 +265,7 @@ def list_identities(
             "messages": "message_count DESC",
         }.get(sort_by, "last_seen DESC, message_count DESC")
 
-        sql = f"SELECT {_COLUMNS} FROM identities"
+        sql = f"SELECT {_COLUMNS} FROM {identities_source(conn, _COLUMN_NAMES)}"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
