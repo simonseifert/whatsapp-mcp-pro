@@ -119,7 +119,8 @@ func runMigrations(db *sql.DB) error {
 			fmt.Printf("Warning: migration error (%s column): %v\n", m.name, err)
 		}
 	}
-	return nil
+	// Persistent media retry queue (migrations/005_media_requests.sql).
+	return createMediaRequestTable(db)
 }
 
 // createTables creates all necessary database tables
