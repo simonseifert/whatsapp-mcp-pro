@@ -78,3 +78,7 @@ wa-assistant/speech-transcribe
 *.bak
 *.bak-*
 .coverage
+
+# Maintainer-local notes that name hosts, paths and people
+docs/reviews/
+docs/handoff-*.md
