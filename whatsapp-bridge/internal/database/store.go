@@ -47,6 +47,12 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to run migrations: %v", err)
 	}
 
+	// Idempotency keys + persisted bridge state (migrations/005).
+	if err = createSendStateTables(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return &MessageStore{db: db}, nil
 }
 
