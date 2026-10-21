@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,14 @@ type Config struct {
 	// automation each see only half the conversation.
 	IdentitySyncInterval time.Duration
 	MergeLIDChats        bool
+
+	// Phone-offline detection (internal/whatsapp/phoneping.go)
+	// PHONE_PING_ENABLED=false stops the bridge from nudging a silent phone; the
+	// last-seen tracking, warnings and /api/connection fields stay on regardless.
+	// PHONE_OFFLINE_PING_AFTER is how long the phone may stay unseen before the
+	// first nudge (default 7d; accepts "7d" or any Go duration). At most one per day.
+	PhonePingEnabled      bool
+	PhoneOfflinePingAfter time.Duration
 }
 
 // NewConfig creates a new configuration with default values
@@ -67,6 +76,9 @@ func NewConfig() *Config {
 		// Identity directory defaults
 		IdentitySyncInterval: 15 * time.Minute,
 		MergeLIDChats:        true,
+		// Phone-offline defaults: nudge after a week, well inside the ~14-day unlink window
+		PhonePingEnabled:      true,
+		PhoneOfflinePingAfter: 7 * 24 * time.Hour,
 	}
 
 	// Override with environment variables if set
@@ -146,6 +158,16 @@ func NewConfig() *Config {
 		cfg.MergeLIDChats = false
 	}
 
+	if os.Getenv("PHONE_PING_ENABLED") == "false" {
+		cfg.PhonePingEnabled = false
+	}
+
+	if after := os.Getenv("PHONE_OFFLINE_PING_AFTER"); after != "" {
+		if d, err := ParseDays(after); err == nil && d > 0 {
+			cfg.PhoneOfflinePingAfter = d
+		}
+	}
+
 	allowlist := os.Getenv("WHATSAPP_ALLOWLIST_JIDS")
 	if allowlist == "" {
 		allowlist = os.Getenv("WHATSAPP_JID_ALLOWLIST")
@@ -160,4 +182,22 @@ func NewConfig() *Config {
 	}
 
 	return cfg
+}
+
+// ParseDays parses a duration that may be written in whole days ("7d"), the
+// natural unit for thresholds measured against a 14-day unlink window, and
+// falls back to time.ParseDuration ("168h", "30m") for everything else.
+func ParseDays(s string) (time.Duration, error) {
+	if days, ok := strings.CutSuffix(strings.TrimSpace(s), "d"); ok {
+		n, err := strconv.ParseFloat(days, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse days %q: %w", s, err)
+		}
+		return time.Duration(n * float64(24*time.Hour)), nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("parse duration %q: %w", s, err)
+	}
+	return d, nil
 }

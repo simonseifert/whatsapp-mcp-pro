@@ -1878,6 +1878,7 @@ func (s *Server) handleConnectionStatus(w http.ResponseWriter, r *http.Request) 
 	if !discAt.IsZero() {
 		resp.DisconnectedFor = time.Since(discAt).Round(time.Second).String()
 	}
+	resp.PhoneLastSeen, resp.PhoneOfflineDays = phoneStatusFields(s.client.PhoneStatus())
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

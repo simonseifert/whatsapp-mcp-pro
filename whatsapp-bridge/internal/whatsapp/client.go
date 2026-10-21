@@ -48,6 +48,9 @@ type Client struct {
 	// Human-like presence handling (offline by default, online only around activity)
 	presence *presenceManager
 
+	// Phone-offline detection; set once by StartPhoneMonitor (phoneping.go).
+	phoneMonitor *PhoneMonitor
+
 	// Pairing state
 	pairingMutex       sync.Mutex
 	pairingInProgress  bool

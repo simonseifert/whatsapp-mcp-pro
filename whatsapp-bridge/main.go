@@ -150,6 +150,12 @@ func main() {
 	defer stopIdentitySync()
 	identitySyncer.Start(identityCtx)
 
+	// Phone-offline detection: tracks when the primary phone was last seen,
+	// warns before WhatsApp's ~14-day unlink, and nudges a silent phone.
+	if err := client.StartPhoneMonitor(identityCtx, messageStore); err != nil {
+		logger.Warnf("Phone-offline monitor disabled: %v", err)
+	}
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {

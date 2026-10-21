@@ -509,6 +509,15 @@ type ConnectionStatusResponse struct {
 	LastConnected       string `json:"last_connected,omitempty"`   // ISO-8601 timestamp
 	DisconnectedFor     string `json:"disconnected_for,omitempty"` // Duration string
 	AutoReconnectErrors int    `json:"auto_reconnect_errors,omitempty"`
+
+	// Phone-offline detection. WhatsApp unlinks this device after ~14 days
+	// without the primary phone, so health checks should alert on
+	// phone_offline_days well before 14. No omitempty: null is meaningful.
+	// PhoneLastSeen is RFC3339, null when the phone has not been seen since
+	// tracking began; PhoneOfflineDays then counts from tracking start (a
+	// lower bound), and is null only when tracking is not running.
+	PhoneLastSeen    *string  `json:"phone_last_seen"`
+	PhoneOfflineDays *float64 `json:"phone_offline_days"`
 }
 
 // ConnectionEventPayload is the webhook payload for connection state changes.
