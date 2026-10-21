@@ -14,8 +14,44 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 
 	"whatsapp-bridge/internal/antiban"
+	"whatsapp-bridge/internal/config"
 	"whatsapp-bridge/internal/database"
 )
+
+// The WHATSAPP_ALLOWLIST_JIDS gate now covers reactions, polls, edits and
+// deletes too (checkAllowlist); exact matching only, as for SendMessage.
+func TestCheckAllowlistCoversAllMessageTypes(t *testing.T) {
+	tests := []struct {
+		name      string
+		allowlist []string
+		chat      string
+		refused   bool
+	}{
+		{"no allowlist", nil, "4915199999999@s.whatsapp.net", false},
+		{"listed JID", []string{"4915100000001@s.whatsapp.net"}, "4915100000001@s.whatsapp.net", false},
+		{"listed number", []string{"4915100000001"}, "4915100000001@s.whatsapp.net", false},
+		{"listed group", []string{"120363000000000000@g.us"}, "120363000000000000@g.us", false},
+		{"unlisted", []string{"4915100000001"}, "4915199999999@s.whatsapp.net", true},
+		{"no substring match", []string{"net"}, "4915199999999@s.whatsapp.net", true},
+		{"unresolvable LID", []string{"4915100000001"}, "111222333@lid", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Client{logger: waLog.Noop, cfg: &config.Config{AllowlistJIDs: tt.allowlist}}
+			jid, err := types.ParseJID(tt.chat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			se := c.checkAllowlist(jid)
+			if tt.refused != (se != nil) {
+				t.Fatalf("checkAllowlist(%s) = %v, refused want %v", tt.chat, se, tt.refused)
+			}
+			if se != nil && se.Kind != SendErrForbidden {
+				t.Fatalf("kind = %s, want forbidden", se.Kind)
+			}
+		})
+	}
+}
 
 func newReachoutTestStore(t *testing.T) *database.MessageStore {
 	t.Helper()

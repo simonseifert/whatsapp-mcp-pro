@@ -253,8 +253,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "Recipient is required", http.StatusBadRequest)
 		return
 	}
-	if !recipientAllowed(req.Recipient) {
-		SendJSONError(w, "Recipient not in SEND_ALLOWED_JIDS allowlist", http.StatusForbidden)
+	if refuseUnlistedRecipient(w, req.Recipient) {
 		return
 	}
 	if req.Message == "" && req.MediaPath == "" {
@@ -328,6 +327,9 @@ func (s *Server) handleReaction(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "chat_jid and message_id are required", http.StatusBadRequest)
 		return
 	}
+	if refuseUnlistedRecipient(w, req.ChatJID) {
+		return
+	}
 
 	key := idempotencyKey(r, req.IdempotencyKey)
 	payload := req
@@ -381,6 +383,9 @@ func (s *Server) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Options) > 12 {
 		SendJSONError(w, "Maximum 12 options allowed", http.StatusBadRequest)
+		return
+	}
+	if refuseUnlistedRecipient(w, req.ChatJID) {
 		return
 	}
 

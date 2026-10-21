@@ -313,3 +313,66 @@ func TestReactionAndPollIdempotency(t *testing.T) {
 		t.Fatalf("calls = %d, want 2 (one reaction, one poll)", f.callCount())
 	}
 }
+
+// setSendAllowlist swaps SEND_ALLOWED_JIDS for one test; the allowlist is
+// loaded once per process, so the cache is reset around it.
+func setSendAllowlist(t *testing.T, value string) {
+	t.Helper()
+	reset := func() {
+		sendAllowlistOnce = sync.Once{}
+		sendAllowlist = nil
+	}
+	t.Setenv("SEND_ALLOWED_JIDS", value)
+	reset()
+	t.Cleanup(reset)
+}
+
+func TestMessageEndpointsApplySendAllowlist(t *testing.T) {
+	const allowed, other = "4915100000001@s.whatsapp.net", "4915199999999@s.whatsapp.net"
+	type endpoint struct {
+		name    string
+		handler func(s *Server) http.HandlerFunc
+		body    func(jid string) map[string]any
+		// noBackend: the handler calls the concrete client, so only the
+		// refusal (which must happen before it) can be exercised here.
+		noBackend bool
+	}
+	endpoints := []endpoint{
+		{"send", func(s *Server) http.HandlerFunc { return s.handleSendMessage },
+			func(j string) map[string]any { return map[string]any{"recipient": j, "message": "hi"} }, false},
+		{"reaction", func(s *Server) http.HandlerFunc { return s.handleReaction },
+			func(j string) map[string]any { return map[string]any{"chat_jid": j, "message_id": "M", "emoji": "x"} }, false},
+		{"poll", func(s *Server) http.HandlerFunc { return s.handleCreatePoll },
+			func(j string) map[string]any {
+				return map[string]any{"chat_jid": j, "question": "Q", "options": []string{"a", "b"}}
+			}, false},
+		{"edit", func(s *Server) http.HandlerFunc { return s.handleEditMessage },
+			func(j string) map[string]any {
+				return map[string]any{"chat_jid": j, "message_id": "M", "new_content": "x"}
+			}, true},
+		{"delete", func(s *Server) http.HandlerFunc { return s.handleDeleteMessage },
+			func(j string) map[string]any { return map[string]any{"chat_jid": j, "message_id": "M"} }, true},
+	}
+	for _, ep := range endpoints {
+		for _, tc := range []struct {
+			jid  string
+			want int
+		}{{other, http.StatusForbidden}, {allowed, http.StatusOK}} {
+			if ep.noBackend && tc.want == http.StatusOK {
+				continue
+			}
+			t.Run(ep.name+"/"+tc.jid, func(t *testing.T) {
+				setSendAllowlist(t, allowed)
+				f := &fakeSender{}
+				s := newSendTestServer(t, f)
+				rec := post(t, ep.handler(s), ep.body(tc.jid), nil)
+				if rec.Code != tc.want {
+					t.Fatalf("status %d, want %d: %s", rec.Code, tc.want, rec.Body)
+				}
+				if tc.want == http.StatusForbidden && f.callCount() != 0 {
+					t.Fatal("refused recipient reached the WhatsApp send")
+				}
+			})
+		}
+	}
+}

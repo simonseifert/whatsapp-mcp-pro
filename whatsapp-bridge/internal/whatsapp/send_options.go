@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -45,6 +46,29 @@ type PollOptions struct {
 	MultiSelect    bool
 	MessageID      string       // see SendOptions.MessageID
 	BeforeDispatch func(string) // see SendOptions.BeforeDispatch
+}
+
+// checkAllowlist applies the WHATSAPP_ALLOWLIST_JIDS safety gate to any
+// outgoing message, not just /api/send: reactions, polls, edits and deletes
+// all put a protocol message in the recipient's chat, and an autonomous sender
+// confined to one chat must not be able to touch another through them.
+// Matching is exact (IsRecipientAllowed). Nil when no allowlist is configured.
+func (c *Client) checkAllowlist(chat types.JID) *SendError {
+	if c.cfg == nil || len(c.cfg.AllowlistJIDs) == 0 {
+		return nil
+	}
+	if IsRecipientAllowed(c.cfg.AllowlistJIDs, chat.ToNonAD()) {
+		return nil
+	}
+	// A chat filed under its LID is the same person as the allowlisted phone
+	// JID (SendMessage resolves LID->phone before its own check for this reason).
+	if c.Client != nil && c.Store != nil && chat.Server == types.HiddenUserServer {
+		if alt, err := c.Store.GetAltJID(context.Background(), chat.ToNonAD()); err == nil && !alt.IsEmpty() &&
+			IsRecipientAllowed(c.cfg.AllowlistJIDs, alt) {
+			return nil
+		}
+	}
+	return newSendError(SendErrForbidden, "recipient %s is blocked by WHATSAPP_ALLOWLIST_JIDS safety gate", chat)
 }
 
 // prepareMessageID returns the ID to send with (reusing want when given) and
