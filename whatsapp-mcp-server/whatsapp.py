@@ -4,6 +4,7 @@ import fnmatch
 import json
 import os
 import os.path
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -71,8 +72,38 @@ _SENSITIVE_BASENAMES = (
     "credentials*.json",
     "secrets.*",
     "*.kdbx",
-    "*.db",
+    # Any ".db" anywhere, not just the suffix: SQLite keeps live data in
+    # messages.db-wal, -shm and -journal next to the main file, and /app/store
+    # (a default allowed dir) holds the session keys and the whole history.
+    "*.db*",
+    "*.sqlite",
+    "*.sqlite3",
+    "*.sqlite-*",
 )
+
+# Inside a bridge store, only media is sendable: store/media/<jid>/<file> from
+# /api/download, or store/<sanitised jid>/<file> from auto-download (see
+# AutoDownloadPath in whatsapp-bridge/internal/whatsapp/handlers.go, which
+# replaces unsafe characters with "_", so 3859..._s.whatsapp.net, ..._g.us).
+_STORE_SEGMENT = "store"
+_STORE_JID_DIR = re.compile(r"^[0-9A-Za-z.\-]+_(s\.whatsapp\.net|g\.us|lid|newsletter|broadcast)$")
+
+
+def _outside_store_media(resolved: str) -> bool:
+    """True when ``resolved`` sits in a store dir but not under one of its media subfolders.
+
+    Matched on any "store" path segment rather than only the configured store,
+    since the bridge's store can live anywhere (/app/store, the native data dir,
+    a second bridge's dir) and a file directly in store/ is never media.
+    """
+    parts = Path(resolved).parts
+    if _STORE_SEGMENT not in parts:
+        return False
+    below = parts[parts.index(_STORE_SEGMENT) + 1 :]
+    # At least <subfolder>/<file>: nothing directly in store/ is media.
+    if len(below) < 2:
+        return True
+    return not (below[0] == "media" or _STORE_JID_DIR.match(below[0]))
 
 
 def _allowed_media_dirs() -> list[str]:
@@ -109,6 +140,9 @@ def validate_outgoing_media_path(media_path: str) -> str:
     for name in (os.path.basename(media_path), os.path.basename(resolved)):
         if _is_sensitive_name(name):
             raise ValueError(f"Refusing to send {name!r}: it looks like a secret or a database")
+
+    if _outside_store_media(resolved):
+        raise ValueError("Refusing to send from a WhatsApp store outside its media folders")
 
     # Kept as the bridge's development escape hatch for the directory check
     # only; the secret-name refusal above still applies.

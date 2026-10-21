@@ -104,8 +104,8 @@ def test_rejects_hidden_directories_below_an_allowed_root(media_dirs):
 def test_an_explicitly_allowed_dotted_dir_still_works(monkeypatch, tmp_path):
     """An operator who allowlists e.g. ~/.local/share/.../store meant it."""
     store = tmp_path / ".local" / "store"
-    store.mkdir(parents=True)
-    f = store / "voice.ogg"
+    (store / "491500000001_s.whatsapp.net").mkdir(parents=True)
+    f = store / "491500000001_s.whatsapp.net" / "voice.ogg"
     f.write_bytes(b"OggS")
     monkeypatch.setattr(whatsapp, "BRIDGE_DEFAULT_MEDIA_DIRS", ())
     monkeypatch.setenv("MEDIA_ALLOWED_DIRS", str(store))
@@ -126,12 +126,65 @@ def test_an_explicitly_allowed_dotted_dir_still_works(monkeypatch, tmp_path):
         "secrets.yaml",
         "vault.kdbx",
         "messages.db",
+        # SQLite's sidecars hold live data too.
+        "messages.db-wal",
+        "messages.db-shm",
+        "whatsapp.db-journal",
+        "store.sqlite",
+        "store.sqlite3",
+        "store.sqlite-wal",
     ],
 )
 def test_refuses_secret_looking_files(media_dirs, name):
     allowed, _ = media_dirs
     f = allowed / name
     f.write_text("s")
+    with pytest.raises(ValueError):
+        whatsapp.validate_outgoing_media_path(str(f))
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "store/media/491500000001@s.whatsapp.net/ABC123.jpg",  # /api/download
+        "store/491500000001_s.whatsapp.net/photo.jpg",  # auto-download
+        "store/120363322317399301_g.us/clip.mp4",
+        "store/120363402588966290_newsletter/post.png",
+        "store/154713345548441_lid/voice.ogg",
+    ],
+)
+def test_accepts_media_inside_a_store(media_dirs, relative):
+    allowed, _ = media_dirs
+    f = allowed / relative
+    f.parent.mkdir(parents=True)
+    f.write_bytes(b"x")
+    assert whatsapp.validate_outgoing_media_path(str(f)) == os.path.realpath(f)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "store/history-export.json",  # directly in store/
+        "store/session-backup.bin",
+        "store/backups/messages.tar.gz",  # a subfolder that is not media
+        "store/not-a-jid/photo.jpg",
+    ],
+)
+def test_refuses_non_media_inside_a_store(media_dirs, relative):
+    allowed, _ = media_dirs
+    f = allowed / relative
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"x")
+    with pytest.raises(ValueError, match="store"):
+        whatsapp.validate_outgoing_media_path(str(f))
+
+
+def test_store_rule_holds_even_with_path_check_disabled(media_dirs, monkeypatch):
+    allowed, _ = media_dirs
+    monkeypatch.setenv("DISABLE_PATH_CHECK", "true")
+    f = allowed / "store" / "anything.bin"
+    f.parent.mkdir()
+    f.write_bytes(b"x")
     with pytest.raises(ValueError):
         whatsapp.validate_outgoing_media_path(str(f))
 
