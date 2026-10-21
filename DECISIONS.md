@@ -54,3 +54,23 @@ Live config:
 - Both bridge units got `RestartPreventExitStatus=3` via drop-ins. Friday's unit also
   got the DNS wait, `ExecStartPre=wa-bridge-fix.sh`.
 - `friday-warm` stopped and taken out of the failover and recover scripts.
+
+## D6 — 2026-10-22 — Multiple numbers: one process per number, no template rename (Simon: "if you think that's the best way")
+Approved as "template units per number". The template rename was dropped because
+`whatsapp-bridge.service` is referenced by:
+- the health timer, deploy, failover, the M1 recovery script and friday-core;
+- the MCP unit's dependencies.
+
+Renaming all of that is risk without payoff at two numbers. The goal itself was
+delivered by making everything around the units treat every number alike:
+- one health check (`wa-bridge-health.sh`, with ntfy alerts and backoff), which
+  replaced the separate Friday timer;
+- `deploy-live.sh` restarts and verifies every bridge and rolls them back together;
+- `standby-sync` snapshots every number;
+- an "add a number" runbook in Simon's private ops doc.
+
+Also done:
+- **Fence:** :8082 is limited to loopback and the tailnet (a Docker container
+  could reach it before).
+- **Key rotation:** the bridge API key was rotated after it turned up in a vault
+  note, and the note was redacted.
