@@ -33,11 +33,11 @@ and its README still contain a real phone JID (open question).
 Recommended answers in brackets.
 
 1. Remove the real phone JID from `wa-assistant/` and its README. [yes]
-2. Fix next from the 2026-10-21 review, in this order:
-   - the `check_inbox` cursor race;
-   - the webhook raw-JID issue;
-   - the failing Security Scan CI job;
-   - normalizing the `sender` column. [this order]
+2. Next from the reviews: the "Then" list in `docs/reviews/2026-10-21-full-review.md`
+   (bare-sender participants, bare-number recipients, :8082 reachable from the
+   LAN/Docker, token sprawl, send duplicates on timeout, deploy rollback holes,
+   anti-ban caps, recall memory), plus the webhook raw-JID issue and the failing
+   Security Scan CI job. [network fence and token rotation first]
 3. wa-dispatch and wa-assistant don't run anywhere: mark them dormant in the README, or repoint them at the data dir? [mark dormant]
 4. **Multi-instance (waiting on Simon, 2026-10-21).** Two bridges already run (Simon's
    number and Friday's), set up by hand and inconsistently: different health checks,
