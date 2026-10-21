@@ -18,7 +18,29 @@ func TestValidateMediaPath(t *testing.T) {
 	}{
 		{"empty path", "", false, ""},
 		{"allowed /app/media", "/app/media/file.jpg", false, ""},
-		{"allowed /app/store", "/app/store/data.db", false, ""},
+		{"allowed /app/store media", "/app/store/media/photo.jpg", false, ""},
+		// The bridge's own session DB lives under store/; sending it to a chat
+		// would hand over the linked-device keys.
+		{"store session db", "/app/store/whatsapp.db", true, "sensitive"},
+		{"store messages db wal", "/app/store/messages.db-wal", true, "sensitive"},
+		{"nested store db", "/tmp/x/store/messages.db", true, "sensitive"},
+		{"db outside store ok", "/tmp/export/report.db", false, ""},
+		{"dotfile .env", "/tmp/.env", true, "hidden"},
+		{"dot dir .ssh", "/tmp/.ssh/known_hosts", true, "hidden"},
+		{"dot dir .git", "/tmp/repo/.git/config", true, "hidden"},
+		{"dot dir .config", "/tmp/.config/app/settings.yaml", true, "hidden"},
+		{"prod.env", "/tmp/prod.env", true, "sensitive"},
+		{"pem", "/tmp/cert.pem", true, "sensitive"},
+		{"key upper case", "/tmp/Server.KEY", true, "sensitive"},
+		{"p12", "/tmp/bundle.p12", true, "sensitive"},
+		{"id_rsa", "/tmp/id_rsa", true, "sensitive"},
+		{"id_ed25519.pub", "/tmp/id_ed25519.pub", true, "sensitive"},
+		{"config.json", "/tmp/config.json", true, "sensitive"},
+		{"credentials json", "/tmp/credentials-prod.json", true, "sensitive"},
+		{"secrets yaml", "/tmp/secrets.yaml", true, "sensitive"},
+		{"kdbx", "/tmp/vault.kdbx", true, "sensitive"},
+		{"similar name ok", "/tmp/keynote.pdf", false, ""},
+		{"env in middle ok", "/tmp/environment.png", false, ""},
 		{"allowed /tmp", "/tmp/upload.png", false, ""},
 		{"path traversal ../", "/app/media/../etc/passwd", true, "traversal"},
 		{"path traversal multiple", "/app/media/../../etc/passwd", true, "traversal"},
@@ -95,6 +117,103 @@ func TestValidateMediaPath_DisableCheck(t *testing.T) {
 
 	if err := validateMediaPath("/home/user/file.txt"); err != nil {
 		t.Errorf("With DISABLE_PATH_CHECK=true, validateMediaPath should allow external paths, got: %v", err)
+	}
+}
+
+// DISABLE_PATH_CHECK relaxes the directory allowlist, not secret protection.
+func TestValidateMediaPath_SensitiveUnderDisableCheck(t *testing.T) {
+	t.Setenv("DISABLE_PATH_CHECK", "true")
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"plain file anywhere", "/home/user/photo.jpg", false},
+		{"ssh key", "/home/user/.ssh/id_ed25519", true},
+		{"dotenv", "/srv/app/.env", true},
+		{"session db", "/srv/data/store/whatsapp.db", true},
+		{"pem", "/etc/ssl/private/site.pem", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMediaPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMediaPath(%s) = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// The dot rule applies below the allowed root only, so an operator can list a
+// data dir such as ~/.local/share/... and still send the media in it.
+func TestValidateMediaPath_DotInAllowedRoot(t *testing.T) {
+	t.Setenv("DISABLE_PATH_CHECK", "")
+	t.Setenv("MEDIA_ALLOWED_DIRS", "/srv/home, /srv/home/.local/share/wa")
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"media in dotted data dir", "/srv/home/.local/share/wa/media/a.jpg", false},
+		{"dot dir under broad root", "/srv/home/.ssh/notes.txt", true},
+		{"dotfile in data dir", "/srv/home/.local/share/wa/.env", true},
+		{"session db in data dir", "/srv/home/.local/share/wa/store/whatsapp.db", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMediaPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMediaPath(%s) = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// A symlink inside an allowed dir must be judged by its target too, and a
+// sensitive link name must be refused even when the target is harmless.
+func TestValidateMediaPath_SymlinkToSensitive(t *testing.T) {
+	t.Setenv("DISABLE_PATH_CHECK", "")
+
+	dir, err := os.MkdirTemp("/tmp", "wamcp_sensitive_")
+	if err != nil {
+		t.Skipf("cannot create temp dir under /tmp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	secret := filepath.Join(dir, "prod.env")
+	photo := filepath.Join(dir, "photo.jpg")
+	for _, f := range []string{secret, photo} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+	innocentLink := filepath.Join(dir, "innocent.jpg")
+	sensitiveLink := filepath.Join(dir, "id_rsa")
+	if err := os.Symlink(secret, innocentLink); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	if err := os.Symlink(photo, sensitiveLink); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"real photo", photo, false},
+		{"innocent name to secret", innocentLink, true},
+		{"secret name to photo", sensitiveLink, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMediaPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMediaPath(%s) = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
 	}
 }
 
