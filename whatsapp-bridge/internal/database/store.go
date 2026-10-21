@@ -110,6 +110,12 @@ func runMigrations(db *sql.DB) error {
 			name: "merged_into",
 			sql:  `ALTER TABLE chats ADD COLUMN merged_into TEXT`,
 		},
+		{
+			// Phone-offline tracking; see PhoneStatus. CREATE IF NOT EXISTS is
+			// idempotent, so it never hits the duplicate-column check below.
+			name: "phone_status",
+			sql:  phoneStatusTableSQL,
+		},
 	}
 
 	for _, m := range migrations {
