@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
+	"whatsapp-bridge/internal/mediastore"
 	"whatsapp-bridge/internal/whatsapp"
 )
 
@@ -31,13 +32,6 @@ var hkdfInfo = map[string][]byte{
 	"video":    []byte("WhatsApp Video Keys"),
 	"audio":    []byte("WhatsApp Audio Keys"),
 	"document": []byte("WhatsApp Document Keys"),
-}
-
-var mediaExt = map[string]string{
-	"image":    ".jpg",
-	"video":    ".mp4",
-	"audio":    ".ogg",
-	"document": ".bin",
 }
 
 type downloadRequest struct {
@@ -56,7 +50,8 @@ type downloadRequest struct {
 //
 // path is absolute. via says where the bytes came from: "auto-download" (the
 // copy saved when the message arrived), "cdn" (the URL stored with the message)
-// or "whatsmeow" (direct_path re-resolved, for when that URL has expired).
+// "whatsmeow" (direct_path re-resolved, for when that URL has expired) or
+// "saved" (a copy already in store/media, e.g. from the media retry queue).
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -100,6 +95,15 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if paths, err := whatsapp.AutoDownloadPaths(req.ChatJID, req.MessageID, filename); err == nil {
 		if saved := whatsapp.FindAutoDownloaded(paths, fileSHA256); saved != "" {
 			writeDownloadResult(w, saved, "auto-download")
+			return
+		}
+	}
+	// A copy saved by an earlier download, or by the background media retry
+	// queue once the sender's phone re-uploaded purged media. Hash-checked like
+	// the auto-download copy, so a stale file never masks the real media.
+	if saved, err := mediastore.Path(req.ChatJID, req.MessageID, mediaType, filename); err == nil {
+		if whatsapp.FindAutoDownloaded([]string{saved}, fileSHA256) != "" {
+			writeDownloadResult(w, saved, "saved")
 			return
 		}
 	}
@@ -230,46 +234,15 @@ func (s *Server) downloadViaWhatsmeow(w http.ResponseWriter, r *http.Request, re
 }
 
 // saveMedia writes decrypted media to store/media/<chat_jid>/<message_id><ext>
-// under the bridge's working directory and returns the absolute path. Callers
-// such as the MCP server run in another working directory, so a relative path
-// is useless to them.
+// and returns the absolute path. The layout lives in mediastore so the
+// background media retry queue saves exactly where this handler looks.
 func saveMedia(chatJID, messageID, mediaType, filename string, data []byte) (string, error) {
-	storeDir, err := filepath.Abs(filepath.Join("store", "media", sanitizePath(chatJID)))
-	if err != nil {
-		return "", fmt.Errorf("resolve media dir: %w", err)
-	}
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		return "", fmt.Errorf("mkdir failed: %w", err)
-	}
-	outPath := filepath.Join(storeDir, sanitizePath(messageID)+mediaExtension(mediaType, filename))
-	// Atomic write: write to a sibling tmp file, then rename into place so partial
-	// writes never become visible and concurrent requests for the same message
-	// can't tear each other's output.
-	tmpPath := outPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return "", fmt.Errorf("write failed: %w", err)
-	}
-	if err := os.Rename(tmpPath, outPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("rename failed: %w", err)
-	}
-	return outPath, nil
+	return mediastore.Save(chatJID, messageID, mediaType, filename, data)
 }
 
-// mediaExtension keeps a document's own extension, because ".bin" makes a PDF
-// useless to whoever opens it. The filename is sender-supplied, so the
-// extension is sanitised like every other path component.
+// mediaExtension is mediastore.Extension, kept for this package's tests.
 func mediaExtension(mediaType, filename string) string {
-	ext := mediaExt[mediaType]
-	if ext == "" {
-		ext = ".bin"
-	}
-	if mediaType == "document" && filename != "" {
-		if e := strings.TrimPrefix(filepath.Ext(filename), "."); e != "" && len(e) <= 10 {
-			ext = "." + sanitizePath(e)
-		}
-	}
-	return ext
+	return mediastore.Extension(mediaType, filename)
 }
 
 func writeDownloadResult(w http.ResponseWriter, path, via string) {
@@ -287,32 +260,6 @@ func writeDownloadResult(w http.ResponseWriter, path, via string) {
 		"size":    size,
 		"via":     via,
 	})
-}
-
-// sanitizePath replaces every byte outside a strict allowlist with '_', so untrusted
-// IDs can't escape the store dir, hide files via leading dots, or smuggle control bytes.
-// WhatsApp message IDs and JIDs are constrained to a subset of these characters.
-func sanitizePath(s string) string {
-	if s == "" {
-		return "_"
-	}
-	b := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'A' && c <= 'Z',
-			c >= 'a' && c <= 'z',
-			c >= '0' && c <= '9',
-			c == '_', c == '-', c == '@':
-			b[i] = c
-		default:
-			b[i] = '_'
-		}
-	}
-	if b[0] == '.' || b[0] == '-' {
-		b[0] = '_'
-	}
-	return string(b)
 }
 
 // whatsappCDNSuffixes are the host suffixes Meta serves WhatsApp media from.
