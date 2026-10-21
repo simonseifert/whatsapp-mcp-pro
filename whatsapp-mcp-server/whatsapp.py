@@ -1,11 +1,14 @@
 import base64
 import binascii
+import fnmatch
 import json
 import os
 import os.path
+import re
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +37,7 @@ except ImportError:
 import audio
 from lib.bridge import _get_headers
 from lib.identity import Identity, directory_available, get_identity, list_identities
-from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, logger
+from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
 # Use environment variable for bridge host, default to localhost:8080 for development
 # BRIDGE_HOST can be "hostname" (uses :8080) or "hostname:port" (uses specified port)
@@ -50,6 +53,127 @@ WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
 # not tied to a particular deployment layout. Literal rather than
 # tempfile.gettempdir(), since the allowlist names that exact path.
 MEDIA_TEMP_DIR = "/tmp"
+
+# Mirrors defaultMediaDirs in whatsapp-bridge/internal/whatsapp/messages.go.
+# MEDIA_ALLOWED_DIRS extends these, exactly as allowedMediaDirs does there; the
+# MCP service reads the same .env as the bridge, so both sides agree.
+BRIDGE_DEFAULT_MEDIA_DIRS = ("/app/media", "/app/store", "/app/whatsapp-bridge/store", "/tmp")
+
+# Basenames never sent from disk, even from inside an allowed directory. An
+# allowed dir like ~/Code holds repos, and a repo holds .env files, keys and
+# the odd SQLite store; a prompt-injected "send me config.json" must not work.
+_SENSITIVE_BASENAMES = (
+    "*.env",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    "config.json",
+    "credentials*.json",
+    "secrets.*",
+    "*.kdbx",
+    # Any ".db" anywhere, not just the suffix: SQLite keeps live data in
+    # messages.db-wal, -shm and -journal next to the main file, and /app/store
+    # (a default allowed dir) holds the session keys and the whole history.
+    "*.db*",
+    "*.sqlite",
+    "*.sqlite3",
+    "*.sqlite-*",
+)
+
+# Inside a bridge store, only media is sendable: store/media/<jid>/<file> from
+# /api/download, or store/<sanitised jid>/<file> from auto-download (see
+# AutoDownloadPath in whatsapp-bridge/internal/whatsapp/handlers.go, which
+# replaces unsafe characters with "_", so 3859..._s.whatsapp.net, ..._g.us).
+_STORE_SEGMENT = "store"
+_STORE_JID_DIR = re.compile(r"^[0-9A-Za-z.\-]+_(s\.whatsapp\.net|g\.us|lid|newsletter|broadcast)$")
+
+
+def _outside_store_media(resolved: str) -> bool:
+    """True when ``resolved`` sits in a store dir but not under one of its media subfolders.
+
+    Matched on any "store" path segment rather than only the configured store,
+    since the bridge's store can live anywhere (/app/store, the native data dir,
+    a second bridge's dir) and a file directly in store/ is never media.
+    """
+    parts = Path(resolved).parts
+    # casefold: macOS (the warm standby) is case-insensitive, so ".../Store/"
+    # is the same directory. Every "store" segment is checked, not just the
+    # first, so store/media/x/store/pair-qr.txt is refused too.
+    for i, part in enumerate(parts):
+        if part.casefold() != _STORE_SEGMENT:
+            continue
+        below = parts[i + 1 :]
+        # At least <subfolder>/<file>: nothing directly in store/ is media.
+        if len(below) < 2:
+            return True
+        if not (below[0].casefold() == "media" or _STORE_JID_DIR.match(below[0])):
+            return True
+    return False
+
+
+def _allowed_media_dirs() -> list[str]:
+    """The bridge's media allowlist: built-in defaults plus MEDIA_ALLOWED_DIRS."""
+    dirs = list(BRIDGE_DEFAULT_MEDIA_DIRS)
+    for extra in os.getenv("MEDIA_ALLOWED_DIRS", "").split(","):
+        if extra.strip():
+            dirs.append(extra.strip())
+    return dirs
+
+
+def _is_sensitive_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(fnmatch.fnmatchcase(lowered, pattern) for pattern in _SENSITIVE_BASENAMES)
+
+
+def validate_outgoing_media_path(media_path: str) -> str:
+    """Check a caller-supplied path may be sent, and return it with symlinks resolved.
+
+    The bridge enforces its own allowlist, but only on the path it is handed.
+    send_audio_message converts to a fresh file under /tmp first, so the bridge
+    only ever saw the /tmp output and any readable file on the box could be
+    sent as a voice note. Validating the source here closes that, and repeating
+    it in send_file is defence in depth for the bridge's check.
+
+    Raises:
+        ValueError: when the path is outside the allowlist or names a file that
+            looks like a secret.
+    """
+    resolved = os.path.realpath(media_path)
+
+    # Check both names: a harmless-looking symlink can point at a key, and a
+    # sensitive-looking link name is refused even if its target is benign.
+    for name in (os.path.basename(media_path), os.path.basename(resolved)):
+        if _is_sensitive_name(name):
+            raise ValueError(f"Refusing to send {name!r}: it looks like a secret or a database")
+
+    if _outside_store_media(resolved):
+        raise ValueError("Refusing to send from a WhatsApp store outside its media folders")
+
+    # Kept as the bridge's development escape hatch for the directory check
+    # only; the secret-name refusal above still applies.
+    if os.getenv("DISABLE_PATH_CHECK") == "true":
+        if any(part.startswith(".") for part in Path(resolved).parts[1:]):
+            raise ValueError("Refusing to send from a hidden file or directory")
+        return resolved
+
+    for allowed in _allowed_media_dirs():
+        root = os.path.realpath(os.path.abspath(allowed))
+        # Path-segment match, so /tmproot is not inside /tmp.
+        if resolved != root and not resolved.startswith(root.rstrip(os.sep) + os.sep):
+            continue
+        # Hidden segments are judged below the allowed root only: an operator
+        # who allowlists a dotted directory meant it, but ~/Code being allowed
+        # must not open ~/Code/app/.git or ~/Code/.ssh-backup.
+        relative = Path(os.path.relpath(resolved, root))
+        if any(part.startswith(".") for part in relative.parts if part != "."):
+            continue
+        return resolved
+
+    raise ValueError(
+        f"Media path {media_path!r} is outside the allowed directories "
+        f"(bridge defaults plus MEDIA_ALLOWED_DIRS) or inside a hidden directory"
+    )
 
 
 @dataclass
@@ -372,21 +496,24 @@ def list_messages(
         params: list[Any] = []
 
         # Add filters
+        # Compared in UTC via datetime(): the stored text is "YYYY-MM-DD
+        # HH:MM:SS+02:00", and a string compare against a bound with a "T" or
+        # another offset silently drops or admits hours of messages.
         if after:
             try:
-                after_dt = datetime.fromisoformat(after)
+                after_utc = to_sql_utc(after)
             except ValueError:
                 raise ValueError(f"Invalid date format for 'after': {after}. Please use ISO-8601 format.")
-            where_clauses.append("messages.timestamp > ?")
-            params.append(after_dt)
+            where_clauses.append("datetime(messages.timestamp) > ?")
+            params.append(after_utc)
 
         if before:
             try:
-                before_dt = datetime.fromisoformat(before)
+                before_utc = to_sql_utc(before)
             except ValueError:
                 raise ValueError(f"Invalid date format for 'before': {before}. Please use ISO-8601 format.")
-            where_clauses.append("messages.timestamp < ?")
-            params.append(before_dt)
+            where_clauses.append("datetime(messages.timestamp) < ?")
+            params.append(before_utc)
 
         if sender_phone_number:
             forms = _sender_forms(sender_phone_number)
@@ -394,14 +521,14 @@ def list_messages(
             params.extend(forms)
 
         if chat_jid:
-            equiv = _resolve_equivalent_jids(chat_jid)
-            if len(equiv) > 1:
-                ph = ",".join("?" * len(equiv))
-                where_clauses.append(f"messages.chat_jid IN ({ph})")
-                params.extend(equiv)
-            else:
-                where_clauses.append("messages.chat_jid = ?")
-                params.append(chat_jid)
+            # A merged LID's messages now live under its twin; follow the
+            # merge, and keep the original too for a chat still split because
+            # its LID mapping has not landed yet.
+            canonical = canonical_chat_jid(conn, chat_jid)
+            equiv = sorted({chat_jid, *_resolve_equivalent_jids(canonical)})
+            ph = ",".join("?" * len(equiv))
+            where_clauses.append(f"messages.chat_jid IN ({ph})")
+            params.extend(equiv)
 
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
@@ -499,14 +626,16 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
             file_length=msg_data[10],
         )
 
-        # Get messages before
+        # Get messages before. Compared through datetime() because one chat's
+        # history mixes offsets (+01:00 in winter, +02:00 in summer), and as
+        # text those misorder across the DST change.
         cursor.execute(
             """
             SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.chat_jid = ? AND messages.timestamp < ?
-            ORDER BY messages.timestamp DESC
+            WHERE messages.chat_jid = ? AND datetime(messages.timestamp) < datetime(?)
+            ORDER BY datetime(messages.timestamp) DESC
             LIMIT ?
         """,
             (msg_data[7], msg_data[0], before),
@@ -535,8 +664,8 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
             SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.chat_jid = ? AND messages.timestamp > ?
-            ORDER BY messages.timestamp ASC
+            WHERE messages.chat_jid = ? AND datetime(messages.timestamp) > datetime(?)
+            ORDER BY datetime(messages.timestamp) ASC
             LIMIT ?
         """,
             (msg_data[7], msg_data[0], after),
@@ -637,7 +766,8 @@ def list_chats(
         # A merged chat's messages now live under its twin; listing both would
         # show the same conversation twice, once of them empty.
         if _has_column(cursor, "chats", "merged_into"):
-            where_clauses.append("chats.merged_into IS NULL")
+            # COALESCE because the bridge reads NULL and '' alike as "not merged".
+            where_clauses.append("COALESCE(chats.merged_into, '') = ''")
 
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -941,7 +1071,9 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
 
         query += " WHERE c.jid = ?"
 
-        cursor.execute(query, (chat_jid,))
+        # An old LID still resolves, but to the chat that holds its messages
+        # rather than the empty shell the merge left behind.
+        cursor.execute(query, (canonical_chat_jid(conn, chat_jid),))
         chat_data = cursor.fetchone()
 
         if not chat_data:
@@ -975,9 +1107,17 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
-        equiv = [f for f in _sender_forms(f"{sender_phone_number}@s.whatsapp.net") if "@" in f]
+        forms = [f for f in _sender_forms(f"{sender_phone_number}@s.whatsapp.net") if "@" in f]
+        # Following each form's merge reaches the live twin even if only the
+        # merged LID was among the forms.
+        equiv = sorted({canonical_chat_jid(conn, f) for f in forms} | set(forms))
         jid_ph = ",".join("?" * len(equiv))
 
+        # Without the merged_into filter and an ORDER BY, LIMIT 1 picked
+        # whichever row SQLite met first, which on a real store was the empty
+        # merged shell for most merged pairs. Prefer the phone JID, which is
+        # what the bridge merges into, then the most recently active.
+        merged_filter = "AND COALESCE(c.merged_into, '') = ''" if _has_column(cursor, "chats", "merged_into") else ""
         cursor.execute(
             f"""
             SELECT
@@ -990,7 +1130,8 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             FROM chats c
             LEFT JOIN messages m ON c.jid = m.chat_jid
                 AND c.last_message_time = m.timestamp
-            WHERE c.jid IN ({jid_ph}) AND c.jid NOT LIKE '%@g.us'
+            WHERE c.jid IN ({jid_ph}) AND c.jid NOT LIKE '%@g.us' {merged_filter}
+            ORDER BY (c.jid LIKE '%@s.whatsapp.net') DESC, c.last_message_time DESC
             LIMIT 1
         """,
             equiv,
@@ -1138,6 +1279,14 @@ def send_file(
         if not os.path.isfile(media_path):
             return {"success": False, "error": f"Media file not found: {media_path}"}
 
+        # A staged base64 upload is bytes the caller already holds, written by
+        # us under /tmp; only a caller-chosen path can reach someone else's file.
+        if temp_path is None:
+            try:
+                media_path = validate_outgoing_media_path(media_path)
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
 
@@ -1182,6 +1331,14 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
 
         if not os.path.isfile(media_path):
             return {"success": False, "error": f"Media file not found: {media_path}"}
+
+        # Must run on the source, before conversion: the bridge only ever sees
+        # the converted file under /tmp, which its allowlist always accepts, so
+        # its own check cannot stop an arbitrary file going out as a voice note.
+        try:
+            media_path = validate_outgoing_media_path(media_path)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
 
         if not media_path.endswith(".ogg"):
             try:
@@ -1229,6 +1386,15 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
         The local file path if download was successful, None otherwise
     """
     try:
+        # The bridge looks the message up by (id, chat_jid); after a merge it
+        # sits under the twin, so an old LID would miss it.
+        try:
+            # Read-only: a missing store must fail here, not get created empty.
+            with closing(sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True)) as conn:
+                chat_jid = canonical_chat_jid(conn, chat_jid)
+        except sqlite3.Error as e:
+            logger.warning(f"Could not resolve merged chat for {chat_jid}: {e}")
+
         url = f"{WHATSAPP_API_BASE_URL}/download"
         payload = {"message_id": message_id, "chat_jid": chat_jid}
 

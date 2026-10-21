@@ -28,13 +28,12 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import numpy as np
 
-from .utils import MESSAGES_DB_PATH, logger
+from .utils import MESSAGES_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
 MAX_RECALL_LIMIT = 200  # a semantic search returning more than this is a scan, not a search
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -363,8 +362,10 @@ def recall(
     # dimensionality, and np.stack over a mixed set raises rather than degrades.
     params: list[Any] = [MODEL_NAME]
     if chat_jid:
-        sql_parts.append(" AND m.chat_jid = ?")
-        params.append(chat_jid)
+        # A merged LID's messages and embeddings were moved to its twin.
+        jids = sorted({chat_jid, canonical_chat_jid(conn, chat_jid)})
+        sql_parts.append(f" AND m.chat_jid IN ({','.join('?' * len(jids))})")
+        params.extend(jids)
     if sender:
         sql_parts.append(" AND m.sender = ?")
         params.append(sender)
@@ -372,8 +373,8 @@ def recall(
     # raw string compare against an ISO "2026-10-21T00:00:00" is wrong: " " sorts
     # before "T" and the whole day falls out of `after`. Compare in UTC instead.
     try:
-        after_utc = _to_sql_utc(after)
-        before_utc = _to_sql_utc(before)
+        after_utc = to_sql_utc(after)
+        before_utc = to_sql_utc(before)
     except ValueError as exc:
         return {"error": f"after/before must be ISO-8601 datetimes: {exc}"}
     if after_utc:
@@ -420,20 +421,6 @@ def recall(
         )
 
     return {"results": results, "index_status": index_status()}
-
-
-def _to_sql_utc(value: str | None) -> str | None:
-    """ISO-8601 input -> the "YYYY-MM-DD HH:MM:SS" UTC form SQLite's datetime() yields.
-
-    A value without an offset is taken as local time, matching how the bridge
-    records timestamps and how a person phrases "since 9 this morning".
-    """
-    if not value:
-        return None
-    dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.astimezone()  # naive -> local zone
-    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # Deliberately NO import-time indexer kickoff: recall / recall_index_status

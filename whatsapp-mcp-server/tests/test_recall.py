@@ -236,3 +236,13 @@ def test_recall_date_filters_match_bridge_timestamp_format(recall_db):
 def test_recall_rejects_unparseable_dates(recall_db):
     result = recall_mod.recall("anything", after="last tuesday")
     assert "error" in result
+
+
+def test_recall_chat_filter_follows_a_merged_lid(recall_db):
+    """The bridge moves a merged LID's embeddings to its twin, so filter on both."""
+    from tests.conftest import MERGED_LID
+
+    recall_mod._index_pending()
+    result = recall_mod.recall("hello", chat_jid=MERGED_LID)
+    assert "error" not in result, result
+    assert {r["chat_jid"] for r in result["results"]} == {"123456789@s.whatsapp.net"}

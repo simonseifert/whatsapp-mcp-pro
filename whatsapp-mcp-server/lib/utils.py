@@ -2,6 +2,8 @@
 
 import logging
 import os
+import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Load .env file from project root - check multiple locations
@@ -79,3 +81,65 @@ if ":" not in _bridge_host:
     _bridge_host = f"{_bridge_host}:8080"
 BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
+
+
+def to_sql_utc(value: str | None) -> str | None:
+    """ISO-8601 input -> the "YYYY-MM-DD HH:MM:SS" UTC form SQLite's datetime() yields.
+
+    The bridge stores "2026-10-21 20:54:59+02:00" (space, local offset), so a raw
+    string compare against an ISO "2026-10-21T00:00:00" is wrong: " " sorts
+    before "T" and the whole day falls out of `after`, and an offset mismatch
+    shifts the bound by hours. Compare ``datetime(timestamp)`` against this.
+
+    A value without an offset is taken as local time, matching how the bridge
+    records timestamps and how a person phrases "since 9 this morning".
+
+    Raises:
+        ValueError: when ``value`` is not ISO-8601.
+    """
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # naive -> local zone
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Merge chains are one hop in practice (LID -> phone JID). The cap only exists
+# so a corrupt store with a cycle cannot spin a tool call forever.
+_MAX_MERGE_HOPS = 8
+
+
+def canonical_chat_jid(conn: sqlite3.Connection, jid: str) -> str:
+    """Follow chats.merged_into from ``jid`` to the chat that now holds its messages.
+
+    The bridge folds a LID-filed chat into its phone-JID twin and keeps the old
+    row as an empty shell stamped with merged_into (see MergeChat in
+    whatsapp-bridge/internal/database/identities.go). A caller holding the old
+    LID would otherwise read the shell and see no messages. Takes the caller's
+    connection rather than a path so it reads whichever store the caller does.
+
+    Returns ``jid`` unchanged when it is not merged, unknown, the store predates
+    the column, or the chain loops.
+    """
+    if not jid:
+        return jid
+    current = jid
+    seen = {jid}
+    for _ in range(_MAX_MERGE_HOPS):
+        try:
+            row = conn.execute("SELECT merged_into FROM chats WHERE jid = ?", (current,)).fetchone()
+        except sqlite3.OperationalError:
+            # A store from before merged_into existed has nothing to follow.
+            return current
+        # The bridge treats NULL and '' alike as "not merged".
+        if not row or not row[0]:
+            return current
+        nxt = row[0]
+        if nxt in seen:
+            logger.warning("chats.merged_into loops at %s (from %s); using the original JID", nxt, jid)
+            return jid
+        seen.add(nxt)
+        current = nxt
+    logger.warning("chats.merged_into chain from %s exceeds %d hops; using the original JID", jid, _MAX_MERGE_HOPS)
+    return jid

@@ -199,12 +199,15 @@ def _groq(file_path: str, language: str | None) -> dict[str, Any]:
 def _pending_voice_notes(limit: int, max_age_days: int) -> list[tuple[str, str]]:
     conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
     try:
+        # datetime(timestamp), not the raw text: datetime('now') is UTC with no
+        # offset, the stored text is local "+02:00", so a string compare moved
+        # the cutoff by the UTC offset.
         rows = conn.execute(
             """
             SELECT id, chat_jid FROM messages
             WHERE media_type IN ('audio', 'ptt')
               AND (content IS NULL OR TRIM(content) = '')
-              AND timestamp >= datetime('now', ?)
+              AND datetime(timestamp) >= datetime('now', ?)
             ORDER BY timestamp DESC LIMIT ?
             """,
             (f"-{max_age_days} days", limit),
