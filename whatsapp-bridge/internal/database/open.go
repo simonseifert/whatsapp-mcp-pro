@@ -14,7 +14,7 @@ func OpenMessageStore(dsn string) (*MessageStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open message database: %w", err)
 	}
-	for _, step := range []func(*sql.DB) error{createTables, createIdentityTable, runMigrations} {
+	for _, step := range []func(*sql.DB) error{createTables, createIdentityTable, runMigrations, createSendStateTables} {
 		if err := step(db); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("prepare message database: %w", err)

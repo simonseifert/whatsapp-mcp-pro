@@ -164,6 +164,9 @@ func main() {
 		client.StartMediaRetryQueue(mediaRetryCtx, messageStore, whatsapp.MediaRetryConfigFromEnv())
 	}
 
+	// Reachout timelock (WhatsApp error 463): restore persisted state, watch notifications.
+	client.EnableReachoutTracking(messageStore)
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {

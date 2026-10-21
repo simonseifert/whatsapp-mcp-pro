@@ -51,6 +51,8 @@ type Client struct {
 
 	// Phone-offline detection; set once by StartPhoneMonitor (phoneping.go).
 	phoneMonitor *PhoneMonitor
+	// WhatsApp reachout timelock (error 463) state; see reachout.go
+	reachout reachoutTracker
 
 	// Pairing state
 	pairingMutex       sync.Mutex

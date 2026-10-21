@@ -47,6 +47,12 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to run migrations: %v", err)
 	}
 
+	// Idempotency keys + persisted bridge state (migrations/005).
+	if err = createSendStateTables(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return &MessageStore{db: db}, nil
 }
 
@@ -125,7 +131,7 @@ func runMigrations(db *sql.DB) error {
 			fmt.Printf("Warning: migration error (%s column): %v\n", m.name, err)
 		}
 	}
-	// Persistent media retry queue (migrations/005_media_requests.sql).
+	// Persistent media retry queue (migrations/006_media_requests.sql).
 	return createMediaRequestTable(db)
 }
 
