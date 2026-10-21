@@ -191,8 +191,8 @@ def self_jids() -> list[str]:
     (`…@lid`). Measured on one account, 2026-08-04 — the same self-chat, same
     final timestamp, filed differently per linked device:
 
-        laptop (device :10)  ->  11110000000001@lid            264 messages
-        server (device :12)  ->  491500000003@s.whatsapp.net   367 messages
+        laptop (device :10)  ->  123456789012345@lid           264 messages
+        server (device :12)  ->  4915112345678@s.whatsapp.net  367 messages
 
     So watching only the jid the bridge reports finds nothing at all on some
     installs. Both come from whatsmeow's own device row; /api/connection

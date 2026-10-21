@@ -11,7 +11,7 @@ import (
 // non-listed recipients are rejected. Unset or empty = allow all (default).
 //
 // Entries match exactly, or by bare number against the JID's user part, so
-// "385991234567" allows both 385991234567@s.whatsapp.net and @lid forms.
+// "4915112345678" allows both 4915112345678@s.whatsapp.net and @lid forms.
 var (
 	sendAllowlistOnce sync.Once
 	sendAllowlist     map[string]bool
