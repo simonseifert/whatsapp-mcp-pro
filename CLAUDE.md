@@ -129,7 +129,9 @@ when code/data were split as above.)
   API layer; `WHATSAPP_ALLOWLIST_JIDS` (alias `WHATSAPP_JID_ALLOWLIST`) gates
   the whatsmeow send call. They are not aliases of each other. Matching is
   exact by design — see `IsRecipientAllowed`; a substring match once let an
-  entry of `net` allow every recipient.
+  entry of `net` allow every recipient. Both gate every message-creating
+  endpoint (send, reaction, poll, edit, delete), not just `/api/send`; a new
+  endpoint that writes to a chat must call the same checks.
 - **LID vs phone JID.** The same conversation can be filed under
   `…@lid` on one device and `…@s.whatsapp.net` on another. Both identities live
   in `whatsmeow_device` (`jid`, `lid`); `/api/connection` exposes only the jid.
@@ -156,6 +158,31 @@ when code/data were split as above.)
   paced loop (`internal/whatsapp/mediaretry_queue.go`, `MEDIA_RETRY_MAX_PER_HOUR`);
   a late answer is saved into `store/media/` (layout in `internal/mediastore`),
   which `/api/download` then serves as `via: "saved"`.
+- **Idempotency keys are random per call, never derived from content.** A key
+  built from (tool, recipient, text) once swallowed a deliberate second "ok" as
+  a duplicate. `lib/idempotency.py` makes a fresh key per tool call; the only
+  automatic reuse is the single same-key retry in `_send_request` after a
+  timeout or dropped connection. Errors carry `retryable`, false for
+  400/403/409/422, where repeating the call is pointless or harmful. Bridge side, keys are scoped to
+  endpoint + recipient, expire after 24h, and a retry after failure reuses the
+  stored WhatsApp message ID (`internal/api/send.go`).
+- **Reachout gate.** After a WhatsApp 463 the bridge refuses sends to chats
+  with no stored messages until `reachout_timelock_until`
+  (`internal/whatsapp/reachout.go`, persisted in `bridge_state`). That is
+  intended, not a bug to route around: more first contacts during a lock is
+  what turns it into a ban. A 463 on a send to a bare `@lid` does not arm it,
+  because the server also answers 463 when it can't route an unmapped LID.
+- **Nickname provenance.** `contact_nicknames.source` = `agent_inferred` means
+  an agent guessed it and the user never confirmed. The MCP shows it as
+  "(unverified)"; the bridge's `GetNicknames` drops it entirely, so the
+  directory and webhook sender names never carry it. Never let an agent write
+  `user` provenance without `confirmed_by_user`, and never treat a stranger's
+  self-claim as confirmation.
+- **Migration numbering.** `005_phone_status`, `006_media_requests`,
+  `007_send_idempotency`; the next one is `008`. The older numbers have
+  duplicates (two 002s, two 003s) from merging upstream, so check
+  `ls whatsapp-bridge/migrations` rather than counting, and renumber a branch's
+  migration when merging if another branch took the number first.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
 
@@ -185,8 +212,9 @@ Nicknames carry provenance in `contact_nicknames.source`, a column the MCP adds
 (guarded `ALTER TABLE`; NULL or missing = `user`). `agent_inferred` names show as
 "name (unverified)", never replace a `user` nickname or an address-book name, and
 exist because strangers' self-claims ("this is your bank") are a spoofing vector.
-The bridge does not read `source` yet, so its own directory rebuild and webhook
-sender names still treat an agent-inferred nickname like a user one.
+The bridge's `GetNicknames` keeps only `user` rows (or all rows when the column
+doesn't exist yet), so its directory rebuild and webhook sender names never
+show an agent-inferred name.
 
 Every read degrades to empty when the table is missing or unsynced, and the
 contact tools fall back to their old per-source queries — a store can be older

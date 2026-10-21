@@ -6,17 +6,116 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+## [v0.5.0-pro] - 2026-10-22
+
+Still based on upstream v0.4.0. This release is about not losing the account
+or a message: the bridge now notices an offline phone before WhatsApp unlinks
+it, sends are safe to retry, and first-contact restrictions are respected
+instead of retried into a ban.
+
 ### Added
 
+- Phone-offline detection. The bridge records when it last saw the primary
+  phone (receipts and messages from device 0, media retry answers, pairing) in
+  a new `phone_status` table. `GET /api/connection` gains `phone_last_seen` and
+  `phone_offline_days`. The log gets a WARN once a day past 7 days and an ERROR
+  past 12; WhatsApp unlinks companions after about 14 days without the phone,
+  and a restart does not help. Alert on `phone_offline_days` in your health
+  check (example in [SETUP.md](SETUP.md#linux-systemd)).
+- Phone ping: once the phone has been silent for `PHONE_OFFLINE_PING_AFTER`
+  (default `7d`), the bridge sends one app-state key request to your own phone
+  at most once a day. Nothing goes to contacts. An idle phone answers and the
+  clock resets. `PHONE_PING_ENABLED=false` turns it off; tracking and the API
+  fields stay on.
+- Persistent media retry queue (`media_requests` table). With
+  `MEDIA_RETRY_ENABLED=true`, expired media is queued and a background loop
+  asks the phone again later, so a restart or an offline phone no longer loses
+  the request. Paced by `MEDIA_RETRY_MAX_PER_HOUR` (default 20, counting the
+  receipts `/api/download` sends itself) and `MEDIA_RETRY_MAX_ATTEMPTS`
+  (default 3); a NOT_FOUND answer from the phone fails the request at once.
+  Recovered files are saved to `store/media/<jid>/<msgid><ext>`, and
+  `/api/download` serves that copy (`via: "saved"`). `GET /api/media-requests`
+  (optional `state`: pending, sent, succeeded, failed) shows the queue.
+- Idempotent sends. `/api/send`, `/api/reaction` and `/api/poll/create` accept
+  `idempotency_key` in the body or an `Idempotency-Key` header. A repeat after
+  success returns the stored result with `Idempotent-Replay: true` and sends
+  nothing; a repeat while the first is still running gets 409; the same key
+  with a different payload gets 422; a repeat after a failure tries again with
+  the same WhatsApp message ID, which recipients' devices de-duplicate if the
+  first attempt did get through. Keys are scoped to endpoint and recipient and
+  kept for 24 hours (`idempotency_keys` table).
+- MCP send tools (`send_message`, `send_file`, `send_audio_message`,
+  `create_poll`) use a fresh random key per call, retry a timed-out or dropped
+  request once with that key, and return `idempotency_key` and `deduplicated`.
+  Pass the key back to retry a whole call without risking a double send.
+  `send_reaction` takes an optional key.
+- Reachout timelock handling. WhatsApp answers error 463 when an account is
+  temporarily barred from starting new chats. The bridge records the lock end
+  (from WhatsApp's `NotifyAccountReachoutTimelock` notification, or
+  `REACHOUT_TIMELOCK_DEFAULT`, default 24h), persists it, and refuses sends to
+  contacts with no stored history until then, with 429 and `Retry-After`.
+  Replies in existing chats and group messages still go out.
+  `GET /api/connection` gains `reachout_timelock_until`.
 - `list_unnamed_contacts` and `set_contact_names`: an agent-driven loop for
-  naming people known only by number. Names are stored in `contact_nicknames`
-  (the `manage_nickname` store). Directory reads, `list_chats` and
-  `list_messages` (new `sender_name` field) overlay live nicknames, so a name
-  shows before the bridge's next directory rebuild. Names carry provenance
-  (`contact_nicknames.source`, added by the MCP): `set_contact_names` requires
-  `confirmed_by_user`; unconfirmed names are stored as `agent_inferred`, shown
-  as "(unverified)", and can't replace a user nickname or an address-book name.
-  Directory records expose `name_source`, messages `sender_name_source`.
+  naming people known only by number (37 tools now, 19 read-only). Names are
+  stored in `contact_nicknames` (the `manage_nickname` store). Directory reads,
+  `list_chats` and `list_messages` (new `sender_name` field) overlay live
+  nicknames, so a name shows before the bridge's next directory rebuild. Names
+  carry provenance (`contact_nicknames.source`, added by the MCP):
+  `set_contact_names` requires `confirmed_by_user`; unconfirmed names are
+  stored as `agent_inferred`, shown as "(unverified)", and can't replace a user
+  nickname or an address-book name. Directory records expose `name_source`,
+  messages `sender_name_source`.
+- Opt-in OAuth 2.1 for the shared HTTP MCP server (`MCP_OAUTH_ENABLED`, off by
+  default), so claude.ai and ChatGPT connectors can reach it without a static
+  header. PKCE, dynamic client registration, refresh-token rotation, a consent
+  page with a passphrase and a read-only or full choice, and a CLI path
+  (`python -m lib.oauth approve|list|revoke`). Needs a public HTTPS URL. See
+  [SETUP.md](SETUP.md#remote-connector-via-oauth-optional).
+- `SEND_TIMEOUT_SECONDS` (25) and `SEND_MEDIA_TIMEOUT_SECONDS` (150) bound a
+  send, including upload and pacing, so the bridge answers 504 before the
+  client's own timeout and records the outcome against the idempotency key.
+
+### Changed
+
+- Send endpoints return distinct status codes instead of a blanket 500, which
+  callers read as "retry" and so delivered slow sends twice: 400 bad input,
+  403 refused (allowlist, media path), 409 duplicate in flight, 422 key reused
+  with a different payload, 429 rate limit / antiban pause / reachout
+  timelock, 502 WhatsApp error, 503 not connected, 504 timeout. Edit and
+  delete use the same mapping.
+- Sends run on the request context, so a client that disconnects cancels the
+  send.
+- Media retries now go through the paced queue; `/api/download` still tries
+  once inline.
+- The media file layout moved to `internal/mediastore`, shared by
+  `/api/download` and the retry queue.
+
+### Fixed
+
+- The bridge's directory rebuild and webhook sender names ignore
+  `agent_inferred` nicknames, so a stranger's self-claimed name never shows up
+  as if you had set it.
+- An agent write can no longer delete a user nickname stored under the other
+  JID form (LID vs phone JID) of the same person.
+- A 463 on a send addressed to a bare LID no longer arms the reachout timelock.
+  WhatsApp also answers 463 when it can't route a LID that has no phone
+  mapping yet, and treating that as a lock blocked every new contact for a day.
+
+### Security
+
+- `SEND_ALLOWED_JIDS` and `WHATSAPP_ALLOWLIST_JIDS` now gate reactions, polls,
+  edits and deletes as well as sends. Before, a sender confined to one chat
+  could still react, poll, edit or revoke in any other.
+- OAuth hardening: redirect URIs must point at a host in
+  `MCP_OAUTH_ALLOWED_REDIRECT_HOSTS` (exact match, checked at registration and
+  every sign-in); wrong passphrases cost a growing per-address wait (per IPv4
+  address or IPv6 /64) and three of them end the consent request; a global
+  failure budget (`MCP_OAUTH_FAILURE_BUDGET` per `MCP_OAUTH_FAILURE_WINDOW`)
+  stops guessing from many addresses; consent is bound to the browser that
+  started the sign-in, so a forwarded consent link can't be approved;
+  `X-Forwarded-For` is honoured only from `MCP_TRUSTED_PROXY`; clients and
+  hashed tokens live in `oauth.db` with mode 600.
 
 ## [v0.4.0-pro] - 2026-10-22
 
@@ -108,4 +207,6 @@ review.
 - Two exact-match send allowlists (`SEND_ALLOWED_JIDS`,
   `WHATSAPP_ALLOWLIST_JIDS`); no substring or prefix matching.
 
-[v0.4.0-pro]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.4.0...main
+[Unreleased]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.5.0-pro...main
+[v0.5.0-pro]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.4.0-pro...v0.5.0-pro
+[v0.4.0-pro]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.4.0...v0.4.0-pro

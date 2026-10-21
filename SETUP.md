@@ -90,7 +90,36 @@ Defaults worth knowing (all in `.env.example`):
   silences them. Do not change it casually.
 - No send allowlist is set, which means no restriction. Before pointing any
   automation at this, set `SEND_ALLOWED_JIDS` and `WHATSAPP_ALLOWLIST_JIDS`.
-  They gate different layers and are not aliases of each other.
+  They gate different layers and are not aliases of each other. Both cover
+  messages, reactions, polls, edits and deletes.
+
+Settings for sends, the phone and media retry (bridge side, all optional):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SEND_TIMEOUT_SECONDS` | `25` | Upper bound on one send, including antiban pacing. Kept under the MCP server's 30 s HTTP timeout so the bridge answers 504 and records the outcome against the idempotency key before the client gives up. |
+| `SEND_MEDIA_TIMEOUT_SECONDS` | `150` | The same for sends that upload a file first. |
+| `REACHOUT_TIMELOCK_DEFAULT` | `24h` | How long sends to contacts with no history are refused after a WhatsApp error 463, when WhatsApp does not say when the lock ends. Replies and groups are not affected. |
+| `PHONE_OFFLINE_PING_AFTER` | `7d` | After this much silence from the phone, send it one invisible request a day to wake it. `7d` or any Go duration. |
+| `PHONE_PING_ENABLED` | `true` | `false` stops the ping. Tracking, warnings and the `/api/connection` fields stay on. |
+| `MEDIA_RETRY_ENABLED` | `false` | Ask the sender's phone to re-upload expired media. Every request shows "Finished syncing" on the phone. |
+| `MEDIA_RETRY_MAX_PER_HOUR` | `20` | Cap on retry requests per rolling hour, including those `/api/download` sends itself. |
+| `MEDIA_RETRY_MAX_ATTEMPTS` | `3` | Requests per message before the queue gives up. A "not found" answer from the phone fails it at once. |
+
+The OAuth variables (`MCP_OAUTH_*`, `MCP_PUBLIC_URL`, `MCP_TRUSTED_PROXY`) are
+covered in [step 5](#remote-connector-via-oauth-optional).
+
+**Sending from scripts.** `/api/send`, `/api/reaction` and `/api/poll/create`
+accept an idempotency key, as `idempotency_key` in the JSON body or an
+`Idempotency-Key` header. Generate a new random one per message (not one
+derived from the text, or a deliberate second "ok" is swallowed) and reuse it
+only to retry that message. A repeat after success returns the stored result
+with the header `Idempotent-Replay: true` and sends nothing; a repeat while the
+first is running gets 409; the same key with a different payload gets 422.
+Keys are kept for 24 hours. Other codes: 400 bad input, 403 allowlist or media
+path, 429 rate limit, antiban pause or reachout timelock (the timelock one carries
+`Retry-After`), 502 WhatsApp error, 503 not connected, 504 timeout. The MCP tools handle all of
+this themselves.
 
 ---
 
@@ -433,6 +462,7 @@ and restarting the bridge does not help. `/api/connection` reports this too:
 |---|---|
 | `phone_last_seen` | RFC3339 time the bridge last saw traffic only the phone sends (its read receipts, messages typed on it, media re-uploads). `null` if not seen since tracking began. |
 | `phone_offline_days` | Days since then (one decimal). When `phone_last_seen` is `null`, counted from when tracking began, so a lower bound. `null` only if tracking is not running. |
+| `reachout_timelock_until` | RFC3339 end of a WhatsApp reachout timelock (error 463) while one is active, else `null`. Until then the bridge refuses sends to contacts with no history. |
 
 Alert well before 14, for example at 10:
 
@@ -505,7 +535,27 @@ protocol and whatsmeow needs updating:
 **`download_media` fails with 403 or 404 on older media**: the CDN copy has
 expired. Set `MEDIA_RETRY_ENABLED=true` and restart the bridge; it then asks the
 sender's phone to re-upload. Each retry shows "Finished syncing" on the user's
-phone, and it only recovers media the phone still has.
+phone, and it only recovers media the phone still has. If the phone doesn't
+answer in time the request stays queued and is retried later at a paced rate;
+`curl -s -H "X-API-Key: $API_KEY" 'http://127.0.0.1:8080/api/media-requests?state=pending'`
+lists what is waiting, and the next download serves the saved file.
+
+**A send returns 504**: it ran past `SEND_TIMEOUT_SECONDS` (or
+`SEND_MEDIA_TIMEOUT_SECONDS` for files). The message may still have been
+delivered. Retry with the same idempotency key; if it went out, the bridge
+returns the stored result instead of sending a second copy. The MCP send tools
+already retry once this way and return the key they used.
+
+**Sends to new contacts return 429 with `Retry-After`**: WhatsApp has put the
+account in a reachout timelock (error 463) and the bridge is holding first
+contacts until `reachout_timelock_until` in `/api/connection`. Replies in
+existing chats still work. Wait it out; more first contacts during a lock are
+how it becomes a ban.
+
+**`phone_offline_days` keeps rising, or the log warns the phone is offline**:
+open WhatsApp on the phone and let it connect. WhatsApp unlinks the bridge
+after about 14 days without the phone, and then only pairing again (step 4)
+helps.
 
 **"refusing sensitive file" or "media path outside allowed directories"** when
 sending a file: the media guard. Local paths are accepted only from `/tmp` and
