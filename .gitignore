@@ -73,3 +73,8 @@ whatsapp-bridge/whatsapp-bridge.*
 
 # Compiled macOS STT helper (build artifact, arm64)
 wa-assistant/speech-transcribe
+
+# Hand-made backups of source files and test coverage data
+*.bak
+*.bak-*
+.coverage
