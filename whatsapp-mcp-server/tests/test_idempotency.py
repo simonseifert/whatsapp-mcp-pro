@@ -1,8 +1,9 @@
 """Idempotent sends: a retried call must not deliver the message twice.
 
 The bridge does the deduplication; these tests pin down what the MCP side
-sends it (a stable key per logical message, fresh per distinct message) and how
-it reports the bridge's answers (replays, distinct status codes, timeouts).
+sends it (a fresh key per tool call, reused for its own retry after a timeout,
+or the caller's key) and how it reports the bridge's answers (replays,
+distinct status codes, timeouts).
 """
 
 import base64
@@ -12,7 +13,7 @@ import pytest
 import requests
 
 import whatsapp
-from lib.idempotency import IDEMPOTENCY_BUCKET_SECONDS, auto_idempotency_key
+from lib.idempotency import auto_idempotency_key
 
 
 class FakeResponse:
@@ -32,8 +33,10 @@ def bridge(monkeypatch):
     state: dict[str, Any] = {"calls": [], "reply": None}
 
     def fake_post(url, json=None, headers=None, timeout=None):
-        state["calls"].append({"url": url, "json": json, "headers": headers or {}})
+        state["calls"].append({"url": url, "json": json, "headers": headers or {}, "timeout": timeout})
         reply = state["reply"]
+        if isinstance(reply, list):  # a sequence of replies, one per call
+            reply = reply.pop(0)
         if isinstance(reply, Exception):
             raise reply
         if callable(reply):
@@ -41,42 +44,32 @@ def bridge(monkeypatch):
         return reply or FakeResponse(200, {"success": True, "message_id": "MSG1", "recipient": json.get("recipient")})
 
     monkeypatch.setattr(whatsapp.requests, "post", fake_post)
+    monkeypatch.setattr(whatsapp.time, "sleep", lambda _s: None)
     return state
 
 
-def test_auto_key_is_stable_within_bucket_and_changes_across():
-    t = 1_800_000_000 - (1_800_000_000 % IDEMPOTENCY_BUCKET_SECONDS)
-    a = auto_idempotency_key("send_message", "123", "hi", None, now=t + 1)
-    b = auto_idempotency_key("send_message", "123", "hi", None, now=t + IDEMPOTENCY_BUCKET_SECONDS - 1)
-    c = auto_idempotency_key("send_message", "123", "hi", None, now=t + IDEMPOTENCY_BUCKET_SECONDS)
-    assert a == b
-    assert a != c
+def test_auto_keys_are_fresh_per_call():
+    a, b = auto_idempotency_key("send_message"), auto_idempotency_key("send_message")
+    assert a != b
+    assert a.startswith("mcp-send_message-")
 
 
-@pytest.mark.parametrize(
-    "other",
-    [
-        ("send_message", "123", "hi!", None),  # different text
-        ("send_message", "456", "hi", None),  # different recipient
-        ("send_message", "123", "hi", "QUOTED"),  # replying to something
-        ("create_poll", "123", "hi", None),  # different tool
-        ("send_message", "123h", "i", None),  # boundary shift must not collide
-    ],
-)
-def test_auto_key_differs_for_different_messages(other):
-    now = 1_800_000_000
-    assert auto_idempotency_key("send_message", "123", "hi", None, now=now) != auto_idempotency_key(*other, now=now)
-
-
-def test_identical_calls_share_a_key_distinct_calls_do_not(bridge):
-    whatsapp.send_message("123", "hello")
-    whatsapp.send_message("123", "hello")
-    whatsapp.send_message("123", "hello again")
+def test_repeating_the_same_text_on_purpose_sends_twice(bridge):
+    """A derived key used to swallow a deliberate second "ok" for 10 minutes."""
+    whatsapp.send_message("123", "ok")
+    whatsapp.send_message("123", "ok")
     keys = [c["json"]["idempotency_key"] for c in bridge["calls"]]
-    assert keys[0] == keys[1]
-    assert keys[2] != keys[0]
+    assert len(keys) == 2 and keys[0] != keys[1]
     # Sent both ways; the bridge accepts either.
     assert bridge["calls"][0]["headers"]["Idempotency-Key"] == keys[0]
+
+
+def test_timeout_is_retried_once_with_the_same_key(bridge):
+    bridge["reply"] = [requests.Timeout("read timed out"), None]
+    result = whatsapp.send_message("123", "hello")
+    assert result["success"] is True
+    keys = [c["json"]["idempotency_key"] for c in bridge["calls"]]
+    assert len(keys) == 2 and keys[0] == keys[1]
 
 
 def test_explicit_key_is_passed_through(bridge):
@@ -134,25 +127,22 @@ def test_bridge_errors_are_structured(bridge, status, body, code, retryable):
 
 
 def test_client_timeout_says_retry_is_safe(bridge):
-    bridge["reply"] = requests.Timeout("read timed out")
+    bridge["reply"] = [requests.Timeout("read timed out"), requests.ConnectionError("reset")]
     result = whatsapp.send_message("123", "hello")
+    assert len(bridge["calls"]) == 2  # one automatic retry, then give up
     assert result["success"] is False
     assert result["retryable"] is True
     assert "will not send it twice" in result["error"]
     assert result["idempotency_key"].startswith("mcp-send_message-")
+    assert "idempotency_key" in result["hint"]
 
 
-def test_send_file_key_follows_content_not_temp_path(bridge):
+def test_send_file_gets_the_longer_media_timeout(bridge):
     png = base64.b64encode(b"\x89PNG fake bytes").decode()
     whatsapp.send_file("123", file_content_base64=png, filename="a.png")
-    whatsapp.send_file("123", file_content_base64=png, filename="a.png")
-    other = base64.b64encode(b"\x89PNG other bytes").decode()
-    whatsapp.send_file("123", file_content_base64=other, filename="a.png")
-    calls = bridge["calls"]
-    # Staged under different temp dirs, yet the same logical file.
-    assert calls[0]["json"]["media_path"] != calls[1]["json"]["media_path"]
-    assert calls[0]["json"]["idempotency_key"] == calls[1]["json"]["idempotency_key"]
-    assert calls[2]["json"]["idempotency_key"] != calls[0]["json"]["idempotency_key"]
+    whatsapp.send_message("123", "text")
+    assert bridge["calls"][0]["timeout"] == whatsapp.MEDIA_SEND_TIMEOUT
+    assert bridge["calls"][1]["timeout"] == 30
 
 
 def test_create_poll_sends_key_and_surfaces_replay(bridge):

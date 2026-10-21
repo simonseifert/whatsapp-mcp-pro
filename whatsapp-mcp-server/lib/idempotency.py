@@ -1,60 +1,42 @@
 """Idempotency keys for message-creating bridge calls.
 
-An agent that sees a slow or failed send tends to call the tool again. Before
-idempotency keys, the bridge could not tell a retry from a new message, so a
-send that had actually gone out was delivered twice. Every send now carries a
-key: the caller's, or one derived here from (tool, recipient, content, quoted
-id) plus a 10-minute time bucket. An identical call repeated inside the same
-window maps to the same key, and the bridge replays the first result instead of
-sending again. To deliberately send the same thing twice, pass a fresh key.
+Every send carries a key so a retry can never deliver a message twice: the
+bridge records each key's outcome and replays it for a repeat instead of
+sending again.
 
-The bucket is a fixed window, not a sliding one: two identical calls that
-straddle a bucket boundary get different keys. That is the price of a key that
-needs no state on this side; it still catches the common case of a retry
-seconds after a timeout.
+Keys are random per tool call unless the caller passes one. An earlier version
+derived them from (tool, recipient, content) plus a 10-minute bucket, which
+also swallowed deliberate repeats: a second "ok" to the same chat came back
+deduplicated and was never sent. Now the retry that matters, a request that
+timed out or lost its connection, is done here with the same key
+(_send_request), and an agent that wants to retry a whole tool call safely
+passes the idempotency_key it got back from the first attempt.
 """
 
 from __future__ import annotations
 
 import hashlib
-import time
+import uuid
 from typing import Any
-
-IDEMPOTENCY_BUCKET_SECONDS = 600
 
 # HTTP statuses where repeating the identical call is pointless or harmful.
 _NOT_RETRYABLE = {400, 403, 409, 422}
 
 
-def auto_idempotency_key(tool: str, recipient: str, *parts: str | bytes | None, now: float | None = None) -> str:
-    """Derive a deterministic idempotency key for a send.
+def auto_idempotency_key(tool: str) -> str:
+    """A fresh random key for one tool call, e.g. ``mcp-send_message-<32 hex>``."""
+    return f"mcp-{tool}-{uuid.uuid4().hex}"
 
-    Args:
-        tool: Tool name, so a message and a poll with the same text differ.
-        recipient: Recipient / chat JID as given by the caller.
-        *parts: Content that identifies the message (text, a media hash,
-            quoted message id, ...). None and "" are distinct from each other
-            only by position, which is what we want.
-        now: Unix time override, for tests.
 
-    Returns:
-        A key like ``mcp-send_message-<32 hex>``.
+def resolve_idempotency_key(explicit: str | None, tool: str, *_ignored: object) -> str:
+    """Return the caller's key if given, else a fresh random one for this call.
+
+    Extra positional arguments are accepted and ignored so call sites can keep
+    passing recipient/content (they used to feed a derived key).
     """
-    bucket = int((time.time() if now is None else now) // IDEMPOTENCY_BUCKET_SECONDS)
-    h = hashlib.sha256()
-    for part in (tool, recipient, *parts, str(bucket)):
-        raw = b"\x00" if part is None else (part if isinstance(part, bytes) else part.encode())
-        # Length-prefix each part so ("ab", "c") and ("a", "bc") differ.
-        h.update(len(raw).to_bytes(8, "big"))
-        h.update(raw)
-    return f"mcp-{tool}-{h.hexdigest()[:32]}"
-
-
-def resolve_idempotency_key(explicit: str | None, tool: str, recipient: str, *parts: str | bytes | None) -> str:
-    """Return the caller's key if given, else an auto-derived one."""
     if explicit and explicit.strip():
         return explicit.strip()
-    return auto_idempotency_key(tool, recipient, *parts)
+    return auto_idempotency_key(tool)
 
 
 def file_sha256(path: str) -> str:

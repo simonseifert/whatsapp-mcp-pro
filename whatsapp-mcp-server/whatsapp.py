@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -1194,8 +1195,13 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             conn.close()
 
 
+# Just above the bridge's SEND_MEDIA_TIMEOUT_SECONDS default (150s), so the bridge
+# reports a media timeout itself instead of the client giving up first.
+MEDIA_SEND_TIMEOUT = 160
+
+
 def _send_request(
-    url: str, payload: dict[str, Any], idempotency_key: str
+    url: str, payload: dict[str, Any], idempotency_key: str, timeout: float = 30
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """POST a message-creating request to the bridge with its idempotency key.
 
@@ -1207,15 +1213,26 @@ def _send_request(
     """
     payload = {**payload, "idempotency_key": idempotency_key}
     headers = {**_get_headers(), "Idempotency-Key": idempotency_key}
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-    except requests.Timeout:
-        return None, {
-            "success": False,
-            "error": TIMEOUT_ERROR,
-            "retryable": True,
-            "idempotency_key": idempotency_key,
-        }
+    # One automatic retry on a timeout or dropped connection, with the same key:
+    # if the first attempt did go out, the bridge replays it instead of sending
+    # again. Anything the bridge actually answered is returned as is.
+    response = None
+    for attempt in range(2):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            break
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == 0:
+                time.sleep(2)
+                continue
+            return None, {
+                "success": False,
+                "error": TIMEOUT_ERROR,
+                "retryable": True,
+                "idempotency_key": idempotency_key,
+                "hint": "Retry with this idempotency_key: if the message already went out it will not be sent twice.",
+            }
+    assert response is not None
     if response.status_code == 200:
         body = response.json()
         return body, {"deduplicated": was_replayed(response, body), "idempotency_key": idempotency_key}
@@ -1236,8 +1253,8 @@ def send_message(
         message: Text content to send
         mentioned_jids: Optional list of JIDs to mention (e.g. ["5521998593002@s.whatsapp.net"])
         quoted_message_id: Optional ID of a message to quote/reply to
-        idempotency_key: Dedupe key; derived from the content + a 10-minute
-            bucket when omitted (see lib/idempotency.py)
+        idempotency_key: Dedupe key; a fresh random one per call when omitted
+            (see lib/idempotency.py)
     """
     try:
         # Validate input
@@ -1366,7 +1383,7 @@ def send_file(
         key = resolve_idempotency_key(
             idempotency_key, "send_file", recipient, file_sha256(media_path), os.path.basename(media_path)
         )
-        result, meta = _send_request(url, payload, key)
+        result, meta = _send_request(url, payload, key, timeout=MEDIA_SEND_TIMEOUT)
         if result is None:
             return meta
         return {
@@ -1395,8 +1412,8 @@ def send_file(
 def send_audio_message(recipient: str, media_path: str, idempotency_key: str | None = None) -> dict[str, Any]:
     """Send an audio message via WhatsApp and return structured result with message_id.
 
-    idempotency_key is derived from the source file's bytes + a 10-minute bucket
-    when omitted (see lib/idempotency.py).
+    idempotency_key is a fresh random one per call when omitted
+    (see lib/idempotency.py).
     """
     try:
         # Validate input
@@ -1432,7 +1449,7 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
 
-        result, meta = _send_request(url, payload, key)
+        result, meta = _send_request(url, payload, key, timeout=MEDIA_SEND_TIMEOUT)
         if result is None:
             return meta
         return {
@@ -2425,7 +2442,7 @@ def create_poll(
         question: The poll question
         options: List of poll options (2-12 options)
         multi_select: If True, allows multiple selections; if False, single selection only
-        idempotency_key: Dedupe key; derived from the poll + a 10-minute bucket when omitted
+        idempotency_key: Dedupe key; a fresh random one per call when omitted
 
     Returns:
         Structured dict with success, message_id, timestamp, chat_jid, question, options
