@@ -37,9 +37,12 @@ Recommended answers in brackets.
    (bare-sender participants, bare-number recipients, :8082 reachable from the
    LAN/Docker, token sprawl, send duplicates on timeout, deploy rollback holes,
    anti-ban caps, recall memory), plus the webhook raw-JID issue and the failing
-   Security Scan CI job. [network fence and bridge-key rotation done 2026-10-22; next: MCP bearer tokens in 644 config.json files, send duplicates on timeout, anti-ban caps]
+   Security Scan CI job. [done 2026-10-22: fence, key rotation, idempotent sends, 463 handling (v0.5.0-pro). Next: MCP bearer tokens in 644 config.json files, per-recipient anti-ban caps, bare-sender participants, the sender-column normalisation, edit history + call log, chat-export import, /metrics]
 3. wa-dispatch / wa-assistant / wa-client: marked dormant/retired in the README status table (2026-10-22). Done.
 4. Multi-instance: done, see DECISIONS.md D6.
 5. Should Claude sessions get Friday's number through MCP as well (a second MCP
    instance, `whatsapp-friday`)? [no for now; friday-core already owns that number]
-
+6. Turn on OAuth (remote connector for claude.ai/ChatGPT)? It needs the MCP on a
+   public HTTPS URL (Tailscale Funnel or a reverse proxy). [not yet; only if Simon
+   wants WhatsApp from claude.ai on the web, and then with a read-only scope]
+7. Demo GIF of recall across languages for the README. [Claude stages it with a test chat when Simon OKs]

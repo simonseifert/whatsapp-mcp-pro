@@ -92,3 +92,30 @@ OTHER_BRIDGES=friday|whatsapp-bridge-friday|8083|/home/alice/.local/share/whatsa
 One `OTHER_BRIDGES=` line per extra bridge. The file is parsed, not sourced, so the
 line needs no quoting. Without it the script still deploys the main bridge, but it
 won't restart or verify Friday's.
+
+## D8 — 2026-10-22 — Group C features shipped as v0.5.0-pro (Simon: "keep going until finished")
+Phone-offline detection, persistent media-retry queue, idempotent sends with
+distinct HTTP codes, reachout-timelock (463) handling, allowlist parity for
+reactions/polls/edits/deletes, contact naming with provenance, and opt-in OAuth.
+Built by five parallel agents; the automated security review found a real issue in
+almost every batch, and each was fixed before merge. A fresh-context review against
+a copy of the live store found no blockers. Two of its should-fixes were changed
+before deploy:
+- **Duplicate-send keys:** a content-derived key would have swallowed deliberate
+  repeats (a second "ok"). Keys are now random per call, and the MCP retries a
+  timed-out request once with the same key.
+- **Media sends:** they get a 150s budget instead of 25s.
+
+Also decided:
+- **463 on a LID recipient** doesn't arm the timelock (it usually means no phone
+  mapping).
+- **The bridge ignores agent-inferred nicknames.**
+- **OAuth stays disabled live.** Turning it on requires exposing the MCP on a public
+  HTTPS URL, which is Simon's call.
+
+Deployed and verified live:
+- the new `/api/connection` fields;
+- `/api/media-requests`;
+- all four new tables;
+- a real duplicate send to the self-chat, which was deduplicated;
+- `list_unnamed_contacts` on live data.
