@@ -14,6 +14,7 @@ import (
 // group operations, and other WhatsApp features.
 type Server struct {
 	client         *whatsapp.Client
+	sender         sendBackend // message-creating sends; the client in production
 	messageStore   *database.MessageStore
 	webhookManager *webhook.Manager
 	port           int
@@ -27,6 +28,7 @@ func NewServer(client *whatsapp.Client, messageStore *database.MessageStore, web
 	}
 	return &Server{
 		client:         client,
+		sender:         client,
 		messageStore:   messageStore,
 		webhookManager: webhookManager,
 		port:           port,

@@ -16,70 +16,6 @@ import (
 	"whatsapp-bridge/internal/whatsapp"
 )
 
-// handleSendMessage handles POST /api/send for sending WhatsApp messages.
-//
-// Request body:
-//   - recipient: WhatsApp JID (required, e.g., "1234567890@s.whatsapp.net")
-//   - message: Text content (required if media_path not provided)
-//   - media_path: Path to media file (optional, for images/videos/documents)
-//
-// Response:
-//   - success: boolean
-//   - message_id: string (WhatsApp message ID on success)
-//   - timestamp: int64 (Unix timestamp)
-//   - recipient: string (echo of recipient JID)
-//   - error: string (on failure)
-func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	// Only allow POST requests
-	if r.Method != http.MethodPost {
-		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Parse the request body
-	var req types.SendMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		SendJSONError(w, "Invalid request format", http.StatusBadRequest)
-		return
-	}
-
-	// Validate request
-	if req.Recipient == "" {
-		SendJSONError(w, "Recipient is required", http.StatusBadRequest)
-		return
-	}
-
-	if !recipientAllowed(req.Recipient) {
-		SendJSONError(w, "Recipient not in SEND_ALLOWED_JIDS allowlist", http.StatusForbidden)
-		return
-	}
-
-	if req.Message == "" && req.MediaPath == "" {
-		SendJSONError(w, "Message or media path is required", http.StatusBadRequest)
-		return
-	}
-
-	// Presence is handled centrally by the client's presence manager.
-	result := s.client.SendMessage(s.messageStore, req.Recipient, req.Message, req.MediaPath, req.QuotedMessageID, req.MentionedJIDs)
-
-	// Set response headers
-	w.Header().Set("Content-Type", "application/json")
-
-	// Set appropriate status code
-	if !result.Success {
-		w.WriteHeader(http.StatusInternalServerError)
-	}
-
-	// Send response with message_id, timestamp, recipient
-	_ = json.NewEncoder(w).Encode(types.SendMessageResponse{
-		Success:   result.Success,
-		Message:   result.Error,
-		MessageID: result.MessageID,
-		Timestamp: result.Timestamp,
-		Recipient: req.Recipient,
-	})
-}
-
 // handleWebhooks handles GET/POST /api/webhooks for webhook management.
 //
 // GET: List all webhook configurations (secrets are masked)
@@ -348,44 +284,6 @@ func (s *Server) handleWebhookLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleReaction handles POST /api/reaction for sending emoji reactions.
-//
-// Request body:
-//   - chat_jid: Chat containing the message (required)
-//   - message_id: Target message ID (required)
-//   - emoji: Reaction emoji (empty string to remove reaction)
-//
-// Response: { success: bool, message: string }
-func (s *Server) handleReaction(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	var req types.ReactionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		SendJSONError(w, "Invalid request format", http.StatusBadRequest)
-		return
-	}
-
-	if req.ChatJID == "" || req.MessageID == "" {
-		SendJSONError(w, "chat_jid and message_id are required", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.client.SendReaction(s.messageStore, req.ChatJID, req.MessageID, req.Emoji); err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to send reaction: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "Reaction sent",
-	})
-}
-
 // handleEditMessage handles POST /api/edit for editing sent messages.
 //
 // Request body:
@@ -413,8 +311,12 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if refuseUnlistedRecipient(w, req.ChatJID) {
+		return
+	}
+
 	if err := s.client.EditMessage(req.ChatJID, req.MessageID, req.NewContent); err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to edit message: %v", err), http.StatusInternalServerError)
+		SendJSONError(w, fmt.Sprintf("Failed to edit message: %v", err), httpStatusForSendError(err))
 		return
 	}
 
@@ -451,8 +353,12 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if refuseUnlistedRecipient(w, req.ChatJID) {
+		return
+	}
+
 	if err := s.client.DeleteMessage(req.ChatJID, req.MessageID, req.SenderJID); err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to delete message: %v", err), http.StatusInternalServerError)
+		SendJSONError(w, fmt.Sprintf("Failed to delete message: %v", err), httpStatusForSendError(err))
 		return
 	}
 
@@ -894,55 +800,6 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 // Phase 3: Polls
-
-// handleCreatePoll handles POST /api/poll for creating WhatsApp polls.
-//
-// Request body:
-//   - chat_jid: Target chat (required)
-//   - question: Poll question (required)
-//   - options: Array of 2-12 answer options (required)
-//   - multi_select: Allow multiple selections (default false)
-//
-// Response: { success, message_id, timestamp, chat_jid, question, options }
-func (s *Server) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	var req types.CreatePollRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		SendJSONError(w, "Invalid request format", http.StatusBadRequest)
-		return
-	}
-
-	if req.ChatJID == "" || req.Question == "" || len(req.Options) < 2 {
-		SendJSONError(w, "chat_jid, question, and at least 2 options are required", http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Options) > 12 {
-		SendJSONError(w, "Maximum 12 options allowed", http.StatusBadRequest)
-		return
-	}
-
-	result, err := s.client.CreatePoll(s.messageStore, req.ChatJID, req.Question, req.Options, req.MultiSelect)
-	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to create poll: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":    result.Success,
-		"message_id": result.MessageID,
-		"timestamp":  result.Timestamp,
-		"chat_jid":   req.ChatJID,
-		"question":   req.Question,
-		"options":    req.Options,
-	})
-}
 
 // handleGetPollResults handles GET /api/poll/results for reading a poll's current tally.
 //
@@ -1879,6 +1736,10 @@ func (s *Server) handleConnectionStatus(w http.ResponseWriter, r *http.Request) 
 		resp.DisconnectedFor = time.Since(discAt).Round(time.Second).String()
 	}
 	resp.PhoneLastSeen, resp.PhoneOfflineDays = phoneStatusFields(s.client.PhoneStatus())
+	if until := s.client.ReachoutTimelockUntil(); !until.IsZero() {
+		formatted := until.Format(time.RFC3339)
+		resp.ReachoutTimelockUntil = &formatted
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

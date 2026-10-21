@@ -36,6 +36,13 @@ except ImportError:
 
 import audio
 from lib.bridge import _get_headers
+from lib.idempotency import (
+    TIMEOUT_ERROR,
+    bridge_error,
+    file_sha256,
+    resolve_idempotency_key,
+    was_replayed,
+)
 from lib.identity import Identity, directory_available, get_identity, list_identities
 from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
@@ -1160,11 +1167,40 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
             conn.close()
 
 
+def _send_request(
+    url: str, payload: dict[str, Any], idempotency_key: str
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """POST a message-creating request to the bridge with its idempotency key.
+
+    The key goes in both the body and the Idempotency-Key header (the bridge
+    accepts either). Returns ``(body, meta)``: on HTTP 200, the parsed JSON body
+    and ``{"deduplicated", "idempotency_key"}``; otherwise ``None`` and a
+    complete structured error result. A client-side timeout is reported as
+    retryable, because retrying with the same key cannot send twice.
+    """
+    payload = {**payload, "idempotency_key": idempotency_key}
+    headers = {**_get_headers(), "Idempotency-Key": idempotency_key}
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+    except requests.Timeout:
+        return None, {
+            "success": False,
+            "error": TIMEOUT_ERROR,
+            "retryable": True,
+            "idempotency_key": idempotency_key,
+        }
+    if response.status_code == 200:
+        body = response.json()
+        return body, {"deduplicated": was_replayed(response, body), "idempotency_key": idempotency_key}
+    return None, {**bridge_error(response), "idempotency_key": idempotency_key}
+
+
 def send_message(
     recipient: str,
     message: str,
     mentioned_jids: list[str] | None = None,
     quoted_message_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Send a WhatsApp message and return structured result with message_id.
 
@@ -1173,6 +1209,8 @@ def send_message(
         message: Text content to send
         mentioned_jids: Optional list of JIDs to mention (e.g. ["5521998593002@s.whatsapp.net"])
         quoted_message_id: Optional ID of a message to quote/reply to
+        idempotency_key: Dedupe key; derived from the content + a 10-minute
+            bucket when omitted (see lib/idempotency.py)
     """
     try:
         # Validate input
@@ -1189,25 +1227,30 @@ def send_message(
         if quoted_message_id:
             payload["quoted_message_id"] = quoted_message_id
 
-        response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
-
-        # Check if the request was successful
-        if response.status_code == 200:
-            result = response.json()
-            return {
-                "success": result.get("success", False),
-                "message_id": result.get("message_id"),
-                "timestamp": result.get("timestamp"),
-                "recipient": result.get("recipient"),
-                "error": result.get("message") if not result.get("success") else None,
-            }
-        else:
-            return {"success": False, "error": f"HTTP {response.status_code} - {response.text}"}
+        key = resolve_idempotency_key(
+            idempotency_key,
+            "send_message",
+            recipient,
+            message,
+            quoted_message_id,
+            ",".join(mentioned_jids or []),
+        )
+        result, meta = _send_request(url, payload, key)
+        if result is None:
+            return meta
+        return {
+            "success": result.get("success", False),
+            "message_id": result.get("message_id"),
+            "timestamp": result.get("timestamp"),
+            "recipient": result.get("recipient"),
+            "error": result.get("message") if not result.get("success") else None,
+            **meta,
+        }
 
     except requests.RequestException as e:
         return {"success": False, "error": f"Request error: {str(e)}"}
     except json.JSONDecodeError:
-        return {"success": False, "error": f"Error parsing response: {response.text}"}
+        return {"success": False, "error": "Error parsing bridge response"}
     except Exception as e:
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
@@ -1217,6 +1260,7 @@ def send_file(
     media_path: str | None = None,
     file_content_base64: str | None = None,
     filename: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Send a file via WhatsApp and return structured result with message_id.
 
@@ -1290,25 +1334,27 @@ def send_file(
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
 
-        response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
-
-        # Check if the request was successful
-        if response.status_code == 200:
-            result = response.json()
-            return {
-                "success": result.get("success", False),
-                "message_id": result.get("message_id"),
-                "timestamp": result.get("timestamp"),
-                "recipient": result.get("recipient"),
-                "error": result.get("message") if not result.get("success") else None,
-            }
-        else:
-            return {"success": False, "error": f"HTTP {response.status_code} - {response.text}"}
+        # Hash the bytes, not the path: a base64 upload is staged under a fresh
+        # temp dir each call, so the path differs between identical retries.
+        key = resolve_idempotency_key(
+            idempotency_key, "send_file", recipient, file_sha256(media_path), os.path.basename(media_path)
+        )
+        result, meta = _send_request(url, payload, key)
+        if result is None:
+            return meta
+        return {
+            "success": result.get("success", False),
+            "message_id": result.get("message_id"),
+            "timestamp": result.get("timestamp"),
+            "recipient": result.get("recipient"),
+            "error": result.get("message") if not result.get("success") else None,
+            **meta,
+        }
 
     except requests.RequestException as e:
         return {"success": False, "error": f"Request error: {str(e)}"}
     except json.JSONDecodeError:
-        return {"success": False, "error": f"Error parsing response: {response.text}"}
+        return {"success": False, "error": "Error parsing bridge response"}
     except Exception as e:
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
     finally:
@@ -1319,8 +1365,12 @@ def send_file(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
-    """Send an audio message via WhatsApp and return structured result with message_id."""
+def send_audio_message(recipient: str, media_path: str, idempotency_key: str | None = None) -> dict[str, Any]:
+    """Send an audio message via WhatsApp and return structured result with message_id.
+
+    idempotency_key is derived from the source file's bytes + a 10-minute bucket
+    when omitted (see lib/idempotency.py).
+    """
     try:
         # Validate input
         if not recipient:
@@ -1340,6 +1390,9 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
+        # Keyed on the source bytes: conversion writes a new temp file each call.
+        key = resolve_idempotency_key(idempotency_key, "send_audio_message", recipient, file_sha256(media_path))
+
         if not media_path.endswith(".ogg"):
             try:
                 media_path = audio.convert_to_opus_ogg_temp(media_path)
@@ -1352,25 +1405,22 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
 
-        response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
-
-        # Check if the request was successful
-        if response.status_code == 200:
-            result = response.json()
-            return {
-                "success": result.get("success", False),
-                "message_id": result.get("message_id"),
-                "timestamp": result.get("timestamp"),
-                "recipient": result.get("recipient"),
-                "error": result.get("message") if not result.get("success") else None,
-            }
-        else:
-            return {"success": False, "error": f"HTTP {response.status_code} - {response.text}"}
+        result, meta = _send_request(url, payload, key)
+        if result is None:
+            return meta
+        return {
+            "success": result.get("success", False),
+            "message_id": result.get("message_id"),
+            "timestamp": result.get("timestamp"),
+            "recipient": result.get("recipient"),
+            "error": result.get("message") if not result.get("success") else None,
+            **meta,
+        }
 
     except requests.RequestException as e:
         return {"success": False, "error": f"Request error: {str(e)}"}
     except json.JSONDecodeError:
-        return {"success": False, "error": f"Error parsing response: {response.text}"}
+        return {"success": False, "error": "Error parsing bridge response"}
     except Exception as e:
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
@@ -1772,13 +1822,18 @@ def list_contact_nicknames() -> list[dict[str, Any]]:
 # Phase 1 Features: Reactions, Edit, Delete, Group Info, Mark Read
 
 
-def send_reaction(chat_jid: str, message_id: str, emoji: str) -> dict[str, Any]:
+def send_reaction(chat_jid: str, message_id: str, emoji: str, idempotency_key: str | None = None) -> dict[str, Any]:
     """Send an emoji reaction to a message.
+
+    Unlike messages, no key is derived automatically: setting the same reaction
+    twice is already harmless, while an auto key would turn "react, remove,
+    react again" within 10 minutes into a replay that leaves it removed.
 
     Args:
         chat_jid: The JID of the chat containing the message
         message_id: The ID of the message to react to
         emoji: The emoji to react with (empty string to remove reaction)
+        idempotency_key: Optional dedupe key, passed through to the bridge
 
     Returns:
         Structured dict with success, chat_jid, message_id, emoji, error
@@ -1787,25 +1842,25 @@ def send_reaction(chat_jid: str, message_id: str, emoji: str) -> dict[str, Any]:
         url = f"{WHATSAPP_API_BASE_URL}/reaction"
         payload = {"chat_jid": chat_jid, "message_id": message_id, "emoji": emoji}
 
-        response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
-
-        if response.status_code == 200:
-            result = response.json()
-            return {
-                "success": result.get("success", False),
-                "chat_jid": chat_jid,
-                "message_id": message_id,
-                "emoji": emoji,
-                "action": "remove" if emoji == "" else "add",
-                "error": result.get("message") if not result.get("success") else None,
-            }
+        if idempotency_key and idempotency_key.strip():
+            result, meta = _send_request(url, payload, idempotency_key.strip())
+            if result is None:
+                return {"chat_jid": chat_jid, "message_id": message_id, **meta}
         else:
-            return {
-                "success": False,
-                "chat_jid": chat_jid,
-                "message_id": message_id,
-                "error": f"HTTP {response.status_code} - {response.text}",
-            }
+            response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
+            if response.status_code != 200:
+                return {"chat_jid": chat_jid, "message_id": message_id, **bridge_error(response)}
+            result, meta = response.json(), {"deduplicated": False}
+
+        return {
+            "success": result.get("success", False),
+            "chat_jid": chat_jid,
+            "message_id": message_id,
+            "emoji": emoji,
+            "action": "remove" if emoji == "" else "add",
+            "error": result.get("message") if not result.get("success") else None,
+            **meta,
+        }
 
     except requests.RequestException as e:
         return {"success": False, "chat_jid": chat_jid, "message_id": message_id, "error": f"Request error: {str(e)}"}
@@ -1814,7 +1869,7 @@ def send_reaction(chat_jid: str, message_id: str, emoji: str) -> dict[str, Any]:
             "success": False,
             "chat_jid": chat_jid,
             "message_id": message_id,
-            "error": f"Error parsing response: {response.text}",
+            "error": "Error parsing bridge response",
         }
     except Exception as e:
         return {
@@ -2310,7 +2365,13 @@ def update_group(group_jid: str, name: str | None = None, topic: str | None = No
 # Phase 3: Polls
 
 
-def create_poll(chat_jid: str, question: str, options: list[str], multi_select: bool = False) -> dict[str, Any]:
+def create_poll(
+    chat_jid: str,
+    question: str,
+    options: list[str],
+    multi_select: bool = False,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
     """Create and send a poll to a chat.
 
     Args:
@@ -2318,6 +2379,7 @@ def create_poll(chat_jid: str, question: str, options: list[str], multi_select: 
         question: The poll question
         options: List of poll options (2-12 options)
         multi_select: If True, allows multiple selections; if False, single selection only
+        idempotency_key: Dedupe key; derived from the poll + a 10-minute bucket when omitted
 
     Returns:
         Structured dict with success, message_id, timestamp, chat_jid, question, options
@@ -2336,22 +2398,23 @@ def create_poll(chat_jid: str, question: str, options: list[str], multi_select: 
             "multi_select": multi_select,
         }
 
-        response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
-
-        if response.status_code == 200:
-            result = response.json()
-            return {
-                "success": result.get("success", False),
-                "message_id": result.get("message_id"),
-                "timestamp": result.get("timestamp"),
-                "chat_jid": chat_jid,
-                "question": question,
-                "options": options,
-                "multi_select": multi_select,
-                "error": result.get("error") if not result.get("success") else None,
-            }
-        else:
-            return {"success": False, "chat_jid": chat_jid, "error": f"HTTP {response.status_code} - {response.text}"}
+        key = resolve_idempotency_key(
+            idempotency_key, "create_poll", chat_jid, question, json.dumps(options), str(multi_select)
+        )
+        result, meta = _send_request(url, payload, key)
+        if result is None:
+            return {"chat_jid": chat_jid, **meta}
+        return {
+            "success": result.get("success", False),
+            "message_id": result.get("message_id"),
+            "timestamp": result.get("timestamp"),
+            "chat_jid": chat_jid,
+            "question": question,
+            "options": options,
+            "multi_select": multi_select,
+            "error": result.get("error") if not result.get("success") else None,
+            **meta,
+        }
 
     except requests.RequestException as e:
         return {"success": False, "chat_jid": chat_jid, "error": f"Request error: {str(e)}"}

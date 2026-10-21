@@ -341,8 +341,20 @@ func IsRecipientAllowed(allowlist []string, recipient types.JID) bool {
 }
 
 func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentionedJIDs ...[]string) bridgeTypes.SendResult {
+	opts := SendOptions{Recipient: recipient, Message: message, MediaPath: mediaPath, QuotedMessageID: quotedMessageID}
+	if len(mentionedJIDs) > 0 {
+		opts.MentionedJIDs = mentionedJIDs[0]
+	}
+	return c.SendMessageWithOptions(context.Background(), messageStore, opts)
+}
+
+// SendMessageWithOptions sends a text or media message. ctx bounds the whole
+// send (upload, antiban wait, server ack), so a caller that gives up cancels
+// it. On failure SendResult.Err is a *SendError carrying the failure class.
+func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *database.MessageStore, opts SendOptions) bridgeTypes.SendResult {
+	recipient, message, mediaPath, quotedMessageID := opts.Recipient, opts.Message, opts.MediaPath, opts.QuotedMessageID
 	if !c.IsConnected() {
-		return bridgeTypes.SendResult{Success: false, Error: "Not connected to WhatsApp"}
+		return failed(newSendError(SendErrNotConnected, "Not connected to WhatsApp"), "")
 	}
 
 	c.GoOnlineBriefly()
@@ -358,7 +370,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 		// Parse the JID string
 		recipientJID, err = types.ParseJID(recipient)
 		if err != nil {
-			return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Error parsing JID: %v", err)}
+			return failed(newSendError(SendErrInvalid, "Error parsing JID: %w", err), "")
 		}
 		// WhatsApp now hands out LID addresses ("<id>@lid") for one-to-one chats, and that is what
 		// the chat list stores. Sending straight to a LID is refused by the server with error 463,
@@ -384,10 +396,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 	// Safety gate: Check WHATSAPP_ALLOWLIST_JIDS if configured
 	if c.cfg != nil && len(c.cfg.AllowlistJIDs) > 0 {
 		if !IsRecipientAllowed(c.cfg.AllowlistJIDs, recipientJID) {
-			return bridgeTypes.SendResult{
-				Success: false,
-				Error:   fmt.Sprintf("recipient %s is blocked by WHATSAPP_ALLOWLIST_JIDS safety gate", recipient),
-			}
+			return failed(newSendError(SendErrForbidden, "recipient %s is blocked by WHATSAPP_ALLOWLIST_JIDS safety gate", recipient), "")
 		}
 	}
 
@@ -397,21 +406,21 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 	if mediaPath != "" {
 		// Validate media path (prevent path traversal)
 		if err := validateMediaPath(mediaPath); err != nil {
-			return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Invalid media path: %v", err)}
+			return failed(newSendError(SendErrForbidden, "Invalid media path: %w", err), "")
 		}
 
 		// Read media file
 		mediaData, err := os.ReadFile(mediaPath)
 		if err != nil {
-			return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Error reading media file: %v", err)}
+			return failed(newSendError(SendErrInvalid, "Error reading media file: %w", err), "")
 		}
 
 		mediaType, mimeType := mediaTypeAndMimeType(mediaPath)
 
 		// Upload media to WhatsApp servers
-		resp, err := c.Upload(context.Background(), mediaData, mediaType)
+		resp, err := c.Upload(ctx, mediaData, mediaType)
 		if err != nil {
-			return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Error uploading media: %v", err)}
+			return failed(classify(err, "Error uploading media: %w"), "")
 		}
 
 		// Create the appropriate message type based on media type
@@ -439,7 +448,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 					seconds = analyzedSeconds
 					waveform = analyzedWaveform
 				} else {
-					return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Failed to analyze Ogg Opus file: %v", err)}
+					return failed(newSendError(SendErrInvalid, "Failed to analyze Ogg Opus file: %w", err), "")
 				}
 			}
 
@@ -484,9 +493,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 	} else {
 		// Collect mentions: explicit + auto-detected from @number patterns
 		var mentions []string
-		if len(mentionedJIDs) > 0 {
-			mentions = append(mentions, mentionedJIDs[0]...)
-		}
+		mentions = append(mentions, opts.MentionedJIDs...)
 		mentions = append(mentions, extractMentionsFromText(message)...)
 
 		if len(mentions) > 0 {
@@ -550,21 +557,28 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 		}
 	}
 
+	// Reachout timelock: while WhatsApp is refusing new conversations (error
+	// 463), only chats with history may be messaged. Checked before the typing
+	// indicator so a refused send leaves no trace on the recipient's side.
+	if se := c.checkReachoutGate(messageStore, recipientJID, recipient); se != nil {
+		return failed(se, "")
+	}
+
 	// Antiban: simulate typing and enforce rate limit / warm-up before sending
 	if c.antiban.Enabled() {
 		_ = c.SendTypingIndicator(recipientJID.String(), "typing")
 	}
-	if err := c.antiban.BeforeSend(context.Background(), antiban.Text, len(message)); err != nil {
+	if err := c.antiban.BeforeSend(ctx, antiban.Text, len(message)); err != nil {
 		_ = c.SendTypingIndicator(recipientJID.String(), "paused")
-		return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("antiban blocked send: %v", err)}
+		return failed(classify(err, "antiban blocked send: %w"), "")
 	}
 
 	// Send message
-	sendResp, err := c.Client.SendMessage(context.Background(), recipientJID, msg)
+	msgID := c.prepareMessageID(opts.MessageID, opts.BeforeDispatch)
+	sendResp, err := c.Client.SendMessage(ctx, recipientJID, msg, whatsmeow.SendRequestExtra{ID: msgID})
 	if err != nil {
 		_ = c.SendTypingIndicator(recipientJID.String(), "paused")
-		c.antiban.AfterSendFailed(antiban.Text, err)
-		return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Error sending message: %v", err)}
+		return failed(c.sendFailure(recipientJID, antiban.Text, err, "Error sending message: %w"), string(msgID))
 	}
 	_ = c.SendTypingIndicator(recipientJID.String(), "paused")
 	c.antiban.AfterSend(antiban.Text)
@@ -605,15 +619,29 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 // It looks up the original message sender from the store so that
 // BuildReaction constructs the correct MessageKey (FromMe flag).
 func (c *Client) SendReaction(messageStore *database.MessageStore, chatJID, messageID, emoji string) error {
+	res := c.SendReactionWithOptions(context.Background(), messageStore, ReactionOptions{ChatJID: chatJID, TargetMessageID: messageID, Emoji: emoji})
+	if !res.Success {
+		return res.Err
+	}
+	return nil
+}
+
+// SendReactionWithOptions is SendReaction bounded by ctx, returning a
+// SendResult (MessageID is the reaction's own ID) with a typed Err on failure.
+func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *database.MessageStore, opts ReactionOptions) bridgeTypes.SendResult {
+	chatJID, messageID, emoji := opts.ChatJID, opts.TargetMessageID, opts.Emoji
 	if !c.IsConnected() {
-		return fmt.Errorf("not connected to WhatsApp")
+		return failed(newSendError(SendErrNotConnected, "not connected to WhatsApp"), "")
 	}
 
 	c.GoOnlineBriefly()
 
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
-		return fmt.Errorf("invalid chat JID: %v", err)
+		return failed(newSendError(SendErrInvalid, "invalid chat JID: %w", err), "")
+	}
+	if se := c.checkAllowlist(chat); se != nil {
+		return failed(se, "")
 	}
 
 	msgID := types.MessageID(messageID)
@@ -632,17 +660,17 @@ func (c *Client) SendReaction(messageStore *database.MessageStore, chatJID, mess
 
 	msg := c.Client.BuildReaction(chat, senderJID, msgID, emoji)
 
-	if err := c.antiban.BeforeSend(context.Background(), antiban.Reaction, 0); err != nil {
-		return fmt.Errorf("antiban blocked reaction: %v", err)
+	if err := c.antiban.BeforeSend(ctx, antiban.Reaction, 0); err != nil {
+		return failed(classify(err, "antiban blocked reaction: %w"), "")
 	}
-	_, err = c.Client.SendMessage(context.Background(), chat, msg)
+	reactionID := c.prepareMessageID(opts.MessageID, opts.BeforeDispatch)
+	resp, err := c.Client.SendMessage(ctx, chat, msg, whatsmeow.SendRequestExtra{ID: reactionID})
 	if err != nil {
-		c.antiban.AfterSendFailed(antiban.Reaction, err)
-		return fmt.Errorf("failed to send reaction: %v", err)
+		return failed(c.sendFailure(chat, antiban.Reaction, err, "failed to send reaction: %w"), string(reactionID))
 	}
 	c.antiban.AfterSend(antiban.Reaction)
 
-	return nil
+	return bridgeTypes.SendResult{Success: true, MessageID: string(resp.ID), Timestamp: resp.Timestamp}
 }
 
 // EditMessage edits a previously sent message
@@ -654,6 +682,9 @@ func (c *Client) EditMessage(chatJID, messageID, newContent string) error {
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %v", err)
+	}
+	if se := c.checkAllowlist(chat); se != nil {
+		return se
 	}
 
 	c.GoOnlineBriefly()
@@ -692,6 +723,9 @@ func (c *Client) DeleteMessage(chatJID, messageID, senderJID string) error {
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %v", err)
+	}
+	if se := c.checkAllowlist(chat); se != nil {
+		return se
 	}
 
 	c.GoOnlineBriefly()
@@ -942,13 +976,27 @@ func (c *Client) SetGroupTopic(groupJID string, topic string) error {
 // that poll's options are ever captured; skipping it means every future vote on this poll decrypts
 // successfully but can't be matched to an option name.
 func (c *Client) CreatePoll(messageStore *database.MessageStore, chatJID string, question string, options []string, multiSelect bool) (bridgeTypes.SendResult, error) {
+	res := c.CreatePollWithOptions(context.Background(), messageStore, PollOptions{ChatJID: chatJID, Question: question, Options: options, MultiSelect: multiSelect})
+	return res, res.Err
+}
+
+// CreatePollWithOptions is CreatePoll bounded by ctx, with a typed Err on failure.
+func (c *Client) CreatePollWithOptions(ctx context.Context, messageStore *database.MessageStore, opts PollOptions) bridgeTypes.SendResult {
+	chatJID, question, options, multiSelect := opts.ChatJID, opts.Question, opts.Options, opts.MultiSelect
 	if !c.IsConnected() {
-		return bridgeTypes.SendResult{Success: false, Error: "not connected to WhatsApp"}, fmt.Errorf("not connected to WhatsApp")
+		return failed(newSendError(SendErrNotConnected, "not connected to WhatsApp"), "")
 	}
 
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
-		return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("invalid chat JID: %v", err)}, err
+		return failed(newSendError(SendErrInvalid, "invalid chat JID: %w", err), "")
+	}
+
+	if se := c.checkAllowlist(chat); se != nil {
+		return failed(se, "")
+	}
+	if se := c.checkReachoutGate(messageStore, chat, chatJID); se != nil {
+		return failed(se, "")
 	}
 
 	c.GoOnlineBriefly()
@@ -966,17 +1014,17 @@ func (c *Client) CreatePoll(messageStore *database.MessageStore, chatJID string,
 	if c.antiban.Enabled() {
 		_ = c.SendTypingIndicator(chatJID, "typing")
 	}
-	if err := c.antiban.BeforeSend(context.Background(), antiban.Poll, len(question)); err != nil {
+	if err := c.antiban.BeforeSend(ctx, antiban.Poll, len(question)); err != nil {
 		_ = c.SendTypingIndicator(chatJID, "paused")
-		return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("antiban blocked poll: %v", err)}, err
+		return failed(classify(err, "antiban blocked poll: %w"), "")
 	}
 
 	// Send the poll
-	resp, err := c.Client.SendMessage(context.Background(), chat, pollMsg)
+	pollID := c.prepareMessageID(opts.MessageID, opts.BeforeDispatch)
+	resp, err := c.Client.SendMessage(ctx, chat, pollMsg, whatsmeow.SendRequestExtra{ID: pollID})
 	_ = c.SendTypingIndicator(chatJID, "paused")
 	if err != nil {
-		c.antiban.AfterSendFailed(antiban.Poll, err)
-		return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("failed to send poll: %v", err)}, err
+		return failed(c.sendFailure(chat, antiban.Poll, err, "failed to send poll: %w"), string(pollID))
 	}
 	c.antiban.AfterSend(antiban.Poll)
 
@@ -999,7 +1047,7 @@ func (c *Client) CreatePoll(messageStore *database.MessageStore, chatJID string,
 		Success:   true,
 		MessageID: msgID,
 		Timestamp: resp.Timestamp,
-	}, nil
+	}
 }
 
 // Phase 4: On-Demand History Request

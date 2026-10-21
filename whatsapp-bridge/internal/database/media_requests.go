@@ -49,7 +49,7 @@ type MediaRequest struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
-// createMediaRequestTable mirrors migrations/005_media_requests.sql so tests
+// createMediaRequestTable mirrors migrations/006_media_requests.sql so tests
 // and fresh stores get the table without running the SQL file by hand.
 func createMediaRequestTable(db *sql.DB) error {
 	_, err := db.Exec(`
