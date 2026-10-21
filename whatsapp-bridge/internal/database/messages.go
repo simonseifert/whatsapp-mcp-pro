@@ -235,7 +235,14 @@ func (store *MessageStore) GetContactInfo(jid string) (*types.ContactInfo, error
 	var nickname sql.NullString
 
 	// Query contact_nicknames for custom nickname
-	nicknameQuery := `SELECT nickname FROM contact_nicknames WHERE jid = ? LIMIT 1`
+	// Only user-confirmed nicknames; see GetNicknames for why agent-inferred
+	// ones are left out.
+	nicknameQuery := `SELECT nickname FROM contact_nicknames` + store.userNicknameFilter()
+	if strings.Contains(nicknameQuery, "WHERE") {
+		nicknameQuery += ` AND jid = ? LIMIT 1`
+	} else {
+		nicknameQuery += ` WHERE jid = ? LIMIT 1`
+	}
 	_ = store.db.QueryRow(nicknameQuery, jid).Scan(&nickname)
 
 	// Contact info will be populated with just JID if not found in contacts DB
