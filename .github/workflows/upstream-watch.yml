@@ -1,0 +1,214 @@
+name: Upstream Watch
+
+# Weekly check of the things this fork depends on but does not track automatically:
+#   a) go.mau.fi/whatsmeow drift (pinned pseudo-version vs tulir/whatsmeow main)
+#   b) the latest mautrix/whatsapp release (protocol-relevant notes)
+#   c) commits on FelixIsaac/whatsapp-mcp-extended main that we have not pulled
+# Keeps ONE open issue labelled "upstream-watch". Last-reported state lives in an
+# HTML comment in the issue body; a comment is only added when that state changes.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print the issue body instead of writing to GitHub'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check upstreams
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: |
+          set -euo pipefail
+
+          REPO="${REPO:-simonseifert/whatsapp-mcp-pro}"
+          DRY_RUN="${DRY_RUN:-0}"
+          GO_MOD="${GO_MOD:-whatsapp-bridge/go.mod}"
+          LABEL="upstream-watch"
+          WHATSMEOW_REPO="tulir/whatsmeow"
+          MAUTRIX_REPO="mautrix/whatsapp"
+          UPSTREAM_REF="FelixIsaac:whatsapp-mcp-extended:main"
+          UPSTREAM_REPO="FelixIsaac/whatsapp-mcp-extended"
+          MAUTRIX_FRESH_DAYS=8   # with no prior state, a release this recent counts as news
+          MAX_LIST=50            # max commit subjects listed per section
+
+          # Any failed API call fails the job; never fall through to "up to date".
+          api() {
+            local out
+            if ! out="$(gh api "$@")"; then
+              echo "::error::gh api $1 failed" >&2
+              return 1
+            fi
+            printf '%s' "$out"
+          }
+          need() {  # need <name> <value>: fail on empty/null
+            if [ -z "$2" ] || [ "$2" = "null" ]; then
+              echo "::error::could not determine $1" >&2
+              exit 1
+            fi
+          }
+
+          today="$(date -u +%Y-%m-%d)"
+          work="$(mktemp -d)"
+
+          # ---- a) whatsmeow drift ------------------------------------------------
+          wm_version="$(awk '$1 == "go.mau.fi/whatsmeow" { print $2; exit }' "$GO_MOD")"
+          need "whatsmeow version in $GO_MOD" "$wm_version"
+          wm_pinned="${wm_version##*-}"
+          if ! [[ "$wm_pinned" =~ ^[0-9a-f]{12}$ ]]; then
+            echo "::error::whatsmeow version '$wm_version' is not a pseudo-version (v0.0.0-YYYYMMDDHHMMSS-<sha12>)" >&2
+            exit 1
+          fi
+          wm_latest="$(api "repos/$WHATSMEOW_REPO/commits/main" --jq '.sha')"
+          need "latest $WHATSMEOW_REPO sha" "$wm_latest"
+          wm_behind=0
+          if [[ "$wm_latest" != "$wm_pinned"* ]]; then
+            api "repos/$WHATSMEOW_REPO/compare/$wm_pinned...main" > "$work/wm.json"
+            wm_behind="$(jq -r '.ahead_by' "$work/wm.json")"
+            need "whatsmeow ahead_by" "$wm_behind"
+          fi
+          echo "whatsmeow: pinned=$wm_pinned latest=${wm_latest:0:12} behind=$wm_behind"
+
+          # ---- b) mautrix-whatsapp latest release --------------------------------
+          api "repos/$MAUTRIX_REPO/releases/latest" > "$work/mx.json"
+          mx_tag="$(jq -r '.tag_name' "$work/mx.json")"
+          need "latest $MAUTRIX_REPO release" "$mx_tag"
+          mx_date="$(jq -r '.published_at' "$work/mx.json")"
+          mx_url="$(jq -r '.html_url' "$work/mx.json")"
+          mx_lines="$(jq -r '.body // ""' "$work/mx.json" | tr -d '\r' \
+            | grep -iE '\blid\b|username|\bban(s|ned|ning)?\b|logout|log out|logged out|linked device|protocol' || true)"
+          mx_age_days=$(( ( $(date -u +%s) - $(date -u -d "$mx_date" +%s) ) / 86400 ))
+          echo "mautrix: tag=$mx_tag date=$mx_date age_days=$mx_age_days"
+
+          # ---- c) upstream fork commits we lack ----------------------------------
+          api "repos/$REPO/compare/main...$UPSTREAM_REF" > "$work/up.json"
+          up_ahead="$(jq -r '.ahead_by' "$work/up.json")"
+          need "upstream ahead_by" "$up_ahead"
+          up_head="$(api "repos/$UPSTREAM_REPO/commits/main" --jq '.sha')"
+          need "latest $UPSTREAM_REPO sha" "$up_head"
+          echo "upstream: head=${up_head:0:12} commits_we_lack=$up_ahead"
+
+          # ---- previous state from the open tracking issue -----------------------
+          # gh issue list returns [] (not an error) when the label does not exist yet.
+          issue_json="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --json number,body --limit 1)"
+          issue_num="$(jq -r '.[0].number // empty' <<<"$issue_json")"
+          old_state="$(jq -r '.[0].body // ""' <<<"$issue_json" \
+            | grep -oE '<!-- upstream-watch-state: [^>]* -->' | head -n1 || true)"
+          state_get() { grep -oE "$1=[^ ]+" <<<"$old_state" | cut -d= -f2 || true; }
+          old_wm="$(state_get whatsmeow)"
+          old_mx="$(state_get mautrix)"
+          old_up="$(state_get upstream)"
+
+          # ---- decide what is news ------------------------------------------------
+          changes=()
+          if [ "$wm_behind" -gt 0 ] && [ "$wm_latest" != "$old_wm" ]; then
+            changes+=("whatsmeow: $wm_behind commit(s) behind main (now ${wm_latest:0:12})")
+          fi
+          if [ "$mx_tag" != "$old_mx" ]; then
+            if [ -n "$old_mx" ] || [ "$mx_age_days" -le "$MAUTRIX_FRESH_DAYS" ]; then
+              changes+=("mautrix-whatsapp: new release $mx_tag")
+            fi
+          fi
+          if [ "$up_ahead" -gt 0 ] && [ "$up_head" != "$old_up" ]; then
+            changes+=("upstream fork: $up_ahead commit(s) not in our main (now ${up_head:0:12})")
+          fi
+
+          if [ "${#changes[@]}" -eq 0 ]; then
+            echo "No new upstream changes since last report (issue: ${issue_num:-none}). Nothing to do."
+            exit 0
+          fi
+
+          # ---- issue body -----------------------------------------------------------
+          body="$work/body.md"
+          {
+            echo "<!-- upstream-watch-state: whatsmeow=$wm_latest mautrix=$mx_tag upstream=$up_head -->"
+            echo "_Last checked: ${today} by the [upstream-watch workflow](https://github.com/$REPO/actions/workflows/upstream-watch.yml)._"
+            echo
+            echo "## whatsmeow (\`go.mau.fi/whatsmeow\`)"
+            echo
+            echo "Pinned: \`$wm_version\` · main: [\`${wm_latest:0:12}\`](https://github.com/$WHATSMEOW_REPO/commit/$wm_latest)"
+            echo
+            if [ "$wm_behind" -gt 0 ]; then
+              echo "**$wm_behind commit(s) behind** ([compare](https://github.com/$WHATSMEOW_REPO/compare/$wm_pinned...main)). Bump deliberately and test pairing/send/receive:"
+              echo
+              jq -r --argjson n "$MAX_LIST" \
+                '.commits | reverse | .[:$n][] | "- [`\(.sha[:12])`](\(.html_url)) \(.commit.message | split("\n")[0])"' "$work/wm.json"
+              if [ "$wm_behind" -gt "$MAX_LIST" ]; then echo "- ... and $(( wm_behind - MAX_LIST )) more"; fi
+            else
+              echo "Up to date."
+            fi
+            echo
+            echo "## mautrix-whatsapp latest release"
+            echo
+            echo "[$mx_tag]($mx_url), published ${mx_date%%T*}."
+            echo
+            if [ -n "$mx_lines" ]; then
+              echo "Lines mentioning LID / username / ban / logout / linked device / protocol:"
+              echo
+              while IFS= read -r line; do
+                line="${line#"${line%%[![:space:]]*}"}"
+                case "$line" in -*|\**) echo "$line" ;; *) echo "- $line" ;; esac
+              done <<<"$mx_lines"
+            else
+              echo "No lines mention LID / username / ban / logout / linked device / protocol."
+            fi
+            echo
+            echo "## Upstream fork ($UPSTREAM_REPO)"
+            echo
+            if [ "$up_ahead" -gt 0 ]; then
+              echo "**$up_ahead commit(s) on upstream main not in ours** ([compare](https://github.com/$REPO/compare/main...$UPSTREAM_REF)):"
+              echo
+              jq -r --argjson n "$MAX_LIST" \
+                '.commits | reverse | .[:$n][] | "- [`\(.sha[:12])`](\(.html_url)) \(.commit.message | split("\n")[0])"' "$work/up.json"
+              if [ "$up_ahead" -gt "$MAX_LIST" ]; then echo "- ... and $(( up_ahead - MAX_LIST )) more"; fi
+            else
+              echo "Nothing new."
+            fi
+          } > "$body"
+
+          comment="$work/comment.md"
+          {
+            echo "New upstream activity (${today}):"
+            echo
+            printf -- '- %s\n' "${changes[@]}"
+          } > "$comment"
+
+          if [ "$DRY_RUN" = "1" ]; then
+            echo "=== DRY RUN: would ${issue_num:+update issue #$issue_num}${issue_num:-create issue \"Upstream watch\" with label $LABEL} ==="
+            echo "--- body ---"; cat "$body"
+            echo "--- comment ---"; cat "$comment"
+            exit 0
+          fi
+
+          if [ -n "$issue_num" ]; then
+            gh issue edit "$issue_num" --repo "$REPO" --body-file "$body"
+            gh issue comment "$issue_num" --repo "$REPO" --body-file "$comment"
+            echo "Updated issue #$issue_num"
+          else
+            gh label create "$LABEL" --repo "$REPO" --color 5319e7 \
+              --description "Weekly upstream drift report" --force
+            gh issue create --repo "$REPO" --title "Upstream watch" \
+              --label "$LABEL" --body-file "$body"
+          fi
