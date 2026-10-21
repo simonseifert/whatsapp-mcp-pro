@@ -119,6 +119,7 @@ func (s *Server) registerHandlers() {
 
 	// Media download
 	http.HandleFunc("/api/download", SecureMiddleware(s.handleDownload))
+	http.HandleFunc("/api/media-requests", SecureMiddleware(s.handleMediaRequests))
 
 	// Sync status monitoring
 	http.HandleFunc("/api/sync-status", SecureMiddleware(s.handleSyncStatus))

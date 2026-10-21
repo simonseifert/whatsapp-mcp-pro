@@ -156,6 +156,14 @@ func main() {
 		logger.Warnf("Phone-offline monitor disabled: %v", err)
 	}
 
+	// Persistent media retry queue: paced re-requests of purged media that
+	// survive restarts and offline phones. Each one pings the user's phone.
+	if whatsapp.MediaRetryEnabled() {
+		mediaRetryCtx, stopMediaRetry := context.WithCancel(context.Background())
+		defer stopMediaRetry()
+		client.StartMediaRetryQueue(mediaRetryCtx, messageStore, whatsapp.MediaRetryConfigFromEnv())
+	}
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
