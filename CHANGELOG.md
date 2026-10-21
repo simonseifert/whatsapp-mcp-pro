@@ -93,6 +93,7 @@ instead of retried into a ban.
 
 ### Fixed
 
+- Contact naming's nickname lookup failed with "no such column: raw.jid" on SQLite builds that reject an outer column in a subquery's ORDER BY (e.g. Ubuntu 24.04's 3.45).
 - The bridge's directory rebuild and webhook sender names ignore
   `agent_inferred` nicknames, so a stranger's self-claimed name never shows up
   as if you had set it.
