@@ -36,7 +36,7 @@ our versions of `lib/recall.py` and `lib/transcribe.py` to be supersets.
 | Component | What it is |
 |---|---|
 | `whatsapp-bridge/` | Go daemon on whatsmeow. Pairs as a linked device, stores history in SQLite, exposes REST + webhooks. Packages: `api`, `whatsapp`, `webhook`, `database`, `config`, `antiban`, `security`, `types`. |
-| `whatsapp-mcp-server/` | Python, mcp 2.x `MCPServer` (formerly FastMCP). 35 tools (18 read-only) with every toolset enabled. Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
+| `whatsapp-mcp-server/` | Python, mcp 2.x `MCPServer` (formerly FastMCP). 37 tools (19 read-only) with every toolset enabled. Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
 | `wa-client/` | Chat web UI riding the bridge's session — costs **zero** extra device slots. Default :8084 (`WA_WEB_PORT`). |
 | `wa-assistant/` | Message your own chat, a persistent Claude Code session replies. Voice both ways. |
 | `wa-dispatch/` | An incoming message from a routed chat opens/wakes a Claude session in that project. Drafts, never sends. macOS + tmux. |
@@ -173,6 +173,20 @@ It rebuilds on connect, on contact/push-name/business-name events, and every
 hundreds in a burst and each rebuild is a full refresh, so a worker coalesces
 them. The MCP server reads it and never writes it (`lib/identity.py`,
 `lookup_identity` / `search_directory` / `whatsapp://directory`).
+
+Nicknames are the exception that the MCP *does* write, but to `contact_nicknames`
+(`manage_nickname`, `set_contact_names`), never to `identities`. Since the bridge
+only folds them in on its next rebuild, `lib/naming.py` overlays the live table on
+directory reads (`identities_source`) and owns display-name resolution for MCP
+output (`resolve_display_names`, nickname first). Use those rather than reading
+`identities.display_name` raw.
+
+Nicknames carry provenance in `contact_nicknames.source`, a column the MCP adds
+(guarded `ALTER TABLE`; NULL or missing = `user`). `agent_inferred` names show as
+"name (unverified)", never replace a `user` nickname or an address-book name, and
+exist because strangers' self-claims ("this is your bank") are a spoofing vector.
+The bridge does not read `source` yet, so its own directory rebuild and webhook
+sender names still treat an agent-inferred nickname like a user one.
 
 Every read degrades to empty when the table is missing or unsynced, and the
 contact tools fall back to their old per-source queries — a store can be older

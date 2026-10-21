@@ -16,7 +16,7 @@ built and live before that, so the design steps don't apply.
 
 | Fact | Source |
 |-|-|
-| Go bridge (whatsmeow) + Python MCP server; 35 MCP tools | CLAUDE.md |
+| Go bridge (whatsmeow) + Python MCP server; 37 MCP tools | CLAUDE.md |
 | Runs on Simon's Debian server via systemd, straight from this repo; data is kept outside the repo | CLAUDE.md, `scripts/deploy-live.sh` |
 | The M1 is a cold standby; standby and failover scripts are kept outside this repo | Simon's private infra notes (not in this public repo) |
 | wa-client retired 2026-10-21: unused, showing data frozen at 2026-08-25 | DECISIONS.md D2 |
