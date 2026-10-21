@@ -55,6 +55,7 @@ rollback() {
   mv -f "$BIN.prev" "$BIN"
   sudo systemctl restart whatsapp-bridge.service
   sudo systemctl restart whatsapp-mcp.service
+  restart_others 2>/dev/null || true
   die "$1 — rolled back to the previous bridge binary (backup: $BACKUP_DIR)"
 }
 
@@ -63,18 +64,44 @@ log "restarting services"
 sudo systemctl restart whatsapp-bridge.service
 sudo systemctl restart whatsapp-mcp.service
 
-# ── 5. Verify the bridge comes back connected ───────────────────────────────
-API_KEY="$(grep -E '^API_KEY=' "$DATA/.env" | head -1 | cut -d= -f2-)"
+# ── 5. Verify every bridge on this binary comes back connected ──────────────
+# Other numbers run the same binary from their own data dirs (Friday's is a
+# user unit). They must be restarted onto the new build and checked too, or a
+# bad build only shows up at their next unrelated restart.
+OTHER_BRIDGES="${OTHER_BRIDGES:-friday|whatsapp-bridge-friday|8083|/home/alice/.local/share/whatsapp-friday/.env}"
+
+wait_connected() {  # wait_connected <port> <env file>
+  local key state
+  key="$(grep -E '^API_KEY=' "$2" | head -1 | cut -d= -f2-)"
+  for _ in $(seq 1 30); do
+    state="$(curl -sf -m 3 -H "X-API-Key: $key" "http://localhost:$1/api/connection" 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("connected"))' 2>/dev/null || true)"
+    [ "$state" = "True" ] && return 0
+    sleep 4
+  done
+  return 1
+}
+
+restart_others() {
+  local name unit port envf
+  while IFS='|' read -r name unit port envf; do
+    [ -n "$name" ] || continue
+    systemctl --user restart "$unit"
+  done <<< "$OTHER_BRIDGES"
+}
+
 log "waiting for bridge to report connected"
-for _ in $(seq 1 30); do
-  state="$(curl -sf -m 3 -H "X-API-Key: $API_KEY" http://localhost:8080/api/connection 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("connected"))' 2>/dev/null || true)"
-  if [ "$state" = "True" ]; then
-    log "✓ bridge connected"
-    sudo journalctl -u whatsapp-bridge --since "1 min ago" --no-pager 2>/dev/null | grep -i "\[IDENTITY\]" | tail -2 || true
-    log "done (store backup: $BACKUP_DIR)"
-    exit 0
-  fi
-  sleep 4
-done
-rollback "bridge not connected within 2 min — see journalctl -u whatsapp-bridge -n 50"
+wait_connected 8080 "$DATA/.env" \
+  || rollback "bridge not connected within 2 min — see journalctl -u whatsapp-bridge -n 50"
+log "✓ bridge connected"
+sudo journalctl -u whatsapp-bridge --since "1 min ago" --no-pager 2>/dev/null | grep -i "\[IDENTITY\]" | tail -2 || true
+
+restart_others
+while IFS='|' read -r name unit port envf; do
+  [ -n "$name" ] || continue
+  log "waiting for the $name bridge"
+  wait_connected "$port" "$envf" \
+    || rollback "$name bridge not connected within 2 min — see journalctl --user -u $unit -n 50"
+  log "✓ $name bridge connected"
+done <<< "$OTHER_BRIDGES"
+log "done (store backup: $BACKUP_DIR)"
