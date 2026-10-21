@@ -11,15 +11,18 @@ The protocol is the mcp SDK's (`mcp.server.auth`): metadata, /authorize,
 /token, /register and /revoke handlers plus PKCE and client-secret checks all
 come from it. What lives here is the part the SDK leaves to the provider:
 
-- storage: clients and hashed tokens in a 0600 SQLite file, so a restart does
-  not log connectors out; pending consents and auth codes stay in memory
-  because they live minutes and a restart mid-login only costs a retry.
+- storage: clients, hashed tokens and pending consents in a 0600 SQLite
+  file, so a restart does not log connectors out and the CLI can approve a
+  consent the server is holding; auth codes stay in memory because they live
+  minutes and a restart mid-login only costs a retry.
 - the "login": a consent page that asks for a passphrase (or the full static
   token) and lets the operator pick read-only or full access. That choice is
   the token's scope, and serve_http maps it onto the same full/readonly roles
   the static tokens use, so the read-only gate is one code path for both.
+  `python -m lib.oauth approve <req> --scope read|full` is the same approval
+  from a shell on the box, which the public endpoint cannot rate-limit away.
 
-Off unless MCP_OAUTH_ENABLED=true. CLI: python -m lib.oauth list|revoke <id>.
+Off unless MCP_OAUTH_ENABLED=true. CLI: python -m lib.oauth list|revoke|approve.
 """
 
 from __future__ import annotations
@@ -36,7 +39,6 @@ import sqlite3
 import sys
 import time
 import uuid
-from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -86,13 +88,21 @@ UNAPPROVED_CLIENT_TTL = 3600  # DCR is open to anyone; drop clients nobody conse
 PENDING_TTL = 600
 CODE_TTL = 300
 ATTEMPTS_PER_CONSENT = 3
-LOCKOUT_FAILURES = 5
-LOCKOUT_WINDOW = 900
+BACKOFF_MAX = 900
+MAX_TRACKED_IPS = 10000
 MIN_PASSPHRASE_LEN = 12
+# DCR lets anyone name their client "Claude"; the redirect host is the only
+# identity that means anything, so only known connector hosts get a consent page.
+DEFAULT_REDIRECT_HOSTS = ("claude.ai", "claude.com", "chatgpt.com", "localhost", "127.0.0.1")
+CONSENT_COOKIE_PREFIX = "wac_"
 
 
 def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv(value: str | None) -> tuple[str, ...]:
+    return tuple(v.strip().lower() for v in (value or "").split(",") if v.strip())
 
 
 def _hash(token: str) -> str:
@@ -133,6 +143,20 @@ class OAuthConfig:
     db_path: str
     access_ttl: int = 3600
     refresh_ttl: int = 30 * 86400
+    allowed_redirect_hosts: tuple[str, ...] = DEFAULT_REDIRECT_HOSTS
+    trusted_proxies: tuple[str, ...] = ()
+
+    @property
+    def secure_cookies(self) -> bool:
+        return self.public_url.startswith("https://")
+
+    def redirect_allowed(self, uri: Any) -> bool:
+        """https (or loopback http) to a host on MCP_OAUTH_ALLOWED_REDIRECT_HOSTS."""
+        parsed = urlparse(str(uri))
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and is_local_host(host)):
+            return False
+        return host in self.allowed_redirect_hosts
 
     @property
     def resource_url(self) -> str:
@@ -190,6 +214,8 @@ class OAuthConfig:
             db_path=env.get("MCP_OAUTH_DB") or default_db_path(),
             access_ttl=_int("MCP_OAUTH_ACCESS_TTL", 3600),
             refresh_ttl=_int("MCP_OAUTH_REFRESH_TTL", 30 * 86400),
+            allowed_redirect_hosts=_csv(env.get("MCP_OAUTH_ALLOWED_REDIRECT_HOSTS")) or DEFAULT_REDIRECT_HOSTS,
+            trusted_proxies=_csv(env.get("MCP_TRUSTED_PROXY")),
         )
 
 
@@ -232,6 +258,17 @@ class OAuthStore:
                 );
                 CREATE INDEX IF NOT EXISTS tokens_grant ON tokens(grant_id);
                 CREATE INDEX IF NOT EXISTS tokens_client ON tokens(client_id);
+                CREATE TABLE IF NOT EXISTS pending (
+                    req_id      TEXT PRIMARY KEY,
+                    client_id   TEXT NOT NULL,
+                    client_name TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    offered     TEXT NOT NULL,
+                    nonce_hash  TEXT NOT NULL,
+                    created_at  REAL NOT NULL,
+                    failures    INTEGER NOT NULL DEFAULT 0,
+                    cli_scope   TEXT
+                );
                 """
             )
 
@@ -353,6 +390,56 @@ class OAuthStore:
     def prune(self) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM tokens WHERE expires_at < ?", (int(time.time()),))
+            conn.execute("DELETE FROM pending WHERE created_at < ?", (time.time() - PENDING_TTL,))
+
+    # pending consents
+
+    def add_pending(self, req_id: str, p: _Pending) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM pending WHERE created_at < ?", (time.time() - PENDING_TTL,))
+            conn.execute(
+                "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    req_id,
+                    p.client_id,
+                    p.client_name,
+                    p.params.model_dump_json(),
+                    " ".join(p.offered),
+                    p.nonce_hash,
+                    p.created,
+                ),
+            )
+
+    def get_pending(self, req_id: str) -> _Pending | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM pending WHERE req_id = ?", (req_id,)).fetchone()
+        if row is None or time.time() - row["created_at"] > PENDING_TTL:
+            return None
+        return _Pending(
+            client_id=row["client_id"],
+            client_name=row["client_name"],
+            params=AuthorizationParams.model_validate_json(row["params_json"]),
+            offered=row["offered"].split(),
+            nonce_hash=row["nonce_hash"],
+            created=row["created_at"],
+            failures=row["failures"],
+            cli_scope=row["cli_scope"],
+        )
+
+    def pending_failed(self, req_id: str) -> int:
+        with self._conn() as conn:
+            conn.execute("UPDATE pending SET failures = failures + 1 WHERE req_id = ?", (req_id,))
+            row = conn.execute("SELECT failures FROM pending WHERE req_id = ?", (req_id,)).fetchone()
+        return row["failures"] if row else ATTEMPTS_PER_CONSENT
+
+    def approve_pending(self, req_id: str, scope: str) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE pending SET cli_scope = ? WHERE req_id = ?", (scope, req_id))
+
+    def delete_pending(self, req_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM pending WHERE req_id = ?", (req_id,))
 
 
 # ────────────────────────────────────────────────────────────────── provider
@@ -376,8 +463,59 @@ class _Pending:
     client_name: str
     params: AuthorizationParams
     offered: list[str]
+    nonce_hash: str
     created: float = field(default_factory=time.time)
     failures: int = 0
+    cli_scope: str | None = None  # set by `python -m lib.oauth approve`
+
+    @property
+    def redirect_host(self) -> str:
+        return urlparse(str(self.params.redirect_uri)).hostname or "?"
+
+
+class IPBackoff:
+    """Per-client-IP exponential backoff on wrong passphrases.
+
+    Deliberately not a global lock: one would let anyone who can reach the
+    public consent page keep the operator locked out indefinitely. Here an
+    attacker only slows their own address (2 s, 4 s, 8 s ... capped at 15 min),
+    and the CLI approval path bypasses it entirely.
+    """
+
+    def __init__(self) -> None:
+        self.state: dict[str, tuple[int, float]] = {}  # ip -> (failures, next allowed)
+
+    def retry_after(self, ip: str) -> int:
+        _, until = self.state.get(ip, (0, 0.0))
+        return max(0, int(until - time.time() + 0.999))
+
+    def fail(self, ip: str) -> None:
+        count, _ = self.state.get(ip, (0, 0.0))
+        count += 1
+        self.state[ip] = (count, time.time() + min(2**count, BACKOFF_MAX))
+        if len(self.state) > MAX_TRACKED_IPS:
+            now = time.time()
+            self.state = {k: v for k, v in self.state.items() if v[1] > now - BACKOFF_MAX}
+
+    def succeed(self, ip: str) -> None:
+        self.state.pop(ip, None)
+
+
+def client_ip(scope: Mapping[str, Any], trusted_proxies: tuple[str, ...]) -> str:
+    """The request's client address: the socket peer, or, when that peer is a
+    trusted proxy (MCP_TRUSTED_PROXY), the nearest untrusted X-Forwarded-For hop.
+
+    X-Forwarded-For is client-spoofable, so it is only read from proxies the
+    operator named; otherwise anyone could rotate it to dodge the backoff.
+    """
+    peer = str((scope.get("client") or ("unknown", 0))[0])
+    if peer.lower() not in trusted_proxies:
+        return peer
+    xff = ",".join(v.decode() for k, v in scope.get("headers", []) if k.lower() == b"x-forwarded-for")
+    for hop in reversed([h.strip() for h in xff.split(",") if h.strip()]):
+        if hop.lower() not in trusted_proxies:
+            return hop
+    return peer
 
 
 class WAOAuthProvider:
@@ -386,10 +524,12 @@ class WAOAuthProvider:
     def __init__(self, config: OAuthConfig, store: OAuthStore | None = None):
         self.config = config
         self.store = store or OAuthStore(config.db_path)
-        self.pending: dict[str, _Pending] = {}
         self.codes: dict[str, WAAuthCode] = {}
         self.used_codes: dict[str, tuple[str, float]] = {}  # code -> (grant_id, expires)
-        self.failures: deque[float] = deque()
+        # req_id -> raw nonce, handed from authorize() to the /authorize
+        # response wrapper that sets the browser-binding cookie.
+        self.fresh_nonces: dict[str, str] = {}
+        self.backoff = IPBackoff()
 
     # registration
 
@@ -398,11 +538,15 @@ class WAOAuthProvider:
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         for uri in client_info.redirect_uris or []:
-            # https, or a loopback redirect for native/CLI clients. Anything
-            # else (http to a LAN host, custom schemes) would hand the code to
-            # whoever controls that target.
-            if uri.scheme != "https" and not (uri.scheme == "http" and is_local_host(uri.host)):
-                raise RegistrationError("invalid_redirect_uri", f"redirect URI must be https or localhost: {uri}")
+            # https (or loopback http) to an allowlisted host. Anything else
+            # either hands the code to whoever controls that target or lets a
+            # self-registered client pose as a known one on the consent page.
+            if not self.config.redirect_allowed(uri):
+                raise RegistrationError(
+                    "invalid_redirect_uri",
+                    f"redirect URI {uri} is not https/localhost on an allowed host "
+                    f"({', '.join(self.config.allowed_redirect_hosts)}); see MCP_OAUTH_ALLOWED_REDIRECT_HOSTS",
+                )
         self.store.add_client(client_info)
         logger.info("OAuth client registered: %s (%s)", client_info.client_id, client_info.client_name)
 
@@ -421,6 +565,11 @@ class WAOAuthProvider:
             raise AuthorizeError("invalid_target", f"unknown resource {resource!r}; use {self.config.resource_url}")
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        # Re-checked here, not only at registration: the operator may have
+        # narrowed the allowlist since. Not an AuthorizeError, because the SDK
+        # would redirect that error to the very host being refused.
+        if not self.config.redirect_allowed(params.redirect_uri):
+            return f"{self.config.public_url}{CONSENT_PATH}?refused=redirect_host"
         self._check_resource(params.resource)
         registered = (client.scope or "").split()
         offered = [s for s in ALL_SCOPES if s in registered]
@@ -428,19 +577,22 @@ class WAOAuthProvider:
             raise AuthorizeError("invalid_scope", f"client is registered for none of {ALL_SCOPES}")
         self._sweep()
         req_id = secrets.token_urlsafe(24)
-        self.pending[req_id] = _Pending(
-            client_id=client.client_id,
-            client_name=client.client_name or client.client_id,
-            params=params,
-            offered=offered,
+        nonce = secrets.token_urlsafe(32)
+        self.store.add_pending(
+            req_id,
+            _Pending(
+                client_id=client.client_id,
+                client_name=client.client_name or client.client_id,
+                params=params,
+                offered=offered,
+                nonce_hash=_hash(nonce),
+            ),
         )
+        self.fresh_nonces[req_id] = nonce
         return f"{self.config.public_url}{CONSENT_PATH}?req={req_id}"
 
     def _sweep(self) -> None:
         now = time.time()
-        for req_id, p in list(self.pending.items()):
-            if now - p.created > PENDING_TTL:
-                del self.pending[req_id]
         for code, c in list(self.codes.items()):
             if c.expires_at < now:
                 del self.codes[code]
@@ -545,19 +697,8 @@ class WAOAuthProvider:
     async def exchange_identity_assertion(self, client: Any, params: Any) -> OAuthToken:
         raise TokenError("unsupported_grant_type", "not supported")
 
-    # consent rate limiting
-
-    def locked_out(self) -> bool:
-        now = time.time()
-        while self.failures and now - self.failures[0] > LOCKOUT_WINDOW:
-            self.failures.popleft()
-        return len(self.failures) >= LOCKOUT_FAILURES
-
     def check_passphrase(self, given: str) -> bool:
-        ok = hmac.compare_digest(given.encode(), self.config.passphrase.encode())
-        if not ok:
-            self.failures.append(time.time())
-        return ok
+        return hmac.compare_digest(given.encode(), self.config.passphrase.encode())
 
 
 # ─────────────────────────────────────────────────────────────── consent page
@@ -576,16 +717,20 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Authorize WhatsApp MCP</title>
 <style>
-body{{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem;color:#111}}
+body{{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem;color:#111}}
 .box{{border:1px solid #ccc;border-radius:8px;padding:1rem 1.25rem}}
+.host{{font-size:1.6rem;font-weight:700;margin:.25rem 0}} .muted{{color:#555;font-size:.9rem}}
 code{{word-break:break-all}} .err{{color:#b00020}} label{{display:block;margin:.4rem 0}}
 input[type=password]{{width:100%;padding:.5rem;font-size:1rem;box-sizing:border-box}}
-button{{padding:.5rem 1rem;font-size:1rem;margin-right:.5rem}}
+button{{padding:.5rem 1rem;font-size:1rem;margin:.25rem .5rem .25rem 0}}
 </style></head><body>
 <h1>Authorize access to WhatsApp</h1>
 <div class="box">
-<p><strong>{client}</strong> wants to use this WhatsApp MCP server.</p>
-<p>After approval it will be sent back to <code>{redirect}</code>.</p>
+<p>Access will be handed to:</p>
+<p class="host">{host}</p>
+<p class="muted">Full redirect: <code>{redirect}</code><br>
+Name: {client} <em>(self-declared, unverified)</em></p>
+<p class="muted">Only approve if you just started this sign-in on that site.</p>
 </div>
 {error}
 <form method="post" action="{action}">
@@ -596,6 +741,10 @@ button{{padding:.5rem 1rem;font-size:1rem;margin-right:.5rem}}
 <input type="password" name="passphrase" autocomplete="current-password" autofocus>
 <p><button type="submit" name="decision" value="approve">Approve</button>
 <button type="submit" name="decision" value="deny">Deny</button></p>
+<h2>Or approve from the server</h2>
+<p class="muted">Rate-limited, or you would rather not type the passphrase here? On the server run
+<code>python -m lib.oauth approve {req} --scope read</code> (or <code>--scope full</code>), then:</p>
+<p><button type="submit" name="decision" value="continue">Continue after server approval</button></p>
 </form></body></html>"""
 
 _CHOICES = {
@@ -611,6 +760,7 @@ def _render(req_id: str, pending: _Pending, error: str = "", status: int = 200) 
         for s in pending.offered
     )
     body = _PAGE.format(
+        host=html.escape(pending.redirect_host),
         client=html.escape(pending.client_name),
         redirect=html.escape(str(pending.params.redirect_uri)),
         error=f'<p class="err">{html.escape(error)}</p>' if error else "",
@@ -621,58 +771,148 @@ def _render(req_id: str, pending: _Pending, error: str = "", status: int = 200) 
     return HTMLResponse(body, status_code=status, headers=_SECURITY_HEADERS)
 
 
-def _plain(text: str, status: int) -> Response:
-    return Response(text, status_code=status, media_type="text/plain", headers=_SECURITY_HEADERS)
+def _plain(text: str, status: int, headers: Mapping[str, str] | None = None) -> Response:
+    return Response(text, status_code=status, media_type="text/plain", headers={**_SECURITY_HEADERS, **(headers or {})})
+
+
+_EXPIRED = "This authorization request expired or was already used. Start again from the client."
+_UNBOUND = (
+    "This consent link was not opened in the browser that started the sign-in, so it cannot be approved here. "
+    "If you did not start a sign-in just now, ignore it. Otherwise start again from the client."
+)
+
+
+def _bound(request: Request, req_id: str, pending: _Pending) -> bool:
+    """True if this browser holds the nonce cookie set by its own /authorize."""
+    nonce = request.cookies.get(CONSENT_COOKIE_PREFIX + req_id, "")
+    return bool(nonce) and hmac.compare_digest(_hash(nonce), pending.nonce_hash)
 
 
 def consent_routes(provider: WAOAuthProvider) -> list[Route]:
     """GET renders the consent form, POST approves or denies it."""
+    store = provider.store
+
+    def _finish(req_id: str, pending: _Pending, choice: str, how: str) -> Response:
+        store.delete_pending(req_id)
+        # Full includes read so a client can later refresh down to read-only.
+        scopes = [SCOPE_READ, SCOPE_FULL] if choice == SCOPE_FULL else [SCOPE_READ]
+        code = provider.issue_code(pending, scopes)
+        logger.info(
+            "OAuth consent granted (%s): client %s -> %s, scope %s",
+            how,
+            pending.client_id,
+            pending.redirect_host,
+            " ".join(scopes),
+        )
+        resp = RedirectResponse(
+            construct_redirect_uri(str(pending.params.redirect_uri), code=code, state=pending.params.state),
+            status_code=303,
+        )
+        resp.delete_cookie(CONSENT_COOKIE_PREFIX + req_id, path=CONSENT_PATH)
+        return resp
 
     async def consent(request: Request) -> Response:
         provider._sweep()
         if request.method == "GET":
+            if request.query_params.get("refused") == "redirect_host":
+                return _plain(
+                    "This client's redirect host is not on MCP_OAUTH_ALLOWED_REDIRECT_HOSTS. "
+                    "Add it on the server if you trust it.",
+                    400,
+                )
             req_id = request.query_params.get("req", "")
-            pending = provider.pending.get(req_id)
+            pending = store.get_pending(req_id)
             if pending is None:
-                return _plain("This authorization request expired. Start again from the client.", 400)
+                return _plain(_EXPIRED, 400)
+            if not _bound(request, req_id, pending):
+                return _plain(_UNBOUND, 403)
             return _render(req_id, pending)
 
         form = await request.form()
         req_id = str(form.get("req", ""))
-        pending = provider.pending.get(req_id)
+        pending = store.get_pending(req_id)
         if pending is None:
-            return _plain("This authorization request expired. Start again from the client.", 400)
-        state = pending.params.state
-        redirect = str(pending.params.redirect_uri)
+            return _plain(_EXPIRED, 400)
+        if not _bound(request, req_id, pending):
+            logger.warning("OAuth consent POST without the binding cookie (client %s)", pending.client_id)
+            return _plain(_UNBOUND, 403)
 
-        if form.get("decision") != "approve":
-            del provider.pending[req_id]
+        decision = form.get("decision")
+        if decision == "deny":
+            store.delete_pending(req_id)
             return RedirectResponse(
-                construct_redirect_uri(redirect, error="access_denied", state=state), status_code=303
+                construct_redirect_uri(
+                    str(pending.params.redirect_uri), error="access_denied", state=pending.params.state
+                ),
+                status_code=303,
             )
+        if decision == "continue":
+            if pending.cli_scope is None:
+                return _render(req_id, pending, "Not approved on the server yet.", status=409)
+            return _finish(req_id, pending, pending.cli_scope, "cli")
+        if decision != "approve":
+            return _render(req_id, pending, "Choose Approve or Deny.", status=400)
 
-        if provider.locked_out():
-            logger.warning("OAuth consent locked out after repeated wrong passphrases")
-            return _plain("Too many wrong passphrases. Try again in 15 minutes.", 429)
+        ip = client_ip(request.scope, provider.config.trusted_proxies)
+        wait = provider.backoff.retry_after(ip)
+        if wait:
+            return _plain(
+                f"Too many wrong passphrases from your address. Try again in {wait} s, "
+                f"or approve from the server: python -m lib.oauth approve {req_id} --scope read",
+                429,
+                {"Retry-After": str(wait)},
+            )
         if not provider.check_passphrase(str(form.get("passphrase", ""))):
-            pending.failures += 1
-            logger.warning("OAuth consent: wrong passphrase for client %s", pending.client_id)
-            if pending.failures >= ATTEMPTS_PER_CONSENT:
-                del provider.pending[req_id]
+            provider.backoff.fail(ip)
+            failures = store.pending_failed(req_id)
+            logger.warning("OAuth consent: wrong passphrase from %s for client %s", ip, pending.client_id)
+            if failures >= ATTEMPTS_PER_CONSENT:
+                store.delete_pending(req_id)
                 return _plain("Too many wrong passphrases for this request. Start again from the client.", 403)
             return _render(req_id, pending, "Wrong passphrase.", status=401)
+        provider.backoff.succeed(ip)
 
         choice = str(form.get("scope", ""))
         if choice not in pending.offered:
             return _render(req_id, pending, "Pick an access level.", status=400)
-        del provider.pending[req_id]
-        # Full includes read so a client can later refresh down to read-only.
-        scopes = [SCOPE_READ, SCOPE_FULL] if choice == SCOPE_FULL else [SCOPE_READ]
-        code = provider.issue_code(pending, scopes)
-        logger.info("OAuth consent granted: client %s, scope %s", pending.client_id, " ".join(scopes))
-        return RedirectResponse(construct_redirect_uri(redirect, code=code, state=state), status_code=303)
+        return _finish(req_id, pending, choice, "passphrase")
 
     return [Route(CONSENT_PATH, consent, methods=["GET", "POST"])]
+
+
+class _BindConsentCookie:
+    """Wrap the SDK's /authorize endpoint to set the consent-binding cookie.
+
+    The provider cannot touch the response (it only returns a URL), so this
+    adds a Set-Cookie to the redirect it produced. A consent link forwarded to
+    the operator from elsewhere then arrives without the cookie and is refused.
+    """
+
+    def __init__(self, app: Any, provider: WAOAuthProvider):
+        self.app = app
+        self.provider = provider
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        prefix = self.provider.config.public_url + CONSENT_PATH + "?req="
+        secure = "; Secure" if self.provider.config.secure_cookies else ""
+
+        async def wrapped(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                location = next((v.decode() for k, v in headers if k.lower() == b"location"), "")
+                if location.startswith(prefix):
+                    req_id = location[len(prefix) :]
+                    nonce = self.provider.fresh_nonces.pop(req_id, None)
+                    if nonce:
+                        cookie = (
+                            f"{CONSENT_COOKIE_PREFIX}{req_id}={nonce}; Path={CONSENT_PATH}; "
+                            f"Max-Age={PENDING_TTL}; HttpOnly; SameSite=Lax{secure}"
+                        )
+                        headers.append((b"set-cookie", cookie.encode()))
+                        message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, wrapped)
 
 
 # ──────────────────────────────────────────────────────────── app assembly
@@ -700,12 +940,15 @@ def build_oauth_app(provider: WAOAuthProvider) -> Starlette:
     """Starlette app serving the metadata, OAuth endpoints and the consent page."""
     settings = auth_settings(provider.config)
     assert settings.resource_server_url is not None
-    routes = create_auth_routes(
-        provider=provider,
-        issuer_url=settings.issuer_url,
-        client_registration_options=settings.client_registration_options,
-        revocation_options=settings.revocation_options,
-    )
+    routes = [
+        Route(r.path, _BindConsentCookie(r.endpoint, provider), methods=r.methods) if r.path == "/authorize" else r
+        for r in create_auth_routes(
+            provider=provider,
+            issuer_url=settings.issuer_url,
+            client_registration_options=settings.client_registration_options,
+            revocation_options=settings.revocation_options,
+        )
+    ]
     prm = create_protected_resource_routes(
         resource_url=settings.resource_server_url,
         authorization_servers=[settings.issuer_url],
@@ -770,13 +1013,16 @@ def _fmt_time(ts: int | None) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`python -m lib.oauth list|revoke <client_id>` against the token store."""
+    """`python -m lib.oauth list|revoke|approve` against the token store."""
     parser = argparse.ArgumentParser(prog="python -m lib.oauth", description="Manage OAuth clients of serve_http.")
     parser.add_argument("--db", help="token store (default: MCP_OAUTH_DB or oauth.db next to the store dir)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list", help="list registered clients")
     revoke = sub.add_parser("revoke", help="delete a client and all of its tokens")
     revoke.add_argument("client_id")
+    approve = sub.add_parser("approve", help="approve a pending consent (the req shown on the consent page)")
+    approve.add_argument("req_id")
+    approve.add_argument("--scope", choices=["read", "full"], required=True)
     args = parser.parse_args(argv)
 
     path = args.db or os.environ.get("MCP_OAUTH_DB") or default_db_path()
@@ -796,6 +1042,21 @@ def main(argv: list[str] | None = None) -> int:
                 f"last token: {_fmt_time(c['last_used_at'])}\n"
                 f"    redirect: {', '.join(c['redirect_uris'])}\n"
             )
+        return 0
+    if args.cmd == "approve":
+        pending = store.get_pending(args.req_id)
+        if pending is None:
+            sys.stderr.write(f"no pending consent {args.req_id} (expired after {PENDING_TTL // 60} min?)\n")
+            return 1
+        scope = SCOPE_FULL if args.scope == "full" else SCOPE_READ
+        if scope not in pending.offered:
+            sys.stderr.write(f"this client may only be granted: {' '.join(pending.offered)}\n")
+            return 1
+        store.approve_pending(args.req_id, scope)
+        sys.stdout.write(
+            f"approved {args.scope} access for {pending.redirect_host} "
+            f"(name: {pending.client_name}, self-declared). Press 'Continue' in the browser.\n"
+        )
         return 0
     if store.revoke_client(args.client_id):
         sys.stdout.write(f"revoked {args.client_id}\n")
