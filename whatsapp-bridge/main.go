@@ -248,15 +248,13 @@ func main() {
 		case *events.KeepAliveTimeout:
 			client.Antiban().RecordEvent(antiban.EventKeepAliveTimeout)
 			logger.Warnf("⚠ KeepAlive timeout (errors: %d)", v.ErrorCount)
+			// whatsmeow reconnects by itself once keepalives have failed for
+			// KeepAliveMaxFailTime (3 min). Three misses is ~1.5 min of a
+			// half-dead socket that ingests nothing, so cut it short here.
+			// ForceReconnect keeps auto-reconnect armed; the old
+			// Disconnect()+Connect() cancelled it.
 			if v.ErrorCount >= 3 {
-				logger.Errorf("KeepAlive: %d consecutive failures, forcing disconnect+reconnect", v.ErrorCount)
-				client.Disconnect()
-				go func() {
-					time.Sleep(2 * time.Second)
-					if err := client.Client.Connect(); err != nil {
-						logger.Errorf("Reconnect after KeepAlive failure: %v", err)
-					}
-				}()
+				client.ForceReconnect(fmt.Sprintf("%d consecutive keepalive failures", v.ErrorCount))
 			}
 
 		case *events.KeepAliveRestored:

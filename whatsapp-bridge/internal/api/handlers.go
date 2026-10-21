@@ -1839,14 +1839,7 @@ func (s *Server) handleReconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.client.Disconnect()
-
-	go func() {
-		time.Sleep(2 * time.Second)
-		if err := s.client.Client.Connect(); err != nil {
-			fmt.Printf("Reconnect failed: %v\n", err)
-		}
-	}()
+	s.client.ForceReconnect("POST /api/reconnect")
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
