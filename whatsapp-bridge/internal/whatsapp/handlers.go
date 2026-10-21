@@ -3,7 +3,9 @@ package whatsapp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -395,18 +397,6 @@ func (c *Client) historyMessageSender(chat types.JID, key *waCommon.MessageKey) 
 
 var autoDownloadUnsafe = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
-// AutoDownloadPath is where autoDownloadMedia saves a message's media, relative
-// to the bridge's working directory: store/<chat_jid>/<filename>, both
-// sanitised. wa-dispatch and wa-assistant read this layout directly, so it must
-// not change; /api/download also checks it before going to the network.
-func AutoDownloadPath(chatJID, msgID, filename string) string {
-	name := safePathPart(filename)
-	if name == "" {
-		name = safePathPart(msgID) + ".bin"
-	}
-	return filepath.Join("store", safePathPart(chatJID), name)
-}
-
 // safePathPart sanitises one path segment for the auto-download layout. The
 // character filter alone still lets ".", ".." and dotfile names through, and
 // filepath.Join would resolve ".." into the parent directory: a sender-chosen
@@ -415,31 +405,65 @@ func AutoDownloadPath(chatJID, msgID, filename string) string {
 func safePathPart(s string) string {
 	s = autoDownloadUnsafe.ReplaceAllString(s, "_")
 	if s == "" || s == "." || s == ".." || strings.HasPrefix(s, ".") {
-		if t := strings.TrimLeft(s, "."); t != "" {
-			return "_" + t
-		}
 		return ""
 	}
 	return s
 }
 
-// AutoDownloadPaths returns every place autoDownloadMedia may have saved a
-// message's media, in lookup order: the AutoDownloadPath layout, then the same
-// directory with the message ID prefixed to the name.
+// randomPathPart is the last-resort name when neither the filename nor the
+// message ID is usable. A file saved under it cannot be found again by
+// AutoDownloadPaths, so /api/download falls through to the network for that
+// message, which beats writing somewhere outside the chat dir.
+func randomPathPart() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return "autodl_" + hex.EncodeToString(b)
+}
+
+// AutoDownloadPaths returns every place autoDownloadMedia may save a message's
+// media, in lookup order, relative to the bridge's working directory:
+//
+//  1. store/<chat_jid>/<filename>, both sanitised. wa-dispatch and
+//     wa-assistant read this layout directly, so it must not change.
+//  2. the same directory with the message ID prefixed to the name.
 //
 // The second form exists because ExtractMediaInfo names images, video and audio
 // by the receive time to the second, so two messages arriving in the same
 // second share a filename. The first one keeps the plain name (readers of that
 // layout are unaffected); later ones go to the ID-prefixed name, which is
 // derivable from the same (chat, id, filename) row and therefore findable.
-func AutoDownloadPaths(chatJID, msgID, filename string) []string {
-	primary := AutoDownloadPath(chatJID, msgID, filename)
-	id := safePathPart(msgID)
-	if id == "" {
-		id = "msg"
+//
+// An unusable filename falls back to <msgid>.bin, an unusable message ID to a
+// random name. Both results are then checked to sit directly in
+// store/<chat_jid>; an unusable chat JID is an error rather than a write into
+// store/ itself, where the session DB lives.
+func AutoDownloadPaths(chatJID, msgID, filename string) ([]string, error) {
+	chat := safePathPart(chatJID)
+	if chat == "" {
+		return nil, fmt.Errorf("unusable chat JID %q for auto-download", chatJID)
 	}
-	alt := filepath.Join(filepath.Dir(primary), id+"_"+filepath.Base(primary))
-	return []string{primary, alt}
+	dir := filepath.Join("store", chat)
+
+	id := safePathPart(msgID)
+	name := safePathPart(filename)
+	if name == "" {
+		if id != "" {
+			name = id + ".bin"
+		} else {
+			name = randomPathPart()
+		}
+	}
+	if id == "" {
+		id = randomPathPart()
+	}
+
+	paths := []string{filepath.Join(dir, name), filepath.Join(dir, id+"_"+name)}
+	for _, p := range paths {
+		if filepath.Dir(p) != dir {
+			return nil, fmt.Errorf("auto-download path %q escapes %q", p, dir)
+		}
+	}
+	return paths, nil
 }
 
 // FileMatchesSHA256 reports whether the file at path hashes to want. An empty
@@ -518,9 +542,18 @@ func saveAutoDownload(paths []string, data, fileSHA256 []byte) (string, error) {
 	if !errors.Is(err, fs.ErrExist) {
 		return "", fmt.Errorf("link %s: %w", primary, err)
 	}
-	// Someone holds the primary name. If it is this message (a duplicate
-	// event), keep it; otherwise it is another message's file and this one
-	// moves to the ID-prefixed name.
+	// Something holds the primary name. Only a regular file is another
+	// message's media; a symlink or directory there was planted or is a
+	// mistake, and is no reason to write anywhere else.
+	info, err := os.Lstat(primary)
+	if err != nil {
+		return "", fmt.Errorf("lstat %s: %w", primary, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s exists and is not a regular file (%s)", primary, info.Mode().Type())
+	}
+	// If it is this message (a duplicate event), keep it; otherwise it is
+	// another message's file and this one moves to the ID-prefixed name.
 	if ok, herr := FileMatchesSHA256(primary, fileSHA256); herr == nil && ok {
 		return primary, nil
 	}
@@ -541,7 +574,11 @@ func saveAutoDownload(paths []string, data, fileSHA256 []byte) (string, error) {
 // autoDownloadMedia downloads and saves media to disk immediately after receiving a message,
 // before the WhatsApp CDN URL expires. Runs as a goroutine; all errors are logged and ignored.
 func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
-	paths := AutoDownloadPaths(chatJID, msgID, filename)
+	paths, err := AutoDownloadPaths(chatJID, msgID, filename)
+	if err != nil {
+		c.logger.Warnf("auto-download: %v", err)
+		return
+	}
 	if err := os.MkdirAll(filepath.Dir(paths[0]), 0o755); err != nil {
 		c.logger.Warnf("auto-download: mkdir %s: %v", filepath.Dir(paths[0]), err)
 		return

@@ -97,7 +97,10 @@ func TestFileMatchesSHA256(t *testing.T) {
 }
 
 func TestAutoDownloadPathsKeepsPrimaryLayout(t *testing.T) {
-	paths := AutoDownloadPaths("123@s.whatsapp.net", "3EB0ABC", "image_20261021_120000.jpg")
+	paths, err := AutoDownloadPaths("123@s.whatsapp.net", "3EB0ABC", "image_20261021_120000.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if want := filepath.Join("store", "123_s.whatsapp.net", "image_20261021_120000.jpg"); paths[0] != want {
 		t.Errorf("primary = %q, want %q", paths[0], want)
 	}
@@ -167,23 +170,77 @@ func TestSaveAutoDownloadCollision(t *testing.T) {
 // directory and a dotfile name must not land as a hidden file.
 func TestAutoDownloadPathsRejectsDotNames(t *testing.T) {
 	chatDir := filepath.Join("store", "123_s.whatsapp.net")
-	tests := []struct{ name, filename, wantBase string }{
-		{"dotdot", "..", "MSG1.bin"},
-		{"dot", ".", "MSG1.bin"},
-		{"empty", "", "MSG1.bin"},
-		{"dotfile", ".env", "_env"},
-		{"traversal chars", "../../etc/passwd", "__.._etc_passwd"},
+	tests := []struct {
+		name, msgID, filename string
+		wantBase              string // "" = random fallback, only checked for safety
+	}{
+		{"dotdot", "MSG1", "..", "MSG1.bin"},
+		{"dot", "MSG1", ".", "MSG1.bin"},
+		{"empty", "MSG1", "", "MSG1.bin"},
+		{"dotfile", "MSG1", ".env", "MSG1.bin"},
+		// Sanitises to ".._.._etc_passwd": leading dot, so it falls back.
+		{"traversal chars", "MSG1", "../../etc/passwd", "MSG1.bin"},
+		{"inner dots kept", "MSG1", "report.v2.pdf", "report.v2.pdf"},
+		{"dotdot id and name", "..", "..", ""},
+		{"dot id empty name", ".", "", ""},
+		{"dotfile id and name", ".x", ".bashrc", ""},
+		{"bad id good name", "..", "a.jpg", "a.jpg"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			paths := AutoDownloadPaths("123@s.whatsapp.net", "MSG1", tt.filename)
+			paths, err := AutoDownloadPaths("123@s.whatsapp.net", tt.msgID, tt.filename)
+			if err != nil {
+				t.Fatalf("AutoDownloadPaths: %v", err)
+			}
 			for _, p := range paths {
-				if filepath.Dir(p) != chatDir {
-					t.Fatalf("%q escaped %q", p, chatDir)
+				b := filepath.Base(p)
+				if filepath.Dir(p) != chatDir || strings.HasPrefix(b, ".") {
+					t.Fatalf("%q is not a plain file in %q", p, chatDir)
 				}
 			}
-			if got := filepath.Base(paths[0]); got != tt.wantBase {
-				t.Errorf("primary base = %q, want %q", got, tt.wantBase)
+			if tt.wantBase != "" && filepath.Base(paths[0]) != tt.wantBase {
+				t.Errorf("primary base = %q, want %q", filepath.Base(paths[0]), tt.wantBase)
+			}
+		})
+	}
+}
+
+// An unusable chat JID would put files directly in store/, next to the
+// session DB; that must be an error, not a fallback.
+func TestAutoDownloadPathsRejectsBadChat(t *testing.T) {
+	for _, chat := range []string{"", ".", "..", ".hidden"} {
+		if paths, err := AutoDownloadPaths(chat, "MSG1", "a.jpg"); err == nil {
+			t.Errorf("chat %q: got %v, want error", chat, paths)
+		}
+	}
+}
+
+// A symlink or directory at the primary name is not another message's media,
+// so it must not push the download onto the alt name.
+func TestSaveAutoDownloadPrimaryNotRegular(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.jpg")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		plant func(primary string) error
+	}{
+		{"symlink", func(p string) error { return os.Symlink(target, p) }},
+		{"directory", func(p string) error { return os.Mkdir(p, 0o755) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paths := []string{filepath.Join(dir, tt.name+".jpg"), filepath.Join(dir, "B_"+tt.name+".jpg")}
+			if err := tt.plant(paths[0]); err != nil {
+				t.Skipf("cannot plant %s: %v", tt.name, err)
+			}
+			if _, err := saveAutoDownload(paths, []byte("message B"), sum256([]byte("message B"))); err == nil {
+				t.Fatal("expected an error")
+			}
+			if _, err := os.Lstat(paths[1]); !os.IsNotExist(err) {
+				t.Errorf("alt %s was written", paths[1])
 			}
 		})
 	}
