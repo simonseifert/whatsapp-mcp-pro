@@ -262,6 +262,8 @@ type SendMessageRequest struct {
 	MediaPath       string   `json:"media_path,omitempty"`
 	MentionedJIDs   []string `json:"mentioned_jids,omitempty"`
 	QuotedMessageID string   `json:"quoted_message_id,omitempty"`
+	// IdempotencyKey dedupes retries; also accepted as the Idempotency-Key header.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 // SendMessageResponse represents the response for the send message API
@@ -271,6 +273,11 @@ type SendMessageResponse struct {
 	MessageID string    `json:"message_id,omitempty"`
 	Timestamp time.Time `json:"timestamp,omitempty"`
 	Recipient string    `json:"recipient,omitempty"`
+	// Code is a machine-readable failure class (e.g. "reachout_timelock",
+	// "rate_limited", "timeout", "not_connected"); empty on success.
+	Code string `json:"code,omitempty"`
+	// RetryAfter is an RFC 3339 time before which retrying is pointless (429s).
+	RetryAfter string `json:"retry_after,omitempty"`
 }
 
 // SendResult contains the result of sending a message (internal use)
@@ -279,13 +286,18 @@ type SendResult struct {
 	Error     string
 	MessageID string
 	Timestamp time.Time
+	// Err is the typed cause on failure (see whatsapp.SendError), used by the
+	// API to pick an HTTP status. MessageID may be set even on failure: it is
+	// the WhatsApp ID the attempt used, which an idempotent retry reuses.
+	Err error
 }
 
 // ReactionRequest represents the request body for sending reactions
 type ReactionRequest struct {
-	ChatJID   string `json:"chat_jid"`
-	MessageID string `json:"message_id"`
-	Emoji     string `json:"emoji"` // empty string to remove reaction
+	ChatJID        string `json:"chat_jid"`
+	MessageID      string `json:"message_id"`
+	Emoji          string `json:"emoji"` // empty string to remove reaction
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 // EditMessageRequest represents the request body for editing messages
@@ -346,10 +358,11 @@ type UpdateGroupRequest struct {
 
 // CreatePollRequest represents the request body for creating a poll
 type CreatePollRequest struct {
-	ChatJID     string   `json:"chat_jid"`
-	Question    string   `json:"question"`
-	Options     []string `json:"options"`
-	MultiSelect bool     `json:"multi_select"`
+	ChatJID        string   `json:"chat_jid"`
+	Question       string   `json:"question"`
+	Options        []string `json:"options"`
+	MultiSelect    bool     `json:"multi_select"`
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
 }
 
 // Phase 4: History Sync
@@ -509,6 +522,9 @@ type ConnectionStatusResponse struct {
 	LastConnected       string `json:"last_connected,omitempty"`   // ISO-8601 timestamp
 	DisconnectedFor     string `json:"disconnected_for,omitempty"` // Duration string
 	AutoReconnectErrors int    `json:"auto_reconnect_errors,omitempty"`
+	// ReachoutTimelockUntil is when WhatsApp's restriction on messaging new
+	// contacts (error 463) ends, RFC 3339; null when no timelock is known.
+	ReachoutTimelockUntil *string `json:"reachout_timelock_until"`
 }
 
 // ConnectionEventPayload is the webhook payload for connection state changes.
