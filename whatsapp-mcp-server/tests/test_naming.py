@@ -101,11 +101,18 @@ def test_directory_missing_degrades_to_empty(naming_store):
 
 def test_set_names_stores_under_the_canonical_jid(naming_store):
     result = naming.set_contact_names(
-        [{"jid": "111@lid", "name": "Ivo Marina"}, {"jid": "222", "name": "  Club\tTreasurer\n"}]
+        [{"jid": "111@lid", "name": "Ivo Marina"}, {"jid": "222", "name": "  Club\tTreasurer\n"}],
+        confirmed_by_user=True,
     )
     assert result["success"] is True and result["saved"] == 2
     first, second = result["results"]
-    assert first == {"jid": "385111@s.whatsapp.net", "success": True, "name": "Ivo Marina", "input": "111@lid"}
+    assert first == {
+        "jid": "385111@s.whatsapp.net",
+        "success": True,
+        "name": "Ivo Marina",
+        "source": "user",
+        "input": "111@lid",
+    }
     assert second["jid"] == "222@lid" and second["name"] == "Club Treasurer"
     assert _nicknames(naming_store) == {"385111@s.whatsapp.net": "Ivo Marina", "222@lid": "Club Treasurer"}
 
@@ -122,36 +129,42 @@ def test_set_names_validates_each_item(naming_store):
             {"jid": "385111@s.whatsapp.net", "name": "x" * 65},
             {"name": "No Jid"},
             {"jid": "385333@s.whatsapp.net", "name": "Ana‮\x1b[31m"},
-        ]
+        ],
+        confirmed_by_user=True,
     )
     errors = [r.get("error") for r in result["results"]]
     assert "unknown jid" in errors[0]
     assert "empty" in errors[1]
     assert "64" in errors[2]
     assert errors[3] == "jid is required"
-    assert result["results"][4] == {"jid": "385333@s.whatsapp.net", "success": True, "name": "Ana[31m"}
+    assert result["results"][4] == {
+        "jid": "385333@s.whatsapp.net",
+        "success": True,
+        "name": "Ana[31m",
+        "source": "user",
+    }
     assert result["saved"] == 1 and result["failed"] == 4
     assert _nicknames(naming_store) == {"385333@s.whatsapp.net": "Ana[31m"}
 
 
 def test_set_names_rejects_oversized_or_malformed_batches(naming_store):
     too_many = [{"jid": "385111@s.whatsapp.net", "name": f"N{i}"} for i in range(naming.SET_NAMES_MAX_ITEMS + 1)]
-    assert naming.set_contact_names(too_many)["success"] is False
-    assert naming.set_contact_names([])["success"] is False
+    assert naming.set_contact_names(too_many, confirmed_by_user=True)["success"] is False
+    assert naming.set_contact_names([], confirmed_by_user=True)["success"] is False
     assert _nicknames(naming_store) == {}
 
 
 def test_set_names_accepts_a_jid_known_only_as_a_chat(naming_store):
     with sqlite3.connect(naming_store) as conn:
         conn.execute("INSERT INTO chats (jid, name) VALUES ('777@s.whatsapp.net', '777')")
-    result = naming.set_contact_names([{"jid": "777@s.whatsapp.net", "name": "Plumber"}])
+    result = naming.set_contact_names([{"jid": "777@s.whatsapp.net", "name": "Plumber"}], confirmed_by_user=True)
     assert result["results"][0]["success"] is True
 
 
 def test_set_names_replaces_and_dedupes_jid_forms(naming_store):
     with sqlite3.connect(naming_store) as conn:
         conn.execute("INSERT INTO contact_nicknames (jid, nickname) VALUES ('111@lid', 'Old')")
-    result = naming.set_contact_names([{"jid": "385111", "name": "Ivo"}])
+    result = naming.set_contact_names([{"jid": "385111", "name": "Ivo"}], confirmed_by_user=True)
     assert result["results"][0]["previous"] == "Old"
     # The stale LID-keyed nickname is gone, so the bridge cannot pick it instead.
     assert _nicknames(naming_store) == {"385111@s.whatsapp.net": "Ivo"}
@@ -161,7 +174,7 @@ def test_set_names_replaces_and_dedupes_jid_forms(naming_store):
 
 
 def test_nickname_wins_in_directory_reads_before_bridge_rebuild(naming_store):
-    naming.set_contact_names([{"jid": "385111@s.whatsapp.net", "name": "Ivo Marina"}])
+    naming.set_contact_names([{"jid": "385111@s.whatsapp.net", "name": "Ivo Marina"}], confirmed_by_user=True)
 
     found = identity.get_identity("111@lid")
     assert found is not None
@@ -188,7 +201,8 @@ def test_removed_nickname_stops_showing_before_bridge_rebuild(naming_store):
 
 def test_list_chats_and_messages_use_nicknames(naming_store):
     naming.set_contact_names(
-        [{"jid": "385111@s.whatsapp.net", "name": "Ivo Marina"}, {"jid": "222@lid", "name": "Treasurer"}]
+        [{"jid": "385111@s.whatsapp.net", "name": "Ivo Marina"}, {"jid": "222@lid", "name": "Treasurer"}],
+        confirmed_by_user=True,
     )
 
     chats = {c["jid"]: c["name"] for c in whatsapp.list_chats(limit=50)}
@@ -243,6 +257,114 @@ def test_set_contact_names_schema_names_both_fields(main_all):
 def test_tools_round_trip(main_all, naming_store):
     listed = main_all.list_unnamed_contacts()
     assert listed["contacts"][0]["jid"] == "222@lid"
-    saved = main_all.set_contact_names([{"jid": "222@lid", "name": "Treasurer"}])
+    saved = main_all.set_contact_names([{"jid": "222@lid", "name": "Treasurer"}], confirmed_by_user=True)
     assert saved["saved"] == 1
     assert all(c["jid"] != "222@lid" for c in main_all.list_unnamed_contacts()["contacts"])
+
+
+# --- provenance: agent-inferred names stay unverified --------------------------
+
+
+def _sources(db: str) -> dict[str, str | None]:
+    with sqlite3.connect(db) as conn:
+        return dict(conn.execute("SELECT jid, source FROM contact_nicknames").fetchall())
+
+
+def test_source_column_is_added_idempotently(naming_store):
+    with sqlite3.connect(naming_store) as conn:
+        assert naming.ensure_nickname_source_column(conn) is True
+        assert naming.ensure_nickname_source_column(conn) is True
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(contact_nicknames)")]
+    assert cols.count("source") == 1
+
+
+def test_readers_tolerate_a_store_without_the_source_column(naming_store):
+    # Legacy row written by manage_nickname before the column existed: user-set.
+    with sqlite3.connect(naming_store) as conn:
+        conn.execute("INSERT INTO contact_nicknames (jid, nickname) VALUES ('385111@s.whatsapp.net', 'Ivo')")
+    found = identity.get_identity("385111")
+    assert found is not None
+    assert (found.display_name, found.name_source, found.nickname_source) == ("Ivo", "user", "user")
+    assert whatsapp.list_contact_nicknames()[0]["source"] == "user"
+    by_jid, _ = _contacts()
+    assert "385111@s.whatsapp.net" not in by_jid
+
+
+def test_unconfirmed_names_are_stored_and_shown_as_unverified(naming_store):
+    result = naming.set_contact_names([{"jid": "222@lid", "name": "Your Bank"}], confirmed_by_user=False)
+    assert result["results"][0]["source"] == "agent_inferred"
+    assert _sources(naming_store) == {"222@lid": "agent_inferred"}
+
+    found = identity.get_identity("222@lid")
+    assert found is not None
+    assert found.display_name == "Your Bank (unverified)"
+    assert found.name_source == "agent_inferred"
+    as_dict = found.to_dict()
+    assert as_dict["name_source"] == "agent_inferred"
+    assert as_dict["names"]["nickname_source"] == "agent_inferred"
+
+    msgs = {m["id"]: m for m in whatsapp.list_messages(limit=50)}
+    assert msgs["b1"]["sender_name"] == "Your Bank (unverified)"
+    assert msgs["b1"]["sender_name_source"] == "agent_inferred"
+    assert whatsapp.get_sender_name("222") == "Your Bank (unverified)"
+
+    # Still unverified, so still on the list for the user to confirm.
+    by_jid, _ = _contacts()
+    assert by_jid["222@lid"]["unverified_name"] == "Your Bank"
+
+
+def test_unconfirmed_name_never_overwrites_a_user_name(naming_store):
+    naming.set_contact_names([{"jid": "385111@s.whatsapp.net", "name": "Ivo"}], confirmed_by_user=True)
+    result = naming.set_contact_names([{"jid": "111@lid", "name": "Mama"}], confirmed_by_user=False)
+    assert result["success"] is False
+    assert "user already named" in result["results"][0]["error"]
+    assert _nicknames(naming_store) == {"385111@s.whatsapp.net": "Ivo"}
+
+    # manage_nickname is user-driven too.
+    whatsapp.set_contact_nickname("385333@s.whatsapp.net", "Neighbour")
+    assert _sources(naming_store)["385333@s.whatsapp.net"] == "user"
+    refused = naming.set_contact_names([{"jid": "385333", "name": "Bank"}], confirmed_by_user=False)
+    assert refused["failed"] == 1
+
+    # The user confirming does replace it.
+    ok = naming.set_contact_names([{"jid": "111@lid", "name": "Ivo M"}], confirmed_by_user=True)
+    assert ok["results"][0]["previous"] == "Ivo"
+
+
+def test_unconfirmed_name_never_replaces_an_address_book_name(naming_store):
+    result = naming.set_contact_names([{"jid": "999@lid", "name": "Mama"}], confirmed_by_user=False)
+    assert "address-book" in result["results"][0]["error"]
+    assert _nicknames(naming_store) == {}
+
+    # Even if one got in (written before the address book had the name), the
+    # address-book name is what shows.
+    with sqlite3.connect(naming_store) as conn:
+        naming.ensure_nickname_source_column(conn)
+        conn.execute(
+            "INSERT INTO contact_nicknames (jid, nickname, source)"
+            " VALUES ('441234@s.whatsapp.net', 'Mama', 'agent_inferred')"
+        )
+    jane = identity.get_identity("441234")
+    assert jane is not None
+    assert (jane.display_name, jane.name_source) == ("Jane Doe", "address_book")
+    chats = {c["jid"]: c["name"] for c in whatsapp.list_chats(limit=50)}
+    assert chats["441234@s.whatsapp.net"] == "Jane Doe"
+
+
+def test_confirmed_by_user_must_be_a_bool(naming_store):
+    result = naming.set_contact_names([{"jid": "222@lid", "name": "X"}], confirmed_by_user="yes")  # type: ignore[arg-type]
+    assert result["success"] is False
+    assert _nicknames(naming_store) == {}
+
+
+def test_guidance_rejects_self_claims(naming_store):
+    _, result = _contacts()
+    guidance = result["next_step"].lower()
+    assert "not evidence" in guidance and "social-engineering" in guidance
+    assert "confirmed_by_user=true" in guidance
+
+
+def test_confirmed_by_user_is_a_required_tool_parameter(main_all):
+    params = main_all.mcp._tool_manager.get_tool("set_contact_names").parameters
+    assert "confirmed_by_user" in params["required"]
+    assert params["properties"]["confirmed_by_user"]["type"] == "boolean"

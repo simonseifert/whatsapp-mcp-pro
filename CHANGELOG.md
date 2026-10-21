@@ -12,7 +12,11 @@ All notable changes to this fork are recorded here. The format follows
   naming people known only by number. Names are stored in `contact_nicknames`
   (the `manage_nickname` store). Directory reads, `list_chats` and
   `list_messages` (new `sender_name` field) overlay live nicknames, so a name
-  shows before the bridge's next directory rebuild.
+  shows before the bridge's next directory rebuild. Names carry provenance
+  (`contact_nicknames.source`, added by the MCP): `set_contact_names` requires
+  `confirmed_by_user`; unconfirmed names are stored as `agent_inferred`, shown
+  as "(unverified)", and can't replace a user nickname or an address-book name.
+  Directory records expose `name_source`, messages `sender_name_source`.
 
 ## [v0.4.0-pro] - 2026-10-22
 

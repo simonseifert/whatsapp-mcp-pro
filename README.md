@@ -111,10 +111,13 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
   resource.
 - **Naming unknown numbers.** `list_unnamed_contacts` ranks active people who
   only show up as a number (no address-book name or nickname) and returns their
-  last few messages and shared groups; an agent infers names from strong
-  evidence or asks you, then `set_contact_names` stores them as local nicknames
-  (up to 50 per call, never sent to WhatsApp). The names show up at once in
-  `list_chats`, `list_messages` and the directory.
+  last few messages and shared groups, so you (via an agent) can say who they
+  are; `set_contact_names` stores them as local nicknames (up to 50 per call,
+  never sent to WhatsApp) and they show up at once in `list_chats`,
+  `list_messages` and the directory. A stranger's own "this is your bank" is
+  never taken as evidence: names you didn't confirm are stored as
+  `agent_inferred`, shown as "(unverified)", and can't replace a name you set
+  or one from your address book.
 - **LID chat merging.** A conversation split across a LID and a phone JID is
   folded into one chat (`MERGE_LID_CHATS=true`, the default), so search, recall
   and per-chat automation see all of it. Merged rows are kept and marked, so an

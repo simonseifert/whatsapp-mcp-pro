@@ -37,7 +37,7 @@ except ImportError:
 import audio
 from lib.bridge import _get_headers
 from lib.identity import Identity, directory_available, get_identity, list_identities
-from lib.naming import resolve_display_names
+from lib.naming import SOURCE_USER, ensure_nickname_source_column, resolve_display_names
 from lib.utils import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
 # Use environment variable for bridge host, default to localhost:8080 for development
@@ -190,6 +190,7 @@ class Message:
     filename: str | None = None
     file_length: int | None = None
     sender_name: str | None = None  # resolved display name (nickname first), when one is known
+    sender_name_source: str | None = None  # user, agent_inferred (shown "(unverified)"), address_book, ...
 
     def to_dict(self) -> dict[str, Any]:
         """Convert Message to dictionary for structured output."""
@@ -205,6 +206,7 @@ class Message:
         }
         if self.sender_name:
             result["sender_name"] = self.sender_name
+            result["sender_name_source"] = self.sender_name_source
         # Include media metadata if present
         if self.media_type:
             result["filename"] = self.filename
@@ -353,7 +355,7 @@ def get_sender_name(sender_jid: str) -> str:
         with closing(sqlite3.connect(MESSAGES_DB_PATH)) as names_conn:
             resolved = resolve_display_names(names_conn, [sender_jid]).get(sender_jid)
         if resolved:
-            return resolved
+            return resolved.name
 
         # Try to get rich contact information from WhatsApp store
         whatsapp_conn = sqlite3.connect(WHATSAPP_DB_PATH)
@@ -570,8 +572,11 @@ def list_messages(
         )
         for message in result:
             if not message.is_from_me:
-                message.sender_name = names.get(message.sender)
-            message.chat_name = dm_nicks.get(message.chat_jid, message.chat_name)
+                resolved = names.get(message.sender)
+                if resolved:
+                    message.sender_name, message.sender_name_source = resolved
+            if message.chat_jid in dm_nicks:
+                message.chat_name = dm_nicks[message.chat_jid].name
 
         if include_context and result:
             # Add context for each message
@@ -815,7 +820,7 @@ def list_chats(
 
             chat = Chat(
                 jid=chat_data[0],
-                name=nicknames.get(chat_data[0], chat_data[1]),
+                name=nicknames[chat_data[0]].name if chat_data[0] in nicknames else chat_data[1],
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=last_message,
                 last_message_id=last_message_id,
@@ -1687,14 +1692,24 @@ def set_contact_nickname(jid: str, nickname: str) -> dict[str, Any]:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
-        # Insert or update nickname
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO contact_nicknames (jid, nickname, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-        """,
-            (jid, nickname),
-        )
+        # manage_nickname is user-driven, so its names are 'user' provenance;
+        # see lib/naming.py for why agent-inferred names are kept apart.
+        if ensure_nickname_source_column(conn):
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO contact_nicknames (jid, nickname, source, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+                (jid, nickname, SOURCE_USER),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO contact_nicknames (jid, nickname, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            """,
+                (jid, nickname),
+            )
 
         conn.commit()
 
@@ -1767,20 +1782,29 @@ def list_contact_nicknames() -> list[dict[str, Any]]:
     """List all custom contact nicknames with timestamps.
 
     Returns:
-        List of dicts with jid, nickname, created_at, updated_at
+        List of dicts with jid, nickname, source (user / agent_inferred), created_at, updated_at
     """
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT jid, nickname, created_at, updated_at
+        # source is added by lib/naming.py on first write; NULL or missing means user-set.
+        source = "source" if _has_column(cursor, "contact_nicknames", "source") else "NULL"
+        cursor.execute(f"""
+            SELECT jid, nickname, created_at, updated_at, {source}
             FROM contact_nicknames
             ORDER BY nickname
         """)
 
         return [
-            {"jid": row[0], "nickname": row[1], "created_at": row[2], "updated_at": row[3]} for row in cursor.fetchall()
+            {
+                "jid": row[0],
+                "nickname": row[1],
+                "source": row[4] or SOURCE_USER,
+                "created_at": row[2],
+                "updated_at": row[3],
+            }
+            for row in cursor.fetchall()
         ]
 
     except sqlite3.Error as e:
