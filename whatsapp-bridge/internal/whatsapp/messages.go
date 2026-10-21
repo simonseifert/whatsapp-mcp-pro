@@ -640,6 +640,9 @@ func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *data
 	if err != nil {
 		return failed(newSendError(SendErrInvalid, "invalid chat JID: %w", err), "")
 	}
+	if se := c.checkAllowlist(chat); se != nil {
+		return failed(se, "")
+	}
 
 	msgID := types.MessageID(messageID)
 
@@ -680,6 +683,9 @@ func (c *Client) EditMessage(chatJID, messageID, newContent string) error {
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %v", err)
 	}
+	if se := c.checkAllowlist(chat); se != nil {
+		return se
+	}
 
 	c.GoOnlineBriefly()
 
@@ -717,6 +723,9 @@ func (c *Client) DeleteMessage(chatJID, messageID, senderJID string) error {
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %v", err)
+	}
+	if se := c.checkAllowlist(chat); se != nil {
+		return se
 	}
 
 	c.GoOnlineBriefly()
@@ -983,6 +992,9 @@ func (c *Client) CreatePollWithOptions(ctx context.Context, messageStore *databa
 		return failed(newSendError(SendErrInvalid, "invalid chat JID: %w", err), "")
 	}
 
+	if se := c.checkAllowlist(chat); se != nil {
+		return failed(se, "")
+	}
 	if se := c.checkReachoutGate(messageStore, chat, chatJID); se != nil {
 		return failed(se, "")
 	}

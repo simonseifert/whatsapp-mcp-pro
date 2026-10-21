@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -29,6 +30,18 @@ func loadSendAllowlist() {
 			sendAllowlist[entry] = true
 		}
 	}
+}
+
+// refuseUnlistedRecipient writes a 403 and returns true when chatJID fails the
+// SEND_ALLOWED_JIDS gate. Every endpoint that puts a message in a chat (send,
+// reaction, poll, edit, delete) calls it: gating only /api/send let a sender
+// confined to one chat still react, poll, edit or revoke in any other.
+func refuseUnlistedRecipient(w http.ResponseWriter, chatJID string) bool {
+	if recipientAllowed(chatJID) {
+		return false
+	}
+	SendJSONError(w, "Recipient not in SEND_ALLOWED_JIDS allowlist", http.StatusForbidden)
+	return true
 }
 
 // recipientAllowed reports whether the recipient passes the send allowlist.
