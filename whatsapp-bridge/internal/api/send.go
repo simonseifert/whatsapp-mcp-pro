@@ -51,22 +51,35 @@ type sendBackend interface {
 }
 
 const (
-	defaultSendTimeout   = 25 * time.Second
-	maxIdempotencyKeyLen = 255
-	idempotencyHeader    = "Idempotency-Key"
-	replayHeader         = "Idempotent-Replay"
+	defaultSendTimeout = 25 * time.Second
+	// Media sends upload first; a large video on a slow link takes well over
+	// 25s, so they get their own, longer budget (the MCP waits correspondingly).
+	defaultMediaSendTimeout = 150 * time.Second
+	maxIdempotencyKeyLen    = 255
+	idempotencyHeader       = "Idempotency-Key"
+	replayHeader            = "Idempotent-Replay"
 )
 
 // sendTimeout reads SEND_TIMEOUT_SECONDS. The default (25s) sits under the MCP
 // server's 30s HTTP timeout on purpose: the bridge should report the timeout
 // (and record the idempotency outcome) before the client abandons the request.
 func sendTimeout() time.Duration {
-	if raw := strings.TrimSpace(os.Getenv("SEND_TIMEOUT_SECONDS")); raw != "" {
+	return envSeconds("SEND_TIMEOUT_SECONDS", defaultSendTimeout)
+}
+
+// mediaSendTimeout reads SEND_MEDIA_TIMEOUT_SECONDS (default 150s), the budget
+// for sends that carry a file.
+func mediaSendTimeout() time.Duration {
+	return envSeconds("SEND_MEDIA_TIMEOUT_SECONDS", defaultMediaSendTimeout)
+}
+
+func envSeconds(name string, def time.Duration) time.Duration {
+	if raw := strings.TrimSpace(os.Getenv(name)); raw != "" {
 		if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
 			return time.Duration(secs) * time.Second
 		}
 	}
-	return defaultSendTimeout
+	return def
 }
 
 // httpStatusForSendError maps a send failure class to its HTTP status.
@@ -155,10 +168,10 @@ func writeOutcome(w http.ResponseWriter, out sendOutcome, body []byte) {
 // ID it is about to send with.
 func (s *Server) runIdempotentSend(
 	w http.ResponseWriter, r *http.Request,
-	endpoint, recipient, key string, payload any,
+	endpoint, recipient, key string, payload any, timeout time.Duration,
 	do func(ctx context.Context, priorMessageID string, beforeDispatch func(string)) sendOutcome,
 ) {
-	ctx, cancel := context.WithTimeout(r.Context(), sendTimeout())
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
 	if key == "" {
@@ -265,7 +278,11 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	payload := req
 	payload.IdempotencyKey = ""
 
-	s.runIdempotentSend(w, r, "send", req.Recipient, key, payload, func(ctx context.Context, priorID string, beforeDispatch func(string)) sendOutcome {
+	timeout := sendTimeout()
+	if req.MediaPath != "" {
+		timeout = mediaSendTimeout()
+	}
+	s.runIdempotentSend(w, r, "send", req.Recipient, key, payload, timeout, func(ctx context.Context, priorID string, beforeDispatch func(string)) sendOutcome {
 		// Presence is handled centrally by the client's presence manager.
 		res := s.sender.SendMessageWithOptions(ctx, s.messageStore, whatsapp.SendOptions{
 			Recipient:       req.Recipient,
@@ -335,7 +352,7 @@ func (s *Server) handleReaction(w http.ResponseWriter, r *http.Request) {
 	payload := req
 	payload.IdempotencyKey = ""
 
-	s.runIdempotentSend(w, r, "reaction", req.ChatJID, key, payload, func(ctx context.Context, priorID string, beforeDispatch func(string)) sendOutcome {
+	s.runIdempotentSend(w, r, "reaction", req.ChatJID, key, payload, sendTimeout(), func(ctx context.Context, priorID string, beforeDispatch func(string)) sendOutcome {
 		res := s.sender.SendReactionWithOptions(ctx, s.messageStore, whatsapp.ReactionOptions{
 			ChatJID:         req.ChatJID,
 			TargetMessageID: req.MessageID,
@@ -393,7 +410,7 @@ func (s *Server) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 	payload := req
 	payload.IdempotencyKey = ""
 
-	s.runIdempotentSend(w, r, "poll", req.ChatJID, key, payload, func(ctx context.Context, priorID string, beforeDispatch func(string)) sendOutcome {
+	s.runIdempotentSend(w, r, "poll", req.ChatJID, key, payload, sendTimeout(), func(ctx context.Context, priorID string, beforeDispatch func(string)) sendOutcome {
 		res := s.sender.CreatePollWithOptions(ctx, s.messageStore, whatsapp.PollOptions{
 			ChatJID:        req.ChatJID,
 			Question:       req.Question,

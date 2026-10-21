@@ -371,11 +371,12 @@ def send_message(
 ) -> dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
 
-    Retries are deduplicated. If idempotency_key is omitted, one is derived from
-    (recipient, text, quoted message, mentions) plus a 10-minute time bucket, so repeating the identical call within
-    ~10 minutes (e.g. after a timeout) returns the first result with
-    "deduplicated": true instead of sending again. To deliberately send the same
-    text twice, pass a fresh idempotency_key (or vary the content).
+    Sends are safe to retry. A request that times out is retried once automatically
+    with the same idempotency key, so it can never go out twice. The result includes
+    "idempotency_key"; to retry a whole call after an error, pass that key back and a
+    message that already went out returns "deduplicated": true instead of sending
+    again. Without a key every call is a new message, so sending the same text
+    twice on purpose just works.
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -404,11 +405,12 @@ def send_file(
 
     Provide the file either as a path on the server, or inline as base64.
 
-    Retries are deduplicated. If idempotency_key is omitted, one is derived from
-    (recipient, file bytes, file name) plus a 10-minute time bucket, so repeating the identical call within
-    ~10 minutes (e.g. after a timeout) returns the first result with
-    "deduplicated": true instead of sending again. To deliberately send the same
-    file twice, pass a fresh idempotency_key (or vary the content).
+    Sends are safe to retry. A request that times out is retried once automatically
+    with the same idempotency key, so it can never go out twice. The result includes
+    "idempotency_key"; to retry a whole call after an error, pass that key back and a
+    message that already went out returns "deduplicated": true instead of sending
+    again. Without a key every call is a new message, so sending the same text
+    twice on purpose just works.
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -438,11 +440,12 @@ def send_file(
 def send_audio_message(recipient: str, media_path: str, idempotency_key: str | None = None) -> dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
 
-    Retries are deduplicated. If idempotency_key is omitted, one is derived from
-    (recipient, audio file bytes) plus a 10-minute time bucket, so repeating the identical call within
-    ~10 minutes (e.g. after a timeout) returns the first result with
-    "deduplicated": true instead of sending again. To deliberately send the same
-    audio twice, pass a fresh idempotency_key (or vary the content).
+    Sends are safe to retry. A request that times out is retried once automatically
+    with the same idempotency key, so it can never go out twice. The result includes
+    "idempotency_key"; to retry a whole call after an error, pass that key back and a
+    message that already went out returns "deduplicated": true instead of sending
+    again. Without a key every call is a new message, so sending the same text
+    twice on purpose just works.
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -852,11 +855,12 @@ def create_poll(
 ) -> dict[str, Any]:
     """Create and send a poll to a WhatsApp chat.
 
-    Retries are deduplicated. If idempotency_key is omitted, one is derived from
-    (chat, question, options, multi_select) plus a 10-minute time bucket, so repeating the identical call within
-    ~10 minutes (e.g. after a timeout) returns the first result with
-    "deduplicated": true instead of sending again. To deliberately send the same
-    poll twice, pass a fresh idempotency_key (or vary the content).
+    Sends are safe to retry. A request that times out is retried once automatically
+    with the same idempotency key, so it can never go out twice. The result includes
+    "idempotency_key"; to retry a whole call after an error, pass that key back and a
+    message that already went out returns "deduplicated": true instead of sending
+    again. Without a key every call is a new message, so sending the same text
+    twice on purpose just works.
 
     Args:
         chat_jid: The JID of the chat to send the poll to
