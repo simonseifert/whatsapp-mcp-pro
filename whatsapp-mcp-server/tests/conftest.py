@@ -13,6 +13,9 @@ from datetime import datetime
 
 import pytest
 
+# The LID twin of 123456789@s.whatsapp.net in the fixtures below.
+MERGED_LID = "555000111@lid"
+
 
 @pytest.fixture
 def temp_messages_db():
@@ -69,6 +72,14 @@ def temp_messages_db():
 
     # Insert test data
     now = datetime.now().isoformat()
+    # A LID chat the bridge has merged into its phone twin: an empty shell
+    # stamped with merged_into. Inserted first, so a query without ORDER BY or a
+    # merged_into filter meets the shell before the live chat — as on a real
+    # store, where the shell was returned for 31 of 50 merged pairs.
+    cursor.execute(
+        "INSERT INTO chats (jid, name, last_message_time, merged_into) VALUES (?, ?, ?, ?)",
+        (MERGED_LID, "Test User (lid)", now, "123456789@s.whatsapp.net"),
+    )
     cursor.execute(
         "INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
         ("123456789@s.whatsapp.net", "Test User", now),
@@ -133,6 +144,13 @@ def temp_whatsapp_db():
         """INSERT INTO whatsmeow_contacts (their_jid, first_name, full_name, push_name, business_name)
            VALUES (?, ?, ?, ?, ?)""",
         ("123456789@s.whatsapp.net", "John", "John Doe", "Johnny", None),
+    )
+
+    # Maps the phone JID to MERGED_LID, so contact lookups reach the shell too.
+    cursor.execute("CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
+    cursor.execute(
+        "INSERT INTO whatsmeow_lid_map (lid, pn) VALUES (?, ?)",
+        (MERGED_LID.split("@")[0], "123456789"),
     )
 
     conn.commit()
