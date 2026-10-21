@@ -7,10 +7,13 @@ readOnlyHint, and the real tools would need a bridge and a store.
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
 import stat
+import time
+from collections import deque
 from dataclasses import replace
 from urllib.parse import parse_qs, urlparse
 
@@ -649,3 +652,105 @@ def test_public_host_allowed_only_with_oauth():
     assert "wa.example.com" in hosts and "wa.example.com:443" in hosts
     assert "https://wa.example.com" in origins
     assert serve_http.allowed_hosts("127.0.0.1", 8082) == (["127.0.0.1:8082"], ["http://127.0.0.1:8082"])
+
+
+def test_backoff_key_groups_ipv6_by_64():
+    from lib.oauth import backoff_key
+
+    assert backoff_key("2001:db8:1:2:aaaa::1") == backoff_key("2001:db8:1:2:ffff:ffff:ffff:ffff") == "2001:db8:1:2::/64"
+    assert backoff_key("2001:db8:1:3::1") != backoff_key("2001:db8:1:2::1")
+    assert backoff_key("203.0.113.5") == "203.0.113.5"
+    assert backoff_key("203.0.113.5") != backoff_key("203.0.113.6")
+    assert backoff_key("::ffff:203.0.113.5") == "203.0.113.5"
+    assert backoff_key("testclient") == "testclient"
+
+
+def test_backoff_shared_across_a_64():
+    from lib.oauth import IPBackoff
+
+    b = IPBackoff()
+    b.fail("2001:db8:1:2::1")
+    assert b.retry_after("2001:db8:1:2:dead:beef:0:1") > 0  # same /64, rotated host bits
+    assert b.retry_after("2001:db8:1:3::1") == 0
+
+
+def test_backoff_not_reset_by_success_within_window():
+    from lib.oauth import IPBackoff
+
+    b = IPBackoff(window=3600)
+    b.fail("1.2.3.4")
+    b.fail("1.2.3.4")
+    b.succeed("1.2.3.4")
+    assert b.retry_after("1.2.3.4") > 0
+    b.fail("1.2.3.4")
+    assert b.state["1.2.3.4"][0] == 3  # the doubling series continued
+
+    # Once the last failure is older than the window, success clears it and a
+    # new failure starts the series over.
+    count, until, last = b.state["1.2.3.4"]
+    b.state["1.2.3.4"] = (count, until - 7200, last - 7200)
+    b.succeed("1.2.3.4")
+    assert "1.2.3.4" not in b.state
+    b.state["5.6.7.8"] = (9, 0.0, time.time() - 7200)
+    b.fail("5.6.7.8")
+    assert b.state["5.6.7.8"][0] == 1
+
+
+def test_failure_budget_slides():
+    from lib.oauth import FailureBudget
+
+    b = FailureBudget(limit=2, window=60)
+    b.fail()
+    assert not b.exhausted()
+    b.fail()
+    assert b.exhausted()
+    b.failures = deque(t - 120 for t in b.failures)  # the window moves past them
+    assert not b.exhausted()
+
+
+def test_global_failure_budget_disables_passphrase_but_not_cli(tmp_path, caplog, capsys):
+    cfg = OAuthConfig(
+        public_url=PUBLIC,
+        passphrase=PASSPHRASE,
+        db_path=str(tmp_path / "o.db"),
+        trusted_proxies=("testclient",),
+        failure_budget=3,
+    )
+    with _client(cfg) as c, caplog.at_level(logging.WARNING, logger="whatsapp-mcp.oauth"):
+        # A distributed guesser: every attempt from a fresh address, so no
+        # per-address backoff ever applies.
+        for i in range(3):
+            _, _, loc = _start(c)
+            r = _consent(c, loc, passphrase="nope", headers={"X-Forwarded-For": f"2001:db8:{i}::1"})
+            assert r.status_code == 401
+        tripped = [r for r in caplog.records if "passphrase approval is disabled" in r.getMessage()]
+        assert len(tripped) == 1 and tripped[0].levelno == logging.WARNING
+
+        # Now even the right passphrase from a clean address is refused...
+        client_id, verifier, loc = _start(c)
+        r = _consent(c, loc, headers={"X-Forwarded-For": "198.51.100.7"})
+        assert r.status_code == 429
+        assert "temporarily disabled" in r.text and "python -m lib.oauth approve" in r.text
+        assert "temporarily disabled" in c.get(loc).text
+
+        # ...but the CLI path still works, so the operator is never locked out.
+        assert main(["--db", cfg.db_path, "approve", _req(loc), "--scope", "read"]) == 0
+        capsys.readouterr()
+        r = _consent(c, loc, decision="continue")
+        assert r.status_code == 303
+        assert _exchange(c, client_id, verifier, r).status_code == 200
+
+
+def test_config_reads_failure_budget(tmp_path):
+    env = {
+        "MCP_OAUTH_ENABLED": "true",
+        "MCP_PUBLIC_URL": PUBLIC,
+        "MCP_OAUTH_PASSPHRASE": PASSPHRASE,
+        "MCP_OAUTH_DB": str(tmp_path / "o.db"),
+    }
+    c = OAuthConfig.from_env(env)
+    assert c is not None and (c.failure_budget, c.failure_window) == (20, 3600)
+    c = OAuthConfig.from_env({**env, "MCP_OAUTH_FAILURE_BUDGET": "5", "MCP_OAUTH_FAILURE_WINDOW": "600"})
+    assert c is not None and (c.failure_budget, c.failure_window) == (5, 600)
+    with pytest.raises(ValueError):
+        OAuthConfig.from_env({**env, "MCP_OAUTH_FAILURE_BUDGET": "0"})

@@ -285,11 +285,15 @@ sign-in: a cookie set by `/authorize` is checked on approval, so a consent
 link someone sends you cannot be approved. If you did not just click Connect
 somewhere, close it.
 
-**Wrong passphrases** cost the sender's address an increasing wait (2 s, 4 s,
-8 s ... up to 15 min), and three wrong tries kill that consent request. There
-is no global lock, so nobody on the internet can lock you out. You can also
-skip the passphrase and approve from a shell on the server with the command
-the page shows, then press **Continue after server approval**:
+**Wrong passphrases** cost the sender an increasing wait (2 s, 4 s, 8 s ... up
+to 15 min, counted per IPv4 address or per IPv6 /64, and not cleared by a
+success within the hour), and three wrong tries kill that consent request.
+Against guessing from many addresses there is a global budget: after 20 wrong
+passphrases in an hour from all sources (`MCP_OAUTH_FAILURE_BUDGET`,
+`MCP_OAUTH_FAILURE_WINDOW`) the page stops accepting passphrases until the
+window slides, and the server logs a warning. None of this can lock you out:
+approving from a shell on the server always works. Run the command the page
+shows, then press **Continue after server approval**:
 
 ```bash
 cd whatsapp-mcp-server

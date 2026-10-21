@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -39,6 +40,7 @@ import sqlite3
 import sys
 import time
 import uuid
+from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -89,6 +91,8 @@ PENDING_TTL = 600
 CODE_TTL = 300
 ATTEMPTS_PER_CONSENT = 3
 BACKOFF_MAX = 900
+DEFAULT_FAILURE_BUDGET = 20
+DEFAULT_FAILURE_WINDOW = 3600
 MAX_TRACKED_IPS = 10000
 MIN_PASSPHRASE_LEN = 12
 # DCR lets anyone name their client "Claude"; the redirect host is the only
@@ -145,6 +149,8 @@ class OAuthConfig:
     refresh_ttl: int = 30 * 86400
     allowed_redirect_hosts: tuple[str, ...] = DEFAULT_REDIRECT_HOSTS
     trusted_proxies: tuple[str, ...] = ()
+    failure_budget: int = DEFAULT_FAILURE_BUDGET  # wrong passphrases per window, all sources
+    failure_window: int = DEFAULT_FAILURE_WINDOW
 
     @property
     def secure_cookies(self) -> bool:
@@ -216,6 +222,8 @@ class OAuthConfig:
             refresh_ttl=_int("MCP_OAUTH_REFRESH_TTL", 30 * 86400),
             allowed_redirect_hosts=_csv(env.get("MCP_OAUTH_ALLOWED_REDIRECT_HOSTS")) or DEFAULT_REDIRECT_HOSTS,
             trusted_proxies=_csv(env.get("MCP_TRUSTED_PROXY")),
+            failure_budget=_int("MCP_OAUTH_FAILURE_BUDGET", DEFAULT_FAILURE_BUDGET),
+            failure_window=_int("MCP_OAUTH_FAILURE_WINDOW", DEFAULT_FAILURE_WINDOW),
         )
 
 
@@ -473,32 +481,97 @@ class _Pending:
         return urlparse(str(self.params.redirect_uri)).hostname or "?"
 
 
+def backoff_key(ip: str) -> str:
+    """Group addresses the way one attacker holds them: an IPv6 /64 (one
+    subscriber gets at least that many) or a single IPv4 address."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.IPv6Network(f"{addr}/64", strict=False))
+    return str(addr)
+
+
 class IPBackoff:
-    """Per-client-IP exponential backoff on wrong passphrases.
+    """Per-address exponential backoff on wrong passphrases (keys: backoff_key).
 
     Deliberately not a global lock: one would let anyone who can reach the
     public consent page keep the operator locked out indefinitely. Here an
     attacker only slows their own address (2 s, 4 s, 8 s ... capped at 15 min),
-    and the CLI approval path bypasses it entirely.
+    and the CLI approval path bypasses it entirely. FailureBudget covers the
+    distributed case this cannot.
     """
 
-    def __init__(self) -> None:
-        self.state: dict[str, tuple[int, float]] = {}  # ip -> (failures, next allowed)
+    def __init__(self, window: int = DEFAULT_FAILURE_WINDOW) -> None:
+        self.window = window
+        # key -> (failures, next allowed, last failure)
+        self.state: dict[str, tuple[int, float, float]] = {}
 
     def retry_after(self, ip: str) -> int:
-        _, until = self.state.get(ip, (0, 0.0))
+        _, until, _ = self.state.get(backoff_key(ip), (0, 0.0, 0.0))
         return max(0, int(until - time.time() + 0.999))
 
     def fail(self, ip: str) -> None:
-        count, _ = self.state.get(ip, (0, 0.0))
+        key = backoff_key(ip)
+        now = time.time()
+        count, _, last = self.state.get(key, (0, 0.0, 0.0))
+        if now - last > self.window:
+            count = 0
         count += 1
-        self.state[ip] = (count, time.time() + min(2**count, BACKOFF_MAX))
+        self.state[key] = (count, now + min(2**count, BACKOFF_MAX), now)
         if len(self.state) > MAX_TRACKED_IPS:
-            now = time.time()
-            self.state = {k: v for k, v in self.state.items() if v[1] > now - BACKOFF_MAX}
+            self.state = {k: v for k, v in self.state.items() if now - v[2] <= self.window}
 
     def succeed(self, ip: str) -> None:
-        self.state.pop(ip, None)
+        # A success does not wipe recent failures: an attacker sharing the
+        # operator's address (or a /64) must not get a fresh doubling series
+        # every time the operator logs in.
+        key = backoff_key(ip)
+        entry = self.state.get(key)
+        if entry and time.time() - entry[2] > self.window:
+            del self.state[key]
+
+
+class FailureBudget:
+    """Sliding-window cap on wrong passphrases across all sources.
+
+    Per-address backoff does nothing against many addresses. Once the budget
+    is spent, passphrase approval is off until the window slides; the CLI
+    approval path is unaffected, so this cannot lock the operator out either.
+    """
+
+    def __init__(self, limit: int = DEFAULT_FAILURE_BUDGET, window: int = DEFAULT_FAILURE_WINDOW) -> None:
+        self.limit = limit
+        self.window = window
+        self.failures: deque[float] = deque()
+        self.tripped = False
+
+    def _slide(self) -> None:
+        now = time.time()
+        while self.failures and now - self.failures[0] > self.window:
+            self.failures.popleft()
+        if self.tripped and len(self.failures) < self.limit:
+            self.tripped = False
+            logger.warning("OAuth consent: passphrase approval re-enabled")
+
+    def exhausted(self) -> bool:
+        self._slide()
+        return len(self.failures) >= self.limit
+
+    def fail(self) -> None:
+        self._slide()
+        self.failures.append(time.time())
+        if len(self.failures) >= self.limit and not self.tripped:
+            self.tripped = True
+            logger.warning(
+                "OAuth consent: %d wrong passphrases within %d s from all sources; passphrase approval is "
+                "disabled until the window slides. Approve with: python -m lib.oauth approve <req> --scope read",
+                len(self.failures),
+                self.window,
+            )
 
 
 def client_ip(scope: Mapping[str, Any], trusted_proxies: tuple[str, ...]) -> str:
@@ -529,7 +602,8 @@ class WAOAuthProvider:
         # req_id -> raw nonce, handed from authorize() to the /authorize
         # response wrapper that sets the browser-binding cookie.
         self.fresh_nonces: dict[str, str] = {}
-        self.backoff = IPBackoff()
+        self.backoff = IPBackoff(config.failure_window)
+        self.budget = FailureBudget(config.failure_budget, config.failure_window)
 
     # registration
 
@@ -782,6 +856,12 @@ _UNBOUND = (
 )
 
 
+_BUDGET_MSG = (
+    "Passphrase approval is temporarily disabled: too many wrong passphrases from all sources. "
+    "Approve from the server with the command below, then press Continue."
+)
+
+
 def _bound(request: Request, req_id: str, pending: _Pending) -> bool:
     """True if this browser holds the nonce cookie set by its own /authorize."""
     nonce = request.cookies.get(CONSENT_COOKIE_PREFIX + req_id, "")
@@ -826,7 +906,7 @@ def consent_routes(provider: WAOAuthProvider) -> list[Route]:
                 return _plain(_EXPIRED, 400)
             if not _bound(request, req_id, pending):
                 return _plain(_UNBOUND, 403)
-            return _render(req_id, pending)
+            return _render(req_id, pending, _BUDGET_MSG if provider.budget.exhausted() else "")
 
         form = await request.form()
         req_id = str(form.get("req", ""))
@@ -853,6 +933,8 @@ def consent_routes(provider: WAOAuthProvider) -> list[Route]:
         if decision != "approve":
             return _render(req_id, pending, "Choose Approve or Deny.", status=400)
 
+        if provider.budget.exhausted():
+            return _render(req_id, pending, _BUDGET_MSG, status=429)
         ip = client_ip(request.scope, provider.config.trusted_proxies)
         wait = provider.backoff.retry_after(ip)
         if wait:
@@ -864,6 +946,7 @@ def consent_routes(provider: WAOAuthProvider) -> list[Route]:
             )
         if not provider.check_passphrase(str(form.get("passphrase", ""))):
             provider.backoff.fail(ip)
+            provider.budget.fail()
             failures = store.pending_failed(req_id)
             logger.warning("OAuth consent: wrong passphrase from %s for client %s", ip, pending.client_id)
             if failures >= ATTEMPTS_PER_CONSENT:
