@@ -147,7 +147,7 @@ when code/data were split as above.)
   `model`. Changing `MODEL_NAME` must re-embed; without the filter the backfill
   thinks it is done and `recall` np.stacks mismatched dimensions.
 - **Two media layouts.** Auto-download on receipt writes `store/<jid>/<filename>`
-  (both sanitised, see `AutoDownloadPath`); wa-dispatch and wa-assistant read that
+  (both sanitised, see `AutoDownloadPaths`); wa-dispatch and wa-assistant read that
   directly, so don't move it. `/api/download` serves that copy first, then writes
   `store/media/<jid>/<msgid><ext>` from the CDN URL, then whatsmeow's direct_path,
   then (only with `MEDIA_RETRY_ENABLED=true`) a media retry to the sender's

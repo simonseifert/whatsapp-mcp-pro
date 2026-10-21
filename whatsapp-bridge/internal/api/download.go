@@ -97,9 +97,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// purged the file from its servers. Saved names are only unique to the
 	// second, so the copy must hash to this message's file_sha256; one that
 	// doesn't belongs to another message and the network paths below run.
-	if saved := whatsapp.FindAutoDownloaded(whatsapp.AutoDownloadPaths(req.ChatJID, req.MessageID, filename), fileSHA256); saved != "" {
-		writeDownloadResult(w, saved, "auto-download")
-		return
+	if paths, err := whatsapp.AutoDownloadPaths(req.ChatJID, req.MessageID, filename); err == nil {
+		if saved := whatsapp.FindAutoDownloaded(paths, fileSHA256); saved != "" {
+			writeDownloadResult(w, saved, "auto-download")
+			return
+		}
 	}
 	if url == "" {
 		s.downloadViaWhatsmeow(w, r, req, "no stored media URL")
