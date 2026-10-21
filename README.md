@@ -1,226 +1,301 @@
 # whatsapp-mcp-pro
 
-**Your WhatsApp, turned into something you can program.** Read and send from any
-Claude session, browse it in your own web client, hold a conversation with Claude
-Code by texting yourself, or have incoming messages start work before you sit
-down.
+Self-hosted WhatsApp for AI agents: an MCP server with semantic search across your
+whole history, local voice-note transcription, and the safety rails you need
+before you point automation at a real account.
 
-Runs entirely on your own machine. Nothing goes to a third party.
+[![Go Tests](https://img.shields.io/github/actions/workflow/status/simonseifert/whatsapp-mcp-pro/go-test.yml?branch=main&label=Go%20Tests)](https://github.com/simonseifert/whatsapp-mcp-pro/actions/workflows/go-test.yml)
+[![Lint](https://img.shields.io/github/actions/workflow/status/simonseifert/whatsapp-mcp-pro/lint.yml?branch=main&label=Lint)](https://github.com/simonseifert/whatsapp-mcp-pro/actions/workflows/lint.yml)
+[![Python Tests](https://img.shields.io/github/actions/workflow/status/simonseifert/whatsapp-mcp-pro/python-test.yml?branch=main&label=Python%20Tests)](https://github.com/simonseifert/whatsapp-mcp-pro/actions/workflows/python-test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/simonseifert/whatsapp-mcp-pro?include_prereleases&sort=semver)](https://github.com/simonseifert/whatsapp-mcp-pro/releases)
+[![Go](https://img.shields.io/github/go-mod/go-version/simonseifert/whatsapp-mcp-pro?filename=whatsapp-bridge%2Fgo.mod)](whatsapp-bridge/go.mod)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](whatsapp-mcp-server/pyproject.toml)
 
-### Four ways to use it
+## What it is
 
-| | |
-|---|---|
-| **Ask** | 35 MCP tools in any Claude session — read, send, search, media, groups, polls |
-| **Browse** | [`wa-client`](#wa-client-unlimited-whatsapp-web-one-device-slot) — a WhatsApp-Web-style UI that costs **zero** extra linked-device slots |
-| **Talk to it** | [`wa-assistant`](#wa-assistant-text-yourself-get-claude-code-back) — message your own chat, Claude Code answers. Voice notes both ways |
-| **Have it act** | [`wa-dispatch`](#wa-dispatch-incoming-messages-start-the-work-optional) — a client's message opens a Claude session in that project and drafts the reply |
+A Go bridge pairs with your WhatsApp account as a linked device (the same way
+WhatsApp Web does), stores your history in SQLite on your machine, and exposes a
+local REST API. A Python MCP server sits on top and gives any MCP client (Claude
+Code, Claude Desktop, others) 35 tools to read, search, send, and manage chats.
+Nothing goes to a third party unless you choose a hosted transcription backend.
 
-The last two are the ones nothing else does: your phone becomes a terminal, and
-work starts when the message arrives rather than when you remember to look.
+It is a fork of [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended)
+that adds a "pro" layer: recall, transcription, an identity directory, a shared
+HTTP server with scoped tokens, and hardening from running it daily. See
+[Credits](#credits-and-upstream) for how the two relate.
 
-### Get started
+<!-- demo GIF: recall across languages, to be recorded -->
 
-| | |
-|---|---|
-| **Just want it working** | Paste this repo's URL into Claude and say *"set this up for me"* — [SETUP.md](SETUP.md) is written for exactly that |
-| **Prefer doing it yourself** | [SETUP.md](SETUP.md), or the [Quickstart](#quickstart) below |
-| **Curious first** | Keep reading |
+- **Set it up:** [Quickstart](#quickstart) below, or [SETUP.md](SETUP.md) for the
+  full walkthrough. SETUP.md is written so an AI agent can follow it for you.
+- **What changed:** [CHANGELOG.md](CHANGELOG.md). **Where it's going:** [ROADMAP.md](ROADMAP.md).
 
-Forked from [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) (itself descended from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp)), tracking upstream closely and adding a "pro" layer on top.
+## Account safety
 
-Upstream deliberately keeps ML out of its core — its [ARCHITECTURE.md](https://github.com/FelixIsaac/whatsapp-mcp-extended/blob/main/ARCHITECTURE.md) calls the transcription and vector-search work "heavy ML bloat" for a transport layer, and points here for it. That is the division of labour: upstream stays a lean, rock-solid transport primitive; this fork is the batteries-included build. Transcription and recall were contributed upstream from here ([#55](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/55), [#56](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/56)) and live in both.
+Read this before you pair a number you care about.
+
+- **This is an unofficial client.** It speaks WhatsApp's linked-device protocol
+  through [whatsmeow](https://github.com/tulir/whatsmeow), like every other
+  self-hosted WhatsApp bridge. Using it breaks WhatsApp's terms of service, and
+  accounts do get banned. 2025-26 saw ban waves that hit low-volume personal bots
+  too. No unofficial client is safe, only quiet.
+- **It takes one linked-device slot** (WhatsApp allows four). Your phone stays
+  the primary device and keeps working normally.
+- **What gets accounts banned:** first contact with people who don't have your
+  number, bulk or templated sends, high send rates from a fresh number, and
+  posting status from a server. Replying inside existing conversations is the
+  low-risk pattern.
+- **What this repo does about it:**
+  - Two send allowlists (`SEND_ALLOWED_JIDS` at the HTTP layer,
+    `WHATSAPP_ALLOWLIST_JIDS` at the send call). Matching is exact, never
+    substring. Set both before you let an agent send.
+  - Opt-in pacing (`ANTIBAN_ENABLED=true`): randomised delays, typing
+    simulation, a warm-up cap for new numbers, a risk score that pauses sending.
+  - Presence stays offline by default and only goes online briefly around real
+    sends, so your phone keeps its push notifications.
+  - No status posting and no bulk-send tools, on purpose.
+- **Advice:** if you're building something that sends a lot, use a dedicated
+  number. Keep your own number for reading, recall and replies.
+
+## Status
+
+| Component | Status | What it is |
+|---|---|---|
+| [`whatsapp-bridge/`](whatsapp-bridge) | Stable, in daily use | Go daemon on whatsmeow. Linked device, SQLite store, REST API, HMAC-signed webhooks. |
+| [`whatsapp-mcp-server/`](whatsapp-mcp-server) | Stable, in daily use | Python MCP server (mcp 2.x). stdio per session, or one shared HTTP server. |
+| [`wa-client/`](wa-client) | Retired, unmaintained | Chat web UI that rode the bridge's session. Its `app.py` ignores `WA_STORE_PATH`, so it shows stale data once the store lives outside the repo. Has no login. |
+| [`wa-assistant/`](wa-assistant) | Experimental, dormant | Text your own chat, a persistent Claude Code session replies. |
+| [`wa-dispatch/`](wa-dispatch) | Experimental, dormant | An incoming message opens a Claude Code session in that client's project and drafts a reply. macOS + tmux. |
+| [`whatsapp-web-ui/`](whatsapp-web-ui) | Upstream | Upstream's Next.js admin panel (pairing, webhooks). Not a chat client. |
 
 ## What the pro layer adds
 
-Every WhatsApp MCP gives you send/read tools. These are the parts that aren't
-standard, grouped by what they're for.
+Every WhatsApp MCP can send and read. These are the parts that aren't standard.
 
-**Getting answers out of your history**
+**Finding things in your history**
 
-| | |
-|---|---|
-| **`recall`** — semantic search | Multilingual embedding search over your full history (paraphrase-multilingual-MiniLM, 50+ languages), so *"what did we agree about the deadline six weeks ago?"* works without remembering the words used. Vector store lives inside the bridge's SQLite; a background indexer keeps it current. Pinned to CPU and kept resident (~700 MB steady) — on Apple Silicon the GPU path pinned a gigabyte of Metal buffers it never gave back. |
-| **`transcribe_audio`** — voice notes | Local transcription (mlx-whisper large-v3-turbo on Apple Silicon, faster-whisper anywhere, or Groq). With `AUTO_TRANSCRIBE_VOICE` the backlog is transcribed in the background, so speech becomes searchable too. |
-| **`check_inbox`** | "What arrived since I last asked" — how a Claude Desktop session keeps up, since unlike a terminal it can't be interrupted by an incoming message. |
+- **`recall`, semantic search.** Multilingual embeddings
+  (paraphrase-multilingual-MiniLM, 50+ languages) over your full history, so
+  *"what did we agree about the deadline six weeks ago?"* works without
+  remembering the exact words, or the language they were in. Vectors live in the
+  bridge's SQLite and a background indexer keeps them current. Runs on CPU and
+  stays resident (about 700 MB), because on Apple Silicon the GPU path pinned a
+  gigabyte of Metal buffers it never released.
+- **`transcribe_audio`, voice notes.** Local transcription. With
+  `AUTO_TRANSCRIBE_VOICE=true` incoming voice notes are transcribed in the
+  background and written into the store, so speech is searchable by `recall`
+  too. `WHISPER_BACKEND=auto` tries, in order:
 
-**Interfaces**
+  | Backend | Runs where | Notes |
+  |---|---|---|
+  | `whisper-server` | a whisper.cpp server at `WHISPER_SERVER_URL` | Fully local; good for offloading to a GPU box |
+  | `mlx` | Apple Silicon | Fully local, mlx-whisper large-v3-turbo, about 1.5 GB RAM |
+  | `faster-whisper` | any OS, CPU or GPU | Fully local, `uv sync --extra pro-cpu` |
+  | `groq` | Groq's API | Needs `GROQ_API_KEY`; audio leaves the machine; near-zero RAM |
 
-| | |
-|---|---|
-| **[`wa-client/`](wa-client)** — self-hosted web client | WhatsApp-Web-style chat UI riding the bridge's device session. **Zero additional linked-device slots**, unlimited browsers. Real-time push (webhook → SSE), inline media, keyword + semantic search, file sending, **scheduled messages**. |
-| **[`wa-assistant/`](wa-assistant)** — text yourself | Message your own chat and a persistent Claude Code session answers. Voice note in → voice note out, screenshots filed automatically, long questions routed to a stronger model. Your phone becomes a terminal. |
-| **[`wa-dispatch/`](wa-dispatch)** — messages start the work | A message from a routed chat opens or wakes a Claude Code session in that client's project, which reads the thread, researches and drafts a reply — then stops. It never sends. macOS + tmux. |
+- **`check_inbox`.** "What arrived since I last asked." Claude Desktop can't be
+  interrupted by an incoming message, so it asks instead. The first call returns
+  nothing and pins a cursor to now, so one question never dumps your whole
+  history into the conversation.
 
-**Running it seriously**
+**Knowing who is who**
 
-| | |
-|---|---|
-| **Shared HTTP server** (`serve_http.py`) | One always-on streamable-HTTP MCP serving *all* your Claude sessions. Kills the per-session stdio-spawn pattern that leaks orphaned processes (we learned this the hard way: 82 orphans, 44 GB RAM, one kernel panic). |
-| **Scoped bearer tokens** | A full token for trusted agents, a read-only token for dashboards/automations. Read-only can only call tools annotated `readOnlyHint=true` — enforced server-side. |
-| **Send allowlist** | `WHATSAPP_ALLOWLIST_JIDS` (upstream) / `SEND_ALLOWED_JIDS` (ours, still honoured) limits which chats the bridge will ever send to. Safety gate for automation. |
-| **Anti-ban pacing** | Opt-in humanized send delays and typing simulation. See [Account safety](#account-safety-honestly) — it is a real risk, honestly described. |
+- **Identity directory.** WhatsApp files the same person under a phone JID
+  (`…@s.whatsapp.net`) on some devices and a hidden LID (`…@lid`) on others, and
+  its contact store keeps a separate row (often with a different name) for each.
+  The bridge builds an `identities` table that joins them: one row per person,
+  group, newsletter or broadcast list, with both JIDs, the phone number, every
+  known name, and activity stats. Exposed as `lookup_identity` (accepts a JID,
+  LID, phone number or name), `search_directory`, and the `whatsapp://directory`
+  resource.
+- **LID chat merging.** A conversation split across a LID and a phone JID is
+  folded into one chat (`MERGE_LID_CHATS=true`, the default), so search, recall
+  and per-chat automation see all of it. Merged rows are kept and marked, so an
+  old LID still resolves.
+
+**Running it unattended**
+
+- **Shared HTTP server** (`serve_http.py`). One always-on streamable-HTTP MCP
+  for all your sessions, instead of one stdio process per session. Per-session
+  spawning leaked orphaned processes here: 82 of them, 44 GB of RAM, one kernel
+  panic.
+- **Scoped bearer tokens.** `WA_MCP_FULL_TOKEN` for trusted agents,
+  `WA_MCP_READONLY_TOKEN` for dashboards. The read-only token can only list and
+  call tools annotated `readOnlyHint=true`, enforced server-side.
+- **Media guard.** `send_file` and `send_audio_message` read local paths only
+  from `/tmp` and directories you list in `MEDIA_ALLOWED_DIRS`. Inside those it
+  still refuses dotfiles and anything under a dot-directory, `.env`, `.pem`,
+  `.key`, SSH keys and credential files, any SQLite database and its WAL/SHM
+  sidecars, and files at the top level of a `store/` directory (where the session
+  keys live). Both the bridge and the MCP server enforce this, and symlinks are
+  resolved first. An agent reading untrusted message text can be prompt-injected;
+  this is the last stop before a secret ends up in a chat.
+- **Media retry** (`MEDIA_RETRY_ENABLED=true`, off by default). When media has
+  expired from WhatsApp's CDN (403/404), the bridge asks the sender's phone to
+  re-upload it. Each retry shows "Finished syncing" on your phone, so keep it off
+  for bulk jobs. It only recovers media the phone still has.
+- **One bridge per number.** To run a second number, run a second bridge process
+  with its own data directory (its own `store/`), its own `API_PORT`, and its own
+  service unit. The MCP server talks to one bridge (`BRIDGE_HOST`); run a second
+  MCP server if you need tools on the second number.
+- **Clean exit on "Stream replaced".** If another process takes over the session
+  (usually a second copy of the same bridge), the bridge exits with code 3.
+  Set `RestartPreventExitStatus=3` in systemd so the two copies don't keep
+  kicking each other off. See the [systemd example](SETUP.md#7-keep-it-running).
+- **Honest health check.** A bridge can be alive, bound to its port and linked
+  while ingesting nothing; a cold boot before DNS works used to leave it that
+  way. Check `connected` from `GET /api/connection` (or `/api/health`, which
+  returns 503 when it is false), not the process or the port.
+- **Deploy with rollback.** [`scripts/deploy-live.sh`](scripts/deploy-live.sh)
+  builds to a side file, runs the Go and Python tests, backs up the store
+  online, swaps the binary, restarts, and rolls back to the previous binary if any
+  bridge doesn't report `connected` within two minutes. It is written for a
+  systemd layout with code and data in separate directories; set `WA_DATA_DIR`
+  and `OTHER_BRIDGES` for yours.
 
 Everything upstream ships is here too: toolset gating, HMAC-signed webhooks with
-trigger filters, group management, polls, newsletters, presence, auto-download of
-media before CDN links expire.
+trigger filters, group management, polls, newsletters, presence control, and
+auto-download of media on receipt.
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    WA[WhatsApp servers]
+    subgraph host[Your machine]
+        B["whatsapp-bridge (Go, whatsmeow)<br/>REST :8080, webhooks"]
+        DB[("store/<br/>whatsapp.db: session keys<br/>messages.db: history, identities, embeddings")]
+        M["whatsapp-mcp-server (Python)<br/>stdio, or shared HTTP :8082"]
+    end
+    C[MCP clients<br/>Claude Code, Claude Desktop, ...]
+    WA <-->|linked device| B
+    B --> DB
+    M -->|REST + API key| B
+    M -->|reads| DB
+    C -->|"stdio, or HTTP + bearer token"| M
 ```
-                     ┌────────────────────────────────────────────┐
-                     │                 your machine               │
- WhatsApp servers ◄──┤ whatsapp-bridge (Go, whatsmeow)            │
-                     │   REST :8080 · SQLite store · webhooks     │
-                     │      ▲                ▲                    │
-                     │      │ REST           │ REST + webhook     │
-                     │ whatsapp-mcp-server   wa-client            │
-                     │  (Python MCPServer)    (chat web UI :8084) │
-                     │   stdio  or  :8082     SSE push, schedule  │
-                     └──────┬─────────────────────────────────────┘
-                            │ streamable HTTP (+ bearer token)
-                  Claude Code / Desktop / any MCP client, N sessions
-```
 
-- **whatsapp-bridge** — Go daemon on [whatsmeow](https://github.com/tulir/whatsmeow). Pairs as a linked device (QR once), stores history in SQLite, exposes REST + webhooks. Binds 127.0.0.1 by default.
-- **whatsapp-mcp-server** — Python MCP server (mcp 2.x `MCPServer`). Run per-client via stdio, or (recommended) as the shared HTTP server.
-- **wa-client** — the chat web UI. Optional but excellent.
-- **whatsapp-web-ui** — upstream's Next.js admin panel (pairing, webhook management). Not a chat client.
-
-## Install
-
-**[SETUP.md](SETUP.md) is the full walkthrough** — prerequisites, pairing,
-wiring up Claude Desktop or Claude Code, and troubleshooting. It is written so
-an AI agent can follow it and do the setup for you; paste the repo link into
-Claude and ask it to set this up.
-
-The short version, if you know your way around:
+The bridge owns all writes to the store. The MCP server reads SQLite directly for
+queries and goes through the bridge's REST API for anything that touches
+WhatsApp. More in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quickstart
 
-```bash
-# 1. Bridge: build and pair (QR in terminal, scan with your phone)
-cd whatsapp-bridge && go build -o whatsapp-bridge . && ./whatsapp-bridge
-
-# 2. MCP server deps
-cd ../whatsapp-mcp-server && uv sync            # + `uv sync --extra pro` for recall/transcription
-
-# 3a. Claude Code, per-session stdio (simple)
-claude mcp add whatsapp -- uv --directory /path/to/whatsapp-mcp-server run main.py
-
-# 3b. OR the shared HTTP server (one process, many sessions)
-MCP_HOST=0.0.0.0 MCP_PORT=8082 .venv/bin/python serve_http.py
-claude mcp add -t http whatsapp http://<host>:8082/mcp \
-  --header "Authorization: Bearer <WA_MCP_FULL_TOKEN>"
-
-# 4. Optional: the web client
-WA_WEB_HOST=<host> .venv/bin/python ../wa-client/app.py   # then open http://<host>:8084
-```
-
-### Toolsets
-
-`recall` (semantic search), `audio` (transcription) and `inbox` are opt-in via
-`WHATSAPP_MCP_TOOLSETS`. `inbox` adds `check_inbox` — "what arrived since I
-last asked" — which is how a Claude Desktop session keeps up with messages,
-since unlike a terminal session it cannot be interrupted by one. The first call
-returns nothing and pins a cursor to now, so asking once never dumps your whole
-history into the conversation.
-
-Pro toolsets are opt-in: set `WHATSAPP_MCP_TOOLSETS=all` (the shared server does this automatically). See `.env.example` for bridge options (`API_KEY`, `API_BIND_HOST`, `PRESENCE_PING_ENABLED`, `WEBHOOK_ALLOWED_ADDRS` for localhost or tailnet webhooks). Anti-ban (`ANTIBAN_ENABLED`, off by default) and the send allowlist (`SEND_ALLOWED_JIDS`) are set the same way.
-
-## wa-client: unlimited "WhatsApp Web", one device slot
-
-WhatsApp caps you at 4 linked devices. The bridge takes one slot — and `wa-client` rides that same session, so every browser/phone/tablet you open it in is free. It reads history from the bridge's SQLite directly and sends through the bridge API, which also means full history from day one and search WhatsApp itself doesn't have (semantic, via `recall`).
-
-Features: real-time push (bridge webhook → SSE, no polling), inline media, file upload, group sender colors, keyword + AI search, mark-read, and **scheduled sends** (⏰ in the composer; a queue on the server delivers even with no browser open).
-
-Deliberate limitations: no calls, no status posting (also a documented ban trigger — see below), media older than ~2 weeks may be expired upstream (mitigated by the bridge's auto-download-on-receipt).
-
-**Security note:** wa-client has no login of its own. Bind it to 127.0.0.1 (default) or a VPN/tailnet address only. Never expose it to the internet.
-
-## wa-assistant: text yourself, get Claude Code back
-
-Type into your own Note-to-Self chat and a persistent Claude Code session
-replies. Send a voice note, get a voice note back. Send a screenshot, have it
-read and filed. Ask something big and it hands off to a stronger model in a
-separate process, so a ten-minute research task never blocks *"what time is my
-meeting"*.
-
-The session is kept **warm** deliberately: a cold `claude -p` per message costs
-seconds of startup and forgets the thread, so follow-up questions stop working.
-
-Only messages *you* send in *your own* chat are ever read
-(`is_from_me=1 AND chat_jid IN (your jids)`), and it only ever replies to you.
-Both of your identities — the phone-number jid and the LID — are detected
-automatically, which matters because **which one your self-chat is filed under
-differs per linked device**; watching only the one the API reports finds nothing
-at all on some installs.
-
-Speech in and out are off by default and configured as shell commands rather
-than Python dependencies, so they can be a local model, a hosted API, or the
-`say` binary macOS already has.
+You need Go 1.26+ (a newer toolchain is downloaded automatically from `go.mod`),
+Python 3.11+, [uv](https://docs.astral.sh/uv/), and your phone.
+[SETUP.md](SETUP.md) has every step with checks and failure modes.
 
 ```bash
-cd wa-assistant && cp config.example.env config.env
-./wa-assistant.py --check     # validates setup, sends nothing
-./wa-assistant.py --once      # handle one message and exit
+git clone https://github.com/simonseifert/whatsapp-mcp-pro && cd whatsapp-mcp-pro
+
+# 1. Config. The bridge refuses to start without API_KEY.
+grep -v '^API_KEY=' .env.example > .env
+echo "API_KEY=$(openssl rand -hex 32)" >> .env
+
+# 2. Bridge: build, then pair by scanning the QR code with your phone
+#    (WhatsApp > Settings > Linked Devices > Link a Device).
+#    The bridge doesn't read .env itself, so export it first.
+cd whatsapp-bridge && go build -o whatsapp-bridge .
+set -a; . ../.env; set +a; ./whatsapp-bridge
+
+# 3. MCP server, in a second terminal
+cd whatsapp-mcp-server
+uv sync --extra pro-cpu     # Linux / Intel / CPU: recall + faster-whisper
+# uv sync --extra pro       # Apple Silicon: recall + mlx-whisper
+# uv sync                   # no recall or transcription, small install
+
+# 4a. Claude Code, one stdio server per session
+claude mcp add whatsapp -e WHATSAPP_MCP_TOOLSETS=all -- \
+  uv --directory "$PWD" run main.py
+
+# 4b. Or one shared HTTP server for many sessions
+export WA_MCP_FULL_TOKEN=$(openssl rand -hex 24)
+MCP_HOST=127.0.0.1 MCP_PORT=8082 .venv/bin/python serve_http.py &
+claude mcp add -t http whatsapp http://127.0.0.1:8082/mcp \
+  --header "Authorization: Bearer $WA_MCP_FULL_TOKEN"
 ```
 
-See [wa-assistant/README.md](wa-assistant/README.md), and read its Security
-section before enabling — the session runs without permission prompts.
+Keep `MCP_HOST` on `127.0.0.1`. To reach it from another machine, bind it to a
+VPN or tailnet address and set both tokens; never bind it to `0.0.0.0` or a
+public interface. Clients must use the exact host you bound, since the server
+rejects other `Host` headers.
 
-## wa-dispatch: incoming messages start the work (optional)
+To keep it running, see [SETUP.md step 7](SETUP.md#7-keep-it-running): a systemd
+unit pair for Linux and a launchd example for macOS
+([`scripts/com.example.whatsapp-bridge.plist`](scripts/com.example.whatsapp-bridge.plist)).
 
-Everything above is pull — you ask, Claude answers. `wa-dispatch/` inverts it:
-a message from a chat you've routed **opens or wakes a Claude Code session in
-that client's project directory**, which reads the thread, researches, drafts a
-reply and stages fixes on a local branch — then stops.
+### Docker
 
-It never sends and never pushes. You review, and can approve a drafted reply
-from your phone. Meeting transcripts (via Fathom) are split per client and
-delivered the same way.
+Community-maintained and may lag behind the native setup; the maintainer runs
+everything natively. [`docker-compose.yaml`](docker-compose.yaml) publishes, on
+127.0.0.1 only:
 
-Incoming messages are untrusted input, so sessions the dispatcher launches run
-behind a `PreToolUse` hook that blocks every outbound and destructive tool
-before it executes — sends, pushes, deploys, `rm -rf`. Sessions you start
-yourself are untouched by it.
-
-Requires macOS, tmux and Claude Code. See [wa-dispatch/README.md](wa-dispatch/README.md).
-
-## Transcription backends and integrations
-
-Transcription is backend-pluggable (`WHISPER_BACKEND`, default `auto`):
-
-| Backend | Where it runs | Notes |
+| Service | Host port | Container port |
 |---|---|---|
-| `mlx` | Apple Silicon, fully local | mlx-whisper large-v3-turbo (~1.5 GB RAM) |
-| `faster-whisper` | any OS, CPU/GPU, fully local | `uv sync --extra pro-cpu` |
-| `groq` | Groq API | needs `GROQ_API_KEY`; near-zero RAM — ideal for small always-on boxes |
+| `whatsapp-bridge` | 8180 | 8080 |
+| `whatsapp-mcp` (streamable HTTP) | 8081 | 8081 |
+| `web-ui` (upstream admin panel) | 8090 | 8080 |
 
-Set `AUTO_TRANSCRIBE_VOICE=true` on the shared server and incoming voice notes
-are transcribed in the background and written into the message store — voice
-becomes searchable via `recall` and readable in wa-client. LLM integrations
-beyond speech (digests, summaries via Groq/DeepSeek/local models) are on the
-[roadmap](ROADMAP.md).
+## How it compares
 
-The bridge (Go) and server (Python) run on macOS, Linux, and Windows; service
-examples in `scripts/` are macOS launchd, but any process manager works
-(systemd, NSSM). The only Apple-only piece is the optional mlx backend.
+As of Oct 2026, from each project's README and repository. "—" means we couldn't
+confirm it either way.
 
-## Account safety, honestly
+| Project | Engine | MCP | Semantic recall | Local transcription | Multi-account | Maintained |
+|---|---|---|---|---|---|---|
+| **whatsapp-mcp-pro** (this) | whatsmeow (Go) | yes, stdio + HTTP with scoped tokens | yes | yes (whisper.cpp server, mlx, faster-whisper) | one process per number | yes |
+| [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) | whatsmeow (Go) | yes, stdio | no | no | no | no, last push Jul 2025 |
+| [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) | whatsmeow (Go) | yes, stdio + HTTP | reference plugin, not in core | reference plugin, not in core | — | yes (upstream of this fork) |
+| [verygoodplugins/whatsapp-mcp](https://github.com/verygoodplugins/whatsapp-mcp) | whatsmeow (Go) | yes, stdio + HTTP/SSE | — | yes (whisper.cpp) | — | yes (maintained lharries successor) |
+| [aldinokemal/go-whatsapp-web-multidevice](https://github.com/aldinokemal/go-whatsapp-web-multidevice) (GOWA) | whatsmeow (Go), REST gateway | yes, built in, optional OAuth 2.1 | — | — | yes, many devices in one process | yes |
+| [openclaw/wacli](https://github.com/openclaw/wacli) | whatsmeow (Go), CLI | — | no, FTS5 keyword search | — | yes, named accounts | yes |
 
-This uses WhatsApp's linked-device protocol via whatsmeow, same as Baileys and other protocol-level libraries (browser-automation tools like whatsapp-web.js carry a related but architecturally distinct risk surface: a real Chromium instance fingerprints differently than a custom protocol client). All of it violates WhatsApp's ToS and carries real ban risk; 2025-26 saw ban waves that hit even low-volume personal bots. Mitigations shipped here: opt-in anti-ban pacing (randomized delays + typing simulation), presence-ping hygiene, a send allowlist, and no support for the known high-risk behaviors (status posting from servers, cold bulk sends). Community consensus applies: prefer a dedicated number, reply-heavy usage on existing chats, residential IP. **No unofficial client is safe, only quiet.**
+Pick GOWA if you need many numbers behind one REST gateway or a remote MCP
+connector with OAuth. Pick wacli if you want a terminal tool. Pick this if you
+want to ask questions of your own history.
 
-## Versioning / upstream relationship
+## Troubleshooting
 
-`main` tracks upstream's `main` plus the pro layer. Pro features are offered upstream as PRs ([#55](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/55) transcription, [#56](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/56) recall). Keep your bridge's whatsmeow fresh — stale builds eventually die with "405 Client outdated" (this is how the original repo's installs broke).
+Short answers; details in [SETUP.md](SETUP.md#troubleshooting).
 
-See [ROADMAP.md](ROADMAP.md) for where this is going.
+- **Bridge is running but nothing arrives after a reboot.** It probably started
+  before DNS was ready. Check `connected` from `/api/connection`; restart if it is
+  false. Recent builds retry the first connect and hand failures to the watchdog,
+  and a systemd unit with `After=network-online.target` avoids it.
+- **Log says "Stream replaced" and the bridge exits with code 3.** Two processes
+  are using the same session, usually two copies of the bridge on one store. Stop
+  one. Use `RestartPreventExitStatus=3` so systemd doesn't restart into the fight.
+- **Need to re-pair** (logged out, or running headless). Restart the bridge; while
+  it waits for a scan it writes the current QR payload to `store/pair-qr.txt`.
+  Render it with any QR tool, e.g. `qrencode -t ansiutf8 < store/pair-qr.txt`,
+  and scan.
+- **`download_media` fails with 403/404 on old media.** The CDN copy expired. Set
+  `MEDIA_RETRY_ENABLED=true` to ask the phone to re-upload it; it only works if
+  the phone still has the file.
+- **"refusing sensitive file" or "media path outside allowed directories".** The
+  media guard. Put the file in `/tmp` or a directory listed in
+  `MEDIA_ALLOWED_DIRS`; secrets and databases are refused even there.
 
-## Credits
+## Credits and upstream
 
-- [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended) — the actively maintained base this forks
-- [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) — the original
-- [tulir/whatsmeow](https://github.com/tulir/whatsmeow) — the engine underneath everything
+- [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp), the original
+  WhatsApp MCP.
+- [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended),
+  the maintained base this fork tracks.
+- [tulir/whatsmeow](https://github.com/tulir/whatsmeow), the protocol library
+  underneath all of it.
 
-MIT, same as upstream.
+Upstream deliberately keeps ML out of its core: its architecture doc calls
+transcription and vector search out of scope for a transport layer and points
+here for them. So upstream stays a lean transport, and this fork is the
+batteries-included build. Transcription and recall were contributed upstream from
+here ([#55](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/55),
+[#56](https://github.com/FelixIsaac/whatsapp-mcp-extended/pull/56)) and ship there
+as reference plugins. `main` here tracks upstream's `main` plus the pro layer;
+the current base is upstream v0.4.0.
+
+Keep the bridge's whatsmeow current. Stale builds eventually fail with
+"405 Client outdated", which is how many installs of the original repo broke.
+
+MIT licensed, same as upstream.
