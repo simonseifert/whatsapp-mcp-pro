@@ -74,3 +74,21 @@ Also done:
   could reach it before).
 - **Key rotation:** the bridge API key was rotated after it turned up in a vault
   note, and the note was redacted.
+
+## D7 — 2026-10-22 — Public-repo privacy scrub, forward only (Simon: no history rewrite)
+Real phone numbers, LIDs, a tailnet IP and personal paths were replaced in tracked
+code, tests and comments with obvious fakes (`4915112345678`, `123456789012345@lid`,
+`100.64.0.10`, `/home/alice`). Git history is not rewritten. The handoff note and
+`.coverage` were untracked; `docs/reviews/` and `docs/handoff-*.md` are gitignored.
+
+**Action for Simon before the next deploy:** `deploy-live.sh` no longer hard-codes the
+Friday bridge. It reads other bridges from `$OTHER_BRIDGES` or, if unset, from
+`~/.local/share/whatsapp-mcp-pro/deploy.env`. Create that file with:
+
+```
+OTHER_BRIDGES=friday|whatsapp-bridge-friday|8083|/home/alice/.local/share/whatsapp-friday/.env
+```
+
+One `OTHER_BRIDGES=` line per extra bridge. The file is parsed, not sourced, so the
+line needs no quoting. Without it the script still deploys the main bridge, but it
+won't restart or verify Friday's.
