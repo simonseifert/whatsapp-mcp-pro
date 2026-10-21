@@ -1,5 +1,5 @@
 ## Description
-Brief description of changes.
+Brief description of the change and why.
 
 ## Type of Change
 - [ ] Bug fix
@@ -12,15 +12,16 @@ Brief description of changes.
 -
 
 ## Testing
-- [ ] Tested locally
+- [ ] `go vet ./... && go test ./...` (bridge)
+- [ ] `uv run ruff check . && uv run ruff format --check . && uv run mypy . && uv run pytest -q` (MCP server)
 - [ ] Added/updated tests
-- [ ] All tests pass
+- [ ] Tested against a real linked device (if it touches sending, sync or media)
 
 ## Checklist
-- [ ] Code follows project style
-- [ ] Self-reviewed my code
-- [ ] Updated documentation if needed
-- [ ] No sensitive data committed
+- [ ] Upstream files changed only where needed (see CONTRIBUTING.md)
+- [ ] `.env.example` and docs updated for new or renamed settings
+- [ ] New schema changes are a new migration file, not an edit
+- [ ] No personal data: real numbers, JIDs, hosts, paths, `.env`, `store/`
 
 ## Related Issues
 Fixes #

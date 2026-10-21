@@ -1,18 +1,32 @@
 name: ✨ Feature Request
-description: Propose a new WhatsApp transport feature or MCP tool
+description: Propose a feature for the bridge, the MCP server or one of the optional interfaces
 title: '[Feature]: '
 labels: ['enhancement']
 body:
   - type: markdown
     attributes:
       value: |
-        ### 📐 Design Philosophy Reminder
-        `whatsapp-mcp-extended` focuses strictly on **Lean Transport Primitives** for WhatsApp (socket lifecycle, messaging CRUD, media downloads, reactions, group management, presence, webhooks, and safety allowlists). Heavy ML features belong in `plugins/` or dedicated agent sidecars.
+        `whatsapp-mcp-pro` is the batteries-included fork: on top of upstream's transport (messaging, media, groups, presence, webhooks, allowlists) it ships recall, voice transcription, an identity directory and optional interfaces. Proposals in any of those areas are welcome.
+
+        **Account safety:** this is an unofficial WhatsApp Web client. Features that send in bulk, scrape at scale or automate contact with people who haven't opted in raise the risk of the account being banned and will not be accepted.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Bridge (Go)
+        - MCP server (tools, recall, transcription)
+        - Identity directory
+        - wa-assistant / wa-dispatch / wa-client
+        - Setup, deployment or docs
+        - Not sure
+    validations:
+      required: true
   - type: textarea
     id: feature-description
     attributes:
       label: Feature Description
-      description: What transport primitive or MCP tool would you like added?
+      description: What would you like added or changed?
       placeholder: Describe the proposal...
     validations:
       required: true
@@ -20,6 +34,11 @@ body:
     id: use-case
     attributes:
       label: Use Case & Rationale
-      description: How does this help AI agents interact with WhatsApp?
+      description: What problem does it solve, and for which kind of agent or workflow?
     validations:
       required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Other approaches, or how you work around it today.
