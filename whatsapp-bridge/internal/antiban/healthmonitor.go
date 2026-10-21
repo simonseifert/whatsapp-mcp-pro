@@ -18,6 +18,9 @@ const (
 	EventSendFailed
 	EventConnected
 	EventSendSuccess
+	// EventReachoutTimelock: WhatsApp refused a send to a new contact with
+	// error 463 (or announced a reachout timelock). A strong restriction signal.
+	EventReachoutTimelock
 )
 
 const (
@@ -178,6 +181,8 @@ func deltaForEvent(eventType HealthEventType) int {
 		return -20
 	case EventSendSuccess:
 		return -1
+	case EventReachoutTimelock:
+		return 30
 	default:
 		return 0
 	}

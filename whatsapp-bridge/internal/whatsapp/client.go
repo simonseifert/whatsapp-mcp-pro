@@ -48,6 +48,9 @@ type Client struct {
 	// Human-like presence handling (offline by default, online only around activity)
 	presence *presenceManager
 
+	// WhatsApp reachout timelock (error 463) state; see reachout.go
+	reachout reachoutTracker
+
 	// Pairing state
 	pairingMutex       sync.Mutex
 	pairingInProgress  bool
