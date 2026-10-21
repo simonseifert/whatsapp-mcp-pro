@@ -5,6 +5,7 @@ package whatsapp
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -607,6 +608,35 @@ func (c *Client) MarkDisconnected() {
 	if c.disconnectedAt.IsZero() {
 		c.disconnectedAt = time.Now()
 	}
+}
+
+// ForceReconnect drops the current socket and lets whatsmeow's auto-reconnect
+// bring it back. It deliberately avoids Disconnect()+Connect(): Disconnect
+// marks the drop as expected, which cancels auto-reconnect, so a single failed
+// manual Connect left the bridge offline for good.
+//
+// disconnectedAt is set up front so the watchdog in main.go restarts the
+// process if no Connected event (which clears it via MarkConnected) follows
+// within its window. MarkDisconnected keeps an earlier timestamp, so calling
+// this repeatedly cannot postpone the watchdog.
+func (c *Client) ForceReconnect(reason string) {
+	c.MarkDisconnected()
+	if c.IsConnected() {
+		c.logger.Warnf("Forcing reconnect (%s)", reason)
+		// Emits events.Disconnected and starts whatsmeow's autoReconnect loop.
+		// Requires EnableAutoReconnect, which NewClient sets.
+		c.Client.ResetConnection()
+		return
+	}
+	// ResetConnection is a no-op without a live socket, e.g. after the
+	// AutoReconnectHook gave up. Dial directly; ErrAlreadyConnected just means
+	// an auto-reconnect won the race.
+	c.logger.Warnf("Forcing reconnect (%s): socket already down, dialling", reason)
+	go func() {
+		if err := c.Client.Connect(); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+			c.logger.Errorf("Reconnect failed, watchdog will restart the bridge: %v", err)
+		}
+	}()
 }
 
 // ConnectionState returns current connection timing info.
