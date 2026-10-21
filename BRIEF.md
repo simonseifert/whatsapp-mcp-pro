@@ -37,16 +37,9 @@ Recommended answers in brackets.
    (bare-sender participants, bare-number recipients, :8082 reachable from the
    LAN/Docker, token sprawl, send duplicates on timeout, deploy rollback holes,
    anti-ban caps, recall memory), plus the webhook raw-JID issue and the failing
-   Security Scan CI job. [network fence and token rotation first]
+   Security Scan CI job. [network fence and bridge-key rotation done 2026-10-22; next: MCP bearer tokens in 644 config.json files, send duplicates on timeout, anti-ban caps]
 3. wa-dispatch and wa-assistant don't run anywhere: mark them dormant in the README, or repoint them at the data dir? [mark dormant]
-4. **Multi-instance (waiting on Simon, 2026-10-21).** Two bridges already run (Simon's
-   number and Friday's), set up by hand and inconsistently: different health checks,
-   only one is deployed by `deploy-live.sh`, and only one is in the standby. Plan:
-   - make each number an instance of one `whatsapp-bridge@` template unit;
-   - give all instances one health check and one deploy;
-   - include every instance in the standby sync.
-
-   No Docker. [yes]
+4. Multi-instance: done, see DECISIONS.md D6.
 5. Should Claude sessions get Friday's number through MCP as well (a second MCP
    instance, `whatsapp-friday`)? [no for now; friday-core already owns that number]
 
