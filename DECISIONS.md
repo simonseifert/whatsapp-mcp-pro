@@ -119,3 +119,11 @@ Deployed and verified live:
 - all four new tables;
 - a real duplicate send to the self-chat, which was deduplicated;
 - `list_unnamed_contacts` on live data.
+
+## D9 — 2026-10-22 — OAuth tried for real, exposed via Tailscale Funnel (Simon: "we can try just for fun")
+The opt-in OAuth is enabled on the live MCP and published on Tailscale Funnel at
+port 8443 only, so claude.ai or ChatGPT can add it as a remote connector. The
+operator approves each client on the consent page and approves read-only by default.
+Static tokens are unchanged. The README demo GIF was recorded on fictional data, and
+the M1 standby was brought to v0.5.0-pro after its Xcode licence was accepted. How
+to connect, revoke and turn it off is in Simon's private ops doc.

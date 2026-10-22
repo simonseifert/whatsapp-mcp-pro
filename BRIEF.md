@@ -42,7 +42,5 @@ Recommended answers in brackets.
 4. Multi-instance: done, see DECISIONS.md D6.
 5. Should Claude sessions get Friday's number through MCP as well (a second MCP
    instance, `whatsapp-friday`)? [no for now; friday-core already owns that number]
-6. Turn on OAuth (remote connector for claude.ai/ChatGPT)? It needs the MCP on a
-   public HTTPS URL (Tailscale Funnel or a reverse proxy). [not yet; only if Simon
-   wants WhatsApp from claude.ai on the web, and then with a read-only scope]
-7. Demo GIF of recall across languages for the README. [Claude stages it with a test chat when Simon OKs]
+6. OAuth remote connector: enabled 2026-10-22 via Tailscale Funnel (D9). Approve read-only.
+7. Demo GIF: done 2026-10-22 (docs/assets/demo-recall.gif, fictional data).
