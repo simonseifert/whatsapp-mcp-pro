@@ -25,7 +25,9 @@ that adds a "pro" layer: recall, transcription, an identity directory, a shared
 HTTP server with scoped tokens, and hardening from running it daily. See
 [Credits](#credits-and-upstream) for how the two relate.
 
-<!-- demo GIF: recall across languages, to be recorded -->
+![Semantic recall demo: English questions find a Croatian deadline and a German price](docs/assets/demo-recall.gif)
+
+*Asking in English finds the Croatian deadline and the German price: recall matches meaning, not words. Demo data is fictional.*
 
 - **Set it up:** [Quickstart](#quickstart) below, or [SETUP.md](SETUP.md) for the
   full walkthrough. SETUP.md is written so an AI agent can follow it for you.
