@@ -40,7 +40,7 @@ our versions of `lib/recall.py` and `lib/transcribe.py` to be supersets.
 | `wa-client/` | Chat web UI riding the bridge's session — costs **zero** extra device slots. Default :8084 (`WA_WEB_PORT`). |
 | `wa-assistant/` | Message your own chat, a persistent Claude Code session replies. Voice both ways. |
 | `wa-dispatch/` | An incoming message from a routed chat opens/wakes a Claude session in that project. Drafts, never sends. macOS + tmux. |
-| `whatsapp-web-ui/` | Upstream's Next.js admin panel (pairing, webhooks). Not a chat client. pnpm. |
+| `whatsapp-web-ui/` | Upstream's Next.js admin panel (pairing, webhooks). Not a chat client. pnpm only: upstream ships a `package-lock.json`, keep it deleted. Security floors live in `pnpm-workspace.yaml` overrides. |
 | `plugins/` | From upstream. Currently a README only. |
 
 **Ports:** 8080 bridge REST · 8082 shared MCP HTTP · 8084 wa-client.
@@ -74,6 +74,8 @@ cd whatsapp-mcp-server && uv sync          # + --extra pro   for recall/transcri
 uv run python check.py                     # fast preflight
 uv run ruff check . && uv run ruff format --check . && uv run mypy .   # what CI runs
 uv run pytest -q
+# after any uv.lock change (CI checks it):
+uv export --format requirements-txt --no-hashes --no-dev --no-emit-project -q -o requirements.txt
 ```
 
 CI runs `ruff check` **and** `ruff format --check`. `ruff check` exits first, so

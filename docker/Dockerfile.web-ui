@@ -7,7 +7,7 @@ WORKDIR /app
 # `npm ci` has nothing to install from and fails.
 RUN corepack enable && corepack prepare pnpm@10 --activate
 
-COPY whatsapp-web-ui/package.json whatsapp-web-ui/pnpm-lock.yaml ./
+COPY whatsapp-web-ui/package.json whatsapp-web-ui/pnpm-lock.yaml whatsapp-web-ui/pnpm-workspace.yaml ./
 
 RUN pnpm install --frozen-lockfile
 
