@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"whatsapp-bridge/internal/database"
 )
 
 // Our own edits and deletes never come back from WhatsApp as events, so the
@@ -39,7 +41,8 @@ func TestOwnEditAndDeleteAreRecorded(t *testing.T) {
 	if err != nil || len(msgs) != 1 || msgs[0].Content != "hello" {
 		t.Fatalf("messages = %+v, %v", msgs, err)
 	}
-	if _, newly, err := s.messageStore.MarkDeleted("MINE", []string{chat}, time.Now(), ""); err != nil || newly {
-		t.Errorf("message was not marked deleted by the handler (newly=%v err=%v)", newly, err)
+	res, err := s.messageStore.MarkDeleted(database.Revoke{MessageID: "MINE", ChatJIDs: []string{chat}, At: time.Now(), Trusted: true})
+	if err != nil || res.Newly {
+		t.Errorf("message was not marked deleted by the handler (%+v, err=%v)", res, err)
 	}
 }

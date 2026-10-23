@@ -65,6 +65,10 @@ type CallEvent struct {
 	Source   string
 }
 
+// ErrCallChatMismatch is returned by RecordCallEvent for an event whose call ID
+// belongs to a call in a different chat.
+var ErrCallChatMismatch = errors.New("call ID belongs to another chat")
+
 // acceptedElsewhere is stored as end_reason when the phone took the call.
 const acceptedElsewhere = "accepted_elsewhere"
 
@@ -191,6 +195,10 @@ func (store *MessageStore) RecordCallEvent(ev CallEvent) (Call, error) {
 		}
 	} else if err != nil {
 		return Call{}, fmt.Errorf("read call %s: %w", ev.CallID, err)
+	} else if ev.ChatJID != "" && cur.ChatJID != "" && ev.ChatJID != cur.ChatJID {
+		// Call IDs are picked by the caller's client. One reused from a call in
+		// another chat is a collision or a forgery; either way it is not this call.
+		return Call{}, fmt.Errorf("%w: %s is a call in another chat", ErrCallChatMismatch, ev.CallID)
 	}
 
 	next := applyCallEvent(cur, ev)

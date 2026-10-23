@@ -328,10 +328,10 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 			ChatJIDs:   chats,
 			NewContent: req.NewContent,
 			EditedAt:   time.Now(),
-			Editor:     me,
-			EditorIsMe: true,
+			Editor:     database.Actor{JID: me, IsMe: true},
 			StanzaID:   stanzaID,
 			Source:     database.SourceAPI,
+			Trusted:    true,
 		})
 		return err
 	}, req.ChatJID)
@@ -378,7 +378,13 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordOwnChange(func(chats []string, me string) error {
-		_, _, err := s.messageStore.MarkDeleted(req.MessageID, chats, time.Now(), me)
+		_, err := s.messageStore.MarkDeleted(database.Revoke{
+			MessageID: req.MessageID,
+			ChatJIDs:  chats,
+			At:        time.Now(),
+			By:        database.Actor{JID: me, IsMe: true},
+			Trusted:   true,
+		})
 		return err
 	}, req.ChatJID)
 

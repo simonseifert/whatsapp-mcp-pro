@@ -22,6 +22,11 @@
 -- older than that (a history-sync replay) is recorded in message_edits but does
 -- not overwrite the newer text; see MessageStore.ApplyEdit.
 --
+-- message_edits.status: applied (became the text), superseded (genuine but
+-- older than the text in place), rejected (not sent by the message's author:
+-- anyone in a chat can send an edit naming any message ID), pending (the
+-- message is not stored yet; checked against its author when it arrives).
+--
 -- The statements below are idempotent. The bridge runs them on start
 -- (editsCallsSQL in internal/database/edits_calls.go, kept identical to this
 -- file by TestEditsCallsSQLMatchesMigration).
@@ -36,6 +41,7 @@ CREATE TABLE IF NOT EXISTS message_edits (
     edited_at TIMESTAMP NOT NULL,
     editor_jid TEXT,
     source TEXT NOT NULL DEFAULT 'live',
+    status TEXT NOT NULL DEFAULT 'applied',
     recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (chat_jid, message_id, edit_id)
 );

@@ -159,6 +159,19 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 		return
 	}
 
+	// The phone tells its companions about each call with a call-log message.
+	// It has no text and belongs in the call log, not the chat. Only the user's
+	// own phone writes these: one from anyone else is a forgery meant to plant
+	// or rewrite a call, and is dropped.
+	if logMsg := msg.Message.GetCallLogMesssage(); logMsg != nil {
+		if msg.Info.IsFromMe {
+			c.recordCallLog(messageStore, callLogEvent(logMsg, msg.Info.ID, chatJID, msg.Info.Timestamp, database.SourceLive))
+		} else {
+			c.logger.Warnf("Ignored call-log message %s in %s from %s: not from an own device", msg.Info.ID, chatJID, sender)
+		}
+		return
+	}
+
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := c.GetChatName(messageStore, msg.Info.Chat, chatJID, nil, senderUser)
 
@@ -170,12 +183,6 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 
 	// Extract text content
 	content := ExtractTextContent(msg.Message)
-
-	// The phone tells its companions about each call with a call-log message.
-	// It has no text, so it would be dropped below; it belongs in the call log.
-	if logMsg := msg.Message.GetCallLogMesssage(); logMsg != nil {
-		c.recordCallLog(messageStore, callLogEvent(logMsg, msg.Info.ID, chatJID, msg.Info.Timestamp, msg.Info.IsFromMe, database.SourceLive))
-	}
 
 	// A poll creation message needs its option list persisted locally, independent of anything
 	// whatsmeow itself stores: a later vote only ever carries SHA-256 hashes of the selected
@@ -415,7 +422,7 @@ func (c *Client) historyMessageSender(chat types.JID, key *waCommon.MessageKey) 
 		}
 		return *key.Participant, false
 	}
-	if isFromMe && c.Store != nil && c.Store.ID != nil {
+	if isFromMe && c.Client != nil && c.Store != nil && c.Store.ID != nil {
 		return c.Store.ID.ToNonAD().String(), true
 	}
 	return chat.ToNonAD().String(), isFromMe

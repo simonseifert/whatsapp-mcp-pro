@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,8 @@ func revokeMsg(target string) *waE2E.Message {
 
 func TestClassifyChange(t *testing.T) {
 	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
-	editAt := at.Add(30 * time.Second)
+	// An edit's claimed time is normally a little before the server stamps it.
+	editAt := at.Add(-30 * time.Second)
 	info := types.MessageInfo{ID: "STANZA1", Timestamp: at}
 	tests := []struct {
 		name string
@@ -57,6 +59,8 @@ func TestClassifyChange(t *testing.T) {
 			messageChange{Kind: changeEdit, TargetID: "ORIG", NewContent: "fixed", At: editAt, StanzaID: "STANZA1"}},
 		{"edit without timestamp uses message time", &events.Message{Info: info, Message: editMsg("ORIG", "fixed", 0)},
 			messageChange{Kind: changeEdit, TargetID: "ORIG", NewContent: "fixed", At: at, StanzaID: "STANZA1"}},
+		{"edit claiming a future time is clamped to the server time", &events.Message{Info: info, Message: editMsg("ORIG", "fixed", at.Add(48*time.Hour).UnixMilli())},
+			messageChange{Kind: changeEdit, TargetID: "ORIG", NewContent: "fixed", At: at, StanzaID: "STANZA1"}},
 		{"edit without target", &events.Message{Info: info, Message: editMsg("", "x", 1)}, messageChange{}},
 		{"revoke", &events.Message{Info: info, Message: revokeMsg("ORIG")},
 			messageChange{Kind: changeRevoke, TargetID: "ORIG", At: at, StanzaID: "STANZA1"}},
@@ -66,6 +70,13 @@ func TestClassifyChange(t *testing.T) {
 			Message:        &waE2E.Message{Conversation: proto.String("new post")},
 			NewsletterMeta: &events.NewsletterMessageMeta{EditTS: editAt}},
 			messageChange{Kind: changeEdit, TargetID: "77", NewContent: "new post", At: editAt, StanzaID: "77@" + editAt.Format(time.RFC3339Nano)}},
+	}
+	before := time.Now()
+	future := before.Add(time.Hour)
+	got := classifyChange(&events.Message{Info: types.MessageInfo{ID: "78", Timestamp: at},
+		Message: &waE2E.Message{Conversation: proto.String("x")}, NewsletterMeta: &events.NewsletterMessageMeta{EditTS: future}})
+	if got.At.Before(before) || got.At.After(time.Now()) {
+		t.Errorf("newsletter edit from the future: at %v, want clamped to now", got.At)
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,8 +124,8 @@ func TestHistoryChangeAndMissedCall(t *testing.T) {
 		{"edit in history", &waWeb.WebMessageInfo{
 			Key:              &waCommon.MessageKey{ID: proto.String("H2")},
 			MessageTimestamp: proto.Uint64(1_800_000_000),
-			Message:          &waE2E.Message{EditedMessage: &waE2E.FutureProofMessage{Message: editMsg("ORIG", "v2", 1_800_000_050_000)}},
-		}, changeEdit, 1_800_000_050, false, false, false},
+			Message:          &waE2E.Message{EditedMessage: &waE2E.FutureProofMessage{Message: editMsg("ORIG", "v2", 1_799_999_950_000)}},
+		}, changeEdit, 1_799_999_950, false, false, false},
 		{"ordinary message", &waWeb.WebMessageInfo{
 			Key:     &waCommon.MessageKey{ID: proto.String("H3")},
 			Message: &waE2E.Message{Conversation: proto.String("hi")},
@@ -218,15 +229,14 @@ func TestCallLogEvent(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.outcome.String(), func(t *testing.T) {
 			log := &waE2E.CallLogMessage{CallOutcome: tc.outcome.Enum(), DurationSecs: proto.Int64(75), IsVideo: proto.Bool(true)}
-			ev := callLogEvent(log, "LOG1", chat, at, false, database.SourceLive)
+			ev := callLogEvent(log, "LOG1", chat, at, database.SourceLive)
+			// The ID is namespaced so a sender-chosen message ID can never
+			// address a live call; direction is left to the live events.
 			if ev.Outcome != tc.want || ev.Duration != 75*time.Second || !ev.IsVideo || ev.Kind != database.CallEventLog ||
-				ev.Direction != "incoming" || ev.CallerJID != chat || ev.ChatJID != chat {
+				ev.CallID != "log:LOG1" || ev.Direction != "" || ev.CallerJID != "" || ev.ChatJID != chat {
 				t.Errorf("got %+v", ev)
 			}
 		})
-	}
-	if ev := callLogEvent(&waE2E.CallLogMessage{}, "LOG2", chat, at, true, database.SourceLive); ev.Direction != "outgoing" || ev.CallerJID != "" {
-		t.Errorf("outgoing log entry = %+v", ev)
 	}
 }
 
@@ -346,5 +356,180 @@ func TestHandleCallEventStoresCallAndMessage(t *testing.T) {
 	}
 	if len(sink.calls) != 2 || sink.calls[1].Outcome != database.CallMissed || sink.events[1] != "call" {
 		t.Errorf("webhooks = %v %+v", sink.events, sink.calls)
+	}
+}
+
+func TestParticipantIsAdmin(t *testing.T) {
+	member := types.JID{User: "4915187654321", Server: types.DefaultUserServer}
+	adminLID := types.JID{User: "987654321098765", Server: types.HiddenUserServer}
+	info := &types.GroupInfo{Participants: []types.GroupParticipant{
+		{JID: adminLID, PhoneNumber: phoneJID, LID: adminLID, IsAdmin: true},
+		{JID: member, PhoneNumber: member},
+		{JID: ownJID, PhoneNumber: ownJID, IsSuperAdmin: true},
+	}}
+	tests := []struct {
+		name string
+		info *types.GroupInfo
+		jids []types.JID
+		want bool
+	}{
+		{"admin by LID", info, []types.JID{adminLID}, true},
+		{"admin by phone number", info, []types.JID{phoneJID}, true},
+		{"super admin", info, []types.JID{ownJID}, true},
+		{"plain member", info, []types.JID{member}, false},
+		{"not a participant", info, []types.JID{lidJID}, false},
+		{"empty JIDs never match", info, []types.JID{types.EmptyJID, {Server: types.DefaultUserServer}}, false},
+		{"one of several forms", info, []types.JID{member, phoneJID}, true},
+		{"no group info", nil, []types.JID{phoneJID}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := participantIsAdmin(tc.info, tc.jids...); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A group member can send a MESSAGE_EDIT or REVOKE naming anyone's message.
+// Neither may change the store or reach a webhook.
+func TestHandleMessageRefusesForgedChanges(t *testing.T) {
+	store := openTestStore(t)
+	c := &Client{logger: waLog.Noop}
+	sink := &fakeSink{}
+	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	stranger := types.JID{User: "4915187654321", Server: types.DefaultUserServer}
+	if err := store.StoreChat(groupJID.String(), "Group", sent); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreMessage("ORIG", groupJID.String(), phoneJID.String(), "Max", "original", sent, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	from := func(id string, sender types.JID, fromMe bool, ts time.Time) types.MessageInfo {
+		return types.MessageInfo{MessageSource: types.MessageSource{Chat: groupJID, Sender: sender, IsFromMe: fromMe, IsGroup: true},
+			ID: id, Timestamp: ts}
+	}
+	at := sent.Add(time.Minute)
+	c.HandleMessage(store, sink, &events.Message{Info: from("F1", stranger, false, at), Message: editMsg("ORIG", "forged", at.UnixMilli())})
+	c.HandleMessage(store, sink, &events.Message{Info: from("F2", ownJID, true, at), Message: editMsg("ORIG", "mine now", at.UnixMilli())})
+	// No connected client, so the admin check is unavailable: refused.
+	c.HandleMessage(store, sink, &events.Message{Info: from("F3", stranger, false, at), Message: revokeMsg("ORIG")})
+
+	msgs, err := store.GetMessages(groupJID.String(), 10)
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "original" {
+		t.Fatalf("messages = %+v, %v", msgs, err)
+	}
+	if len(sink.events) != 0 {
+		t.Errorf("webhooks fired for forged changes: %v", sink.events)
+	}
+	edits, err := store.GetMessageEdits("ORIG", groupJID.String())
+	if err != nil || len(edits) != 2 || edits[0].Status != database.EditRejected || edits[1].Status != database.EditRejected {
+		t.Errorf("edits = %+v, %v; want both recorded as rejected", edits, err)
+	}
+
+	// The author's own edit, with a sender clock far in the future, still
+	// applies, but at the server's time: a later genuine edit must win.
+	c.HandleMessage(store, sink, &events.Message{Info: from("G1", phoneJID, false, at), Message: editMsg("ORIG", "v1", at.Add(24*time.Hour).UnixMilli())})
+	c.HandleMessage(store, sink, &events.Message{Info: from("G2", phoneJID, false, at.Add(time.Minute)), Message: editMsg("ORIG", "v2", at.Add(time.Minute).UnixMilli())})
+	if msgs, _ = store.GetMessages(groupJID.String(), 10); len(msgs) != 1 || msgs[0].Content != "v2" {
+		t.Errorf("after genuine edits: %+v", msgs)
+	}
+	if strings.Join(sink.events, ",") != "message_edited,message_edited" {
+		t.Errorf("webhooks = %v", sink.events)
+	}
+}
+
+// Only the user's own phone writes call-log messages; a forged one must not
+// plant or rewrite a call.
+func TestHandleMessageCallLogOnlyFromOwnDevice(t *testing.T) {
+	store := openTestStore(t)
+	c := &Client{logger: waLog.Noop}
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	logMsg := func() *waE2E.Message {
+		return &waE2E.Message{CallLogMesssage: &waE2E.CallLogMessage{CallOutcome: waE2E.CallLogMessage_CONNECTED.Enum(), DurationSecs: proto.Int64(60)}}
+	}
+	info := func(id string, fromMe bool) types.MessageInfo {
+		sender := phoneJID
+		if fromMe {
+			sender = ownJID
+		}
+		return types.MessageInfo{MessageSource: types.MessageSource{Chat: phoneJID, Sender: sender, IsFromMe: fromMe}, ID: id, Timestamp: at}
+	}
+	c.HandleMessage(store, nil, &events.Message{Info: info("FORGED", false), Message: logMsg()})
+	c.HandleMessage(store, nil, &events.Message{Info: info("REAL", true), Message: logMsg()})
+
+	if _, err := store.GetCall("log:FORGED"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("forged call log was recorded (err %v)", err)
+	}
+	call, err := store.GetCall("log:REAL")
+	if err != nil || call.Outcome != database.CallAnswered || call.ChatJID != phoneJID.String() {
+		t.Errorf("own call log = %+v, %v", call, err)
+	}
+	if msgs, err := store.GetMessages(phoneJID.String(), 10); err != nil || len(msgs) != 0 {
+		t.Errorf("call-log messages must not be stored as chat messages: %+v, %v", msgs, err)
+	}
+
+	// Same rule for history sync.
+	wmi := func(id string, fromMe bool) *waWeb.WebMessageInfo {
+		return &waWeb.WebMessageInfo{
+			Key: &waCommon.MessageKey{ID: proto.String(id), FromMe: proto.Bool(fromMe), RemoteJID: proto.String(phoneJID.String())},
+			// An hour on, so they don't fold into the live entries above.
+			MessageTimestamp: proto.Uint64(uint64(at.Add(time.Hour).Unix())),
+			Message:          logMsg(),
+		}
+	}
+	if !c.handleHistoryNonMessage(store, phoneJID.String(), phoneJID, wmi("HFORGED", false)) {
+		t.Error("a forged history call log must still be consumed, not stored as a message")
+	}
+	if _, err := store.GetCall("log:HFORGED"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("forged history call log was recorded (err %v)", err)
+	}
+	c.handleHistoryNonMessage(store, phoneJID.String(), phoneJID, wmi("HREAL", true))
+	if _, err := store.GetCall("log:HREAL"); err != nil {
+		t.Errorf("own history call log missing: %v", err)
+	}
+}
+
+// A history-sync edit is still only what someone sent; a revoke stub is the
+// phone's record of a revoke the server accepted.
+func TestHistoryChangesAuthorship(t *testing.T) {
+	store := openTestStore(t)
+	c := &Client{logger: waLog.Noop}
+	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	stranger := "4915187654321@s.whatsapp.net"
+	if err := store.StoreChat(groupJID.String(), "Group", sent); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"A", "B"} {
+		if err := store.StoreMessage(id, groupJID.String(), phoneJID.String(), "Max", "original "+id, sent, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forgedEdit := &waWeb.WebMessageInfo{
+		Key:              &waCommon.MessageKey{ID: proto.String("HE1"), Participant: proto.String(stranger), RemoteJID: proto.String(groupJID.String())},
+		MessageTimestamp: proto.Uint64(uint64(sent.Add(time.Minute).Unix())),
+		Message:          &waE2E.Message{EditedMessage: &waE2E.FutureProofMessage{Message: editMsg("A", "forged", sent.Add(time.Minute).UnixMilli())}},
+	}
+	adminStub := &waWeb.WebMessageInfo{
+		Key:                    &waCommon.MessageKey{ID: proto.String("B"), Participant: proto.String(phoneJID.String()), RemoteJID: proto.String(groupJID.String())},
+		MessageTimestamp:       proto.Uint64(uint64(sent.Unix())),
+		MessageStubType:        waWeb.WebMessageInfo_ADMIN_REVOKE.Enum(),
+		RevokeMessageTimestamp: proto.Uint64(uint64(sent.Add(time.Minute).Unix())),
+	}
+	c.handleHistoryNonMessage(store, groupJID.String(), groupJID, forgedEdit)
+	c.handleHistoryNonMessage(store, groupJID.String(), groupJID, adminStub)
+
+	msgs, err := store.GetMessages(groupJID.String(), 10)
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("messages = %+v, %v", msgs, err)
+	}
+	for _, m := range msgs {
+		if m.ID == "A" && m.Content != "original A" {
+			t.Errorf("forged history edit applied: %q", m.Content)
+		}
+	}
+	res, err := store.MarkDeleted(database.Revoke{MessageID: "B", ChatJIDs: []string{groupJID.String()}, At: sent, Trusted: true})
+	if err != nil || res.Newly {
+		t.Errorf("admin-revoke stub did not mark B deleted (%+v, %v)", res, err)
 	}
 }

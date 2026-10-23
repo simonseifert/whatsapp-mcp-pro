@@ -2,6 +2,8 @@ package database
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -134,8 +136,8 @@ func TestApplyEdit(t *testing.T) {
 			wantContent: "fixed", wantCount: 1, wantEdits: 1,
 		},
 		{
-			name: "edit of an unknown message creates a placeholder",
-			steps: []step{{edit: Edit{NewContent: "late", EditedAt: t1, StanzaID: "E1", Editor: testPhoneChat},
+			name: "trusted edit of an unknown message creates a placeholder",
+			steps: []step{{edit: Edit{NewContent: "late", EditedAt: t1, StanzaID: "E1", Trusted: true},
 				wantApplied: true, wantPH: true}},
 			replay:      true,
 			wantContent: "late", wantCount: 1, wantEdits: 1,
@@ -160,6 +162,9 @@ func TestApplyEdit(t *testing.T) {
 			for j, s := range tc.steps {
 				e := s.edit
 				e.MessageID, e.ChatJIDs, e.Source = id, []string{testPhoneChat, testLIDChat}, SourceLive
+				if e.Editor.JID == "" {
+					e.Editor = Actor{JID: testPhoneChat} // storeText's sender
+				}
 				got, err := store.ApplyEdit(e)
 				if err != nil {
 					t.Fatalf("step %d: %v", j, err)
@@ -204,7 +209,7 @@ func TestApplyEditFindsChatUnderOtherForm(t *testing.T) {
 	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
 	storeText(t, store, "M1", testLIDChat, "old", sent)
 	got, err := store.ApplyEdit(Edit{MessageID: "M1", ChatJIDs: []string{testPhoneChat, testLIDChat},
-		NewContent: "new", EditedAt: sent.Add(time.Minute), StanzaID: "E1", Source: SourceLive})
+		NewContent: "new", EditedAt: sent.Add(time.Minute), StanzaID: "E1", Source: SourceLive, Editor: Actor{JID: testPhoneChat}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +229,7 @@ func TestApplyEditDropsEmbedding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.ApplyEdit(Edit{MessageID: "M1", ChatJIDs: []string{testPhoneChat}, NewContent: "new",
-		EditedAt: sent.Add(time.Minute), StanzaID: "E1", Source: SourceLive}); err != nil {
+		EditedAt: sent.Add(time.Minute), StanzaID: "E1", Source: SourceLive, Editor: Actor{JID: testPhoneChat}}); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -233,47 +238,251 @@ func TestApplyEditDropsEmbedding(t *testing.T) {
 	}
 }
 
-func TestMarkDeleted(t *testing.T) {
+// storeFrom stores a message with an explicit author.
+func storeFrom(t *testing.T, store *MessageStore, id, chat, sender, text string, fromMe bool, ts time.Time) {
+	t.Helper()
+	if _, err := store.db.Exec(`INSERT OR IGNORE INTO chats (jid) VALUES (?)`, chat); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if err := store.StoreMessage(id, chat, sender, "Max", text, ts, fromMe, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatalf("store %s: %v", id, err)
+	}
+}
+
+const (
+	testOwnJID     = "4915199999999@s.whatsapp.net"
+	testStranger   = "4915187654321@s.whatsapp.net"
+	testMappedLID  = "987654321098765@lid"
+	testNewsletter = "120363000000000002@newsletter"
+)
+
+// Any participant can send a MESSAGE_EDIT naming any message ID; only the
+// author's may change what the store says the message was.
+func TestApplyEditAuthorship(t *testing.T) {
 	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
-	store := newTestMessageStore(t)
 	tests := []struct {
-		name        string
-		original    string
-		revokes     int
-		replay      bool
-		wantContent string
+		name         string
+		chat, sender string
+		fromMe       bool
+		editor       Actor
+		wantApplied  bool
 	}{
-		{name: "keeps content", original: "secret", revokes: 1, wantContent: "secret"},
-		{name: "second revoke is not new", original: "x", revokes: 2, wantContent: "x"},
-		{name: "unknown message gets a placeholder that a replay fills", revokes: 1, replay: true, wantContent: "late original"},
+		{"author by phone JID, stored as bare digits", testPhoneChat, "4915112345678", false, Actor{JID: testPhoneChat}, true},
+		{"author by LID joined through identities", testPhoneChat, testPhoneChat, false, Actor{JID: testMappedLID}, true},
+		{"author by LID passed as an alt form", testPhoneChat, testPhoneChat, false, Actor{JID: testLIDChat, Forms: []string{testPhoneChat}}, true},
+		{"unmapped LID is not the phone author", testPhoneChat, testPhoneChat, false, Actor{JID: testLIDChat}, false},
+		{"another group member", testGroup, testPhoneChat, false, Actor{JID: testStranger}, false},
+		{"own device cannot edit someone else's message", testGroup, testPhoneChat, false, Actor{JID: testOwnJID, IsMe: true}, false},
+		{"own message edited from own device", testPhoneChat, testOwnJID, true, Actor{JID: testOwnJID, IsMe: true}, true},
+		{"own message, editor claims own JID but is not from me", testPhoneChat, testOwnJID, true, Actor{JID: testOwnJID}, false},
+		{"own message, other side of the chat", testPhoneChat, testOwnJID, true, Actor{JID: testPhoneChat}, false},
+		{"message with no stored sender", testGroup, "", false, Actor{JID: testPhoneChat}, false},
+		{"newsletter edited by itself", testNewsletter, testNewsletter, false, Actor{JID: testNewsletter}, true},
+		{"newsletter edited by a follower", testNewsletter, testNewsletter, false, Actor{JID: testStranger}, false},
+	}
+	store := newTestMessageStore(t)
+	if _, err := store.db.Exec(`INSERT INTO identities (jid, lid, phone_jid) VALUES (?, ?, ?)`, testPhoneChat, testMappedLID, testPhoneChat); err != nil {
+		t.Fatal(err)
 	}
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			id := "DEL" + string(rune('A'+i))
-			if tc.original != "" {
-				storeText(t, store, id, testPhoneChat, tc.original, sent)
+			id := "AUTH" + string(rune('A'+i))
+			storeFrom(t, store, id, tc.chat, tc.sender, "original", tc.fromMe, sent)
+			got, err := store.ApplyEdit(Edit{MessageID: id, ChatJIDs: []string{tc.chat}, NewContent: "rewritten",
+				EditedAt: sent.Add(time.Minute), StanzaID: "E" + id, Editor: tc.editor, Source: SourceLive})
+			if err != nil {
+				t.Fatal(err)
 			}
-			first := sent.Add(time.Minute)
-			for r := 0; r < tc.revokes; r++ {
-				chat, newly, err := store.MarkDeleted(id, []string{testPhoneChat}, first.Add(time.Duration(r)*time.Minute), testPhoneChat)
+			if got.Applied != tc.wantApplied || got.Rejected == tc.wantApplied {
+				t.Fatalf("got %+v, want applied=%v", got, tc.wantApplied)
+			}
+			m := readMsg(t, store, id, tc.chat)
+			wantContent, wantStatus := "original", EditRejected
+			if tc.wantApplied {
+				wantContent, wantStatus = "rewritten", EditApplied
+			}
+			if m.content.String != wantContent || m.isEdited != tc.wantApplied {
+				t.Errorf("message = %+v, want content %q", m, wantContent)
+			}
+			edits, err := store.GetMessageEdits(id, tc.chat)
+			if err != nil || len(edits) != 1 || edits[0].Status != wantStatus {
+				t.Errorf("edits = %+v (%v), want one %s", edits, err, wantStatus)
+			}
+		})
+	}
+}
+
+// An edit can arrive before its original (history sync order, a reconnect).
+// It must neither create a row nor be applied until the author is known.
+func TestPendingEditsResolveOnStore(t *testing.T) {
+	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	t1, t2 := sent.Add(time.Minute), sent.Add(2*time.Minute)
+	type pend struct {
+		editor Actor
+		text   string
+		at     time.Time
+	}
+	tests := []struct {
+		name         string
+		pending      []pend
+		wantContent  string
+		wantCount    int
+		wantStatuses []string // in edited_at order
+	}{
+		{"author's edit applies", []pend{{Actor{JID: testPhoneChat}, "fixed", t1}}, "fixed", 1, []string{EditApplied}},
+		{"stranger's edit is rejected", []pend{{Actor{JID: testStranger}, "forged", t1}}, "original", 0, []string{EditRejected}},
+		{"newest genuine edit wins, forgery ignored", []pend{
+			{Actor{JID: testPhoneChat}, "v2", t2},
+			{Actor{JID: testPhoneChat}, "v1", t1},
+			{Actor{JID: testStranger}, "forged", t2.Add(time.Minute)},
+		}, "v2", 2, []string{EditSuperseded, EditApplied, EditRejected}},
+	}
+	store := newTestMessageStore(t)
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "PEND" + string(rune('A'+i))
+			for j, p := range tc.pending {
+				got, err := store.ApplyEdit(Edit{MessageID: id, ChatJIDs: []string{testGroup}, NewContent: p.text,
+					EditedAt: p.at, StanzaID: fmt.Sprintf("E%d", j), Editor: p.editor, Source: SourceHistory})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if chat != testPhoneChat || newly != (r == 0) {
-					t.Errorf("revoke %d: chat %q newly %v", r, chat, newly)
+				if !got.Pending || got.Applied || got.Placeholder {
+					t.Errorf("edit %d: got %+v, want pending", j, got)
+				}
+			}
+			var n int
+			if err := store.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE id = ?`, id).Scan(&n); err != nil || n != 0 {
+				t.Fatalf("a pending edit created %d message rows (err %v)", n, err)
+			}
+			storeFrom(t, store, id, testGroup, testPhoneChat, "original", false, sent)
+			m := readMsg(t, store, id, testGroup)
+			if m.content.String != tc.wantContent || m.editCount != tc.wantCount || m.isEdited != (tc.wantCount > 0) {
+				t.Errorf("message = %+v, want %q x%d", m, tc.wantContent, tc.wantCount)
+			}
+			edits, err := store.GetMessageEdits(id, testGroup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var statuses []string
+			for _, e := range edits {
+				statuses = append(statuses, e.Status)
+			}
+			if strings.Join(statuses, ",") != strings.Join(tc.wantStatuses, ",") {
+				t.Errorf("statuses = %v, want %v", statuses, tc.wantStatuses)
+			}
+			// Storing the message again (a replay) settles nothing twice.
+			storeFrom(t, store, id, testGroup, testPhoneChat, "original", false, sent)
+			if again := readMsg(t, store, id, testGroup); again.content.String != tc.wantContent || again.editCount != tc.wantCount {
+				t.Errorf("after replay = %+v", again)
+			}
+		})
+	}
+}
+
+func TestMarkDeleted(t *testing.T) {
+	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	yes := func() bool { return true }
+	no := func() bool { return false }
+	tests := []struct {
+		name        string
+		stored      bool
+		sender      string
+		fromMe      bool
+		by          Actor
+		isAdmin     func() bool
+		trusted     bool
+		revokes     int
+		replay      bool
+		want        RevokeResult // for the first revoke; ChatJID is always testGroup
+		wantDeleted bool
+		wantBy      string
+		wantContent string
+	}{
+		{name: "author's revoke keeps content", stored: true, sender: testPhoneChat, by: Actor{JID: testPhoneChat}, revokes: 1,
+			want: RevokeResult{Newly: true}, wantDeleted: true, wantBy: testPhoneChat, wantContent: "secret"},
+		{name: "second revoke is not new", stored: true, sender: testPhoneChat, by: Actor{JID: testPhoneChat}, revokes: 2,
+			want: RevokeResult{Newly: true}, wantDeleted: true, wantBy: testPhoneChat, wantContent: "secret"},
+		{name: "author by LID alt form", stored: true, sender: testPhoneChat, by: Actor{JID: testLIDChat, Forms: []string{testPhoneChat}}, revokes: 1,
+			want: RevokeResult{Newly: true}, wantDeleted: true, wantBy: testLIDChat, wantContent: "secret"},
+		{name: "non-admin member cannot revoke another's message", stored: true, sender: testPhoneChat, by: Actor{JID: testStranger}, isAdmin: no, revokes: 1,
+			want: RevokeResult{Rejected: true}, wantContent: "secret"},
+		{name: "no admin check available means no", stored: true, sender: testPhoneChat, by: Actor{JID: testStranger}, revokes: 1,
+			want: RevokeResult{Rejected: true}, wantContent: "secret"},
+		{name: "group admin may revoke another's message", stored: true, sender: testPhoneChat, by: Actor{JID: testStranger}, isAdmin: yes, revokes: 1,
+			want: RevokeResult{Newly: true}, wantDeleted: true, wantBy: testStranger, wantContent: "secret"},
+		{name: "own message from own device", stored: true, sender: testOwnJID, fromMe: true, by: Actor{JID: testOwnJID, IsMe: true}, revokes: 1,
+			want: RevokeResult{Newly: true}, wantDeleted: true, wantBy: testOwnJID, wantContent: "secret"},
+		{name: "own message, revoke not from own device", stored: true, sender: testOwnJID, fromMe: true, by: Actor{JID: testOwnJID}, revokes: 1,
+			want: RevokeResult{Rejected: true}, wantContent: "secret"},
+		{name: "unknown message, unverifiable revoke ignored", by: Actor{JID: testStranger}, isAdmin: no, revokes: 1,
+			want: RevokeResult{Ignored: true}},
+		{name: "unknown message, trusted stub leaves a row a replay fills", by: Actor{JID: testPhoneChat}, trusted: true, revokes: 1, replay: true,
+			want: RevokeResult{Newly: true}, wantDeleted: true, wantBy: testPhoneChat, wantContent: "late original"},
+		{name: "unknown message, admin revoke recorded", by: Actor{JID: testStranger}, isAdmin: yes, revokes: 1,
+			want: RevokeResult{Newly: true}, wantDeleted: true, wantBy: testStranger},
+	}
+	store := newTestMessageStore(t)
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "DEL" + string(rune('A'+i))
+			if tc.stored {
+				storeFrom(t, store, id, testGroup, tc.sender, "secret", tc.fromMe, sent)
+			}
+			first := sent.Add(time.Minute)
+			for r := 0; r < tc.revokes; r++ {
+				got, err := store.MarkDeleted(Revoke{MessageID: id, ChatJIDs: []string{testGroup}, At: first.Add(time.Duration(r) * time.Minute),
+					By: tc.by, IsAdmin: tc.isAdmin, Trusted: tc.trusted})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := tc.want
+				want.ChatJID = testGroup
+				if r > 0 {
+					want.Newly = false
+				}
+				if got != want {
+					t.Errorf("revoke %d: got %+v, want %+v", r, got, want)
 				}
 			}
 			if tc.replay {
-				storeText(t, store, id, testPhoneChat, "late original", sent)
+				storeFrom(t, store, id, testGroup, testPhoneChat, "late original", false, sent)
 			}
-			m := readMsg(t, store, id, testPhoneChat)
+			var n int
+			if err := store.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE id = ?`, id).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				if tc.stored || tc.wantDeleted {
+					t.Fatal("message row missing")
+				}
+				return
+			}
+			m := readMsg(t, store, id, testGroup)
 			if m.content.String != tc.wantContent {
 				t.Errorf("content = %q, want %q", m.content.String, tc.wantContent)
 			}
-			if !m.deletedAt.Valid || !m.deletedAt.Time.Equal(first) || m.deletedBy.String != testPhoneChat {
-				t.Errorf("deleted = %v by %q, want %v by %q", m.deletedAt, m.deletedBy.String, first, testPhoneChat)
+			if m.deletedAt.Valid != tc.wantDeleted || m.deletedBy.String != tc.wantBy ||
+				(tc.wantDeleted && !m.deletedAt.Time.Equal(first)) {
+				t.Errorf("deleted = %v by %q, want %v by %q", m.deletedAt, m.deletedBy.String, tc.wantDeleted, tc.wantBy)
 			}
 		})
+	}
+}
+
+func TestRecordCallEventRefusesIDFromAnotherChat(t *testing.T) {
+	store := newTestMessageStore(t)
+	t0 := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := store.RecordCallEvent(CallEvent{CallID: "C1", Kind: CallEventOffer, ChatJID: testPhoneChat, Direction: "incoming", At: t0, Source: SourceLive}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.RecordCallEvent(CallEvent{CallID: "C1", Kind: CallEventTerminate, ChatJID: testGroup, At: t0.Add(time.Second), Source: SourceLive})
+	if !errors.Is(err, ErrCallChatMismatch) {
+		t.Fatalf("err = %v, want ErrCallChatMismatch", err)
+	}
+	c, err := store.GetCall("C1")
+	if err != nil || c.ChatJID != testPhoneChat || c.EndedAt.Valid {
+		t.Errorf("C1 = %+v (%v), want untouched", c, err)
 	}
 }
 
