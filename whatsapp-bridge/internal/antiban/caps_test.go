@@ -236,8 +236,6 @@ func TestCorruptCapsStateFailsSafe(t *testing.T) {
 	}{
 		{"not json", "{\"newRecipients\": [tru"},
 		{"wrong type", `{"newRecipients": "lots"}`},
-		{"future timestamp", `{"newRecipients": ["2999-01-01T00:00:00Z"]}`},
-		{"out of order", `{"newRecipients": ["2026-10-23T08:00:00Z", "2026-10-23T07:00:00Z"]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -262,6 +260,33 @@ func TestCorruptCapsStateFailsSafe(t *testing.T) {
 				t.Fatalf("budget should be back after 24h, got %v", err)
 			}
 		})
+	}
+}
+
+// A wall clock stepping back leaves the window unsorted or in the future.
+// That is not corruption: the file stays, every entry keeps counting (future
+// ones as "now"), and only the spent budget is blocked, not all first contacts.
+func TestCapsStateAfterClockStepIsKept(t *testing.T) {
+	cfg := capsConfig(t, func(c *Config) { c.NewRecipientsPerDay = 3 })
+	content := `{"newRecipients": ["2026-10-23T08:00:00Z", "2999-01-01T00:00:00Z", "2026-10-23T07:00:00Z"]}`
+	if err := os.WriteFile(cfg.CapsStatePath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakeClock{t: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)}
+	caps := newTestCaps(cfg, clock)
+
+	if _, err := os.Stat(cfg.CapsStatePath); err != nil {
+		t.Fatalf("state file must not be quarantined: %v", err)
+	}
+	newContact := SendRequest{Type: Text, Recipient: chatB, NewRecipient: true}
+	if err := caps.Check(newContact); !errors.Is(err, ErrSendCapReached) {
+		t.Fatalf("all three entries count, so the budget of 3 is spent; got %v", err)
+	}
+	// 07:00 and 08:00 expire after 24h; the clamped future entry (09:00) frees
+	// up an hour later.
+	clock.t = time.Date(2026, 10, 24, 8, 0, 1, 0, time.UTC)
+	if err := caps.Check(newContact); err != nil {
+		t.Fatalf("expired entries must free the budget, got %v", err)
 	}
 }
 
@@ -364,5 +389,31 @@ func assertQuarantined(t *testing.T, path string) {
 	}
 	if data, _ := os.ReadFile(matches[0]); len(data) == 0 {
 		t.Fatal("quarantined copy is empty")
+	}
+}
+
+// Precheck runs before presence, upload and typing. It must refuse a capped
+// send, and must not use up a slot when it allows one.
+func TestInterceptorPrecheck(t *testing.T) {
+	cfg := capsConfig(t, func(c *Config) { c.RecipientMaxPerMinute = 1 })
+	s, err := NewSendInterceptor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := SendRequest{Type: Text, Recipient: chatA}
+	for i := 0; i < 3; i++ {
+		if err := s.Precheck(req); err != nil {
+			t.Fatalf("precheck %d on an empty window: %v", i, err)
+		}
+	}
+	if err := s.BeforeSend(context.Background(), req); err != nil {
+		t.Fatalf("send after prechecks: %v (prechecks must not count)", err)
+	}
+	if err := s.Precheck(req); !errors.Is(err, ErrSendCapReached) {
+		t.Fatalf("precheck at the cap: %v, want cap", err)
+	}
+	var nilInterceptor *SendInterceptor
+	if err := nilInterceptor.Precheck(req); err != nil {
+		t.Fatalf("nil interceptor: %v", err)
 	}
 }

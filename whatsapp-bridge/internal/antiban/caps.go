@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -249,9 +250,6 @@ func (c *SendCaps) loadNewRecipients() []time.Time {
 	if err == nil {
 		err = json.Unmarshal(data, &state)
 	}
-	if err == nil {
-		err = validateTimes(state.NewRecipients, now)
-	}
 	if err != nil {
 		moved := quarantineStateFile(path, now)
 		log.Printf("ANTIBAN ERROR caps state %s is unreadable (%v); moved to %q. Failing safe: first contacts are blocked for %s, replies are unaffected",
@@ -262,7 +260,7 @@ func (c *SendCaps) loadNewRecipients() []time.Time {
 		}
 		return spent
 	}
-	return pruneBefore(state.NewRecipients, now.Add(-newRecipientWindow))
+	return pruneBefore(normalizeTimes(state.NewRecipients, now), now.Add(-newRecipientWindow))
 }
 
 func (c *SendCaps) save(state capsState) error {
@@ -272,19 +270,22 @@ func (c *SendCaps) save(state capsState) error {
 	return writeJSONAtomic(c.cfg.CapsStatePath, state)
 }
 
-// validateTimes rejects timestamps from the future: a clock that jumped back,
-// or a hand-edited file, would otherwise keep entries alive (harmless) or, if
-// unsorted, make pruning drop live ones (not harmless).
-func validateTimes(ts []time.Time, now time.Time) error {
+// normalizeTimes makes a loaded window safe to prune. A wall clock that steps
+// back while the bridge runs leaves entries out of order or in the future;
+// that is not corruption, so it must not quarantine the file and block first
+// contacts for a day. Future entries are clamped to now (they keep counting
+// for a full window, the safe side) and the slice is sorted, because
+// pruneBefore treats it as append-ordered.
+func normalizeTimes(ts []time.Time, now time.Time) []time.Time {
+	out := make([]time.Time, len(ts))
 	for i, t := range ts {
-		if t.After(now.Add(time.Hour)) {
-			return fmt.Errorf("timestamp %s is in the future", t.Format(time.RFC3339))
+		if t.After(now) {
+			t = now
 		}
-		if i > 0 && t.Before(ts[i-1]) {
-			return errors.New("timestamps are not in order")
-		}
+		out[i] = t
 	}
-	return nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
 }
 
 // pruneBefore drops entries at or before cutoff. ts is append-ordered, so
