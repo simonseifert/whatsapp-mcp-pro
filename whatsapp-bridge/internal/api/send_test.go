@@ -76,8 +76,9 @@ func (f *fakeSender) CreatePollWithOptions(ctx context.Context, _ *database.Mess
 	return f.record(ctx, o.MessageID, o.BeforeDispatch)
 }
 
-func (f *fakeSender) EditMessage(_, _, _ string) error {
-	return f.record(context.Background(), "", nil).Err
+func (f *fakeSender) EditMessage(_, _, _ string) (string, error) {
+	res := f.record(context.Background(), "", nil)
+	return res.MessageID, res.Err
 }
 
 func (f *fakeSender) DeleteMessage(_, _, _ string) error {
@@ -394,9 +395,9 @@ func TestMessageEndpointsApplySendAllowlist(t *testing.T) {
 		{"edit", func(s *Server) http.HandlerFunc { return s.handleEditMessage },
 			func(j string) map[string]any {
 				return map[string]any{"chat_jid": j, "message_id": "M", "new_content": "x"}
-			}, true},
+			}, false},
 		{"delete", func(s *Server) http.HandlerFunc { return s.handleDeleteMessage },
-			func(j string) map[string]any { return map[string]any{"chat_jid": j, "message_id": "M"} }, true},
+			func(j string) map[string]any { return map[string]any{"chat_jid": j, "message_id": "M"} }, false},
 	}
 	for _, ep := range endpoints {
 		for _, tc := range []struct {

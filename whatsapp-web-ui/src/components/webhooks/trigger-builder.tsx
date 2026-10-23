@@ -24,6 +24,7 @@ const triggerTypes = [
   { value: "sender", label: "Specific Sender" },
   { value: "keyword", label: "Keyword" },
   { value: "media_type", label: "Media Type" },
+  { value: "event", label: "Event (message_edited, message_deleted, call)" },
 ] as const;
 
 const matchTypes = [

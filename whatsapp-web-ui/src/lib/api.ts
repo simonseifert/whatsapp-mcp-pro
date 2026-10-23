@@ -44,7 +44,7 @@ export interface SyncStatusResponse {
 
 // Webhook types
 export interface WebhookTrigger {
-  trigger_type: "all" | "chat_jid" | "sender" | "keyword" | "media_type";
+  trigger_type: "all" | "chat_jid" | "sender" | "keyword" | "media_type" | "event";
   trigger_value: string;
   match_type: "exact" | "contains" | "regex";
   enabled: boolean;
