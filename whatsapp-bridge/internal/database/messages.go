@@ -99,7 +99,7 @@ func (store *MessageStore) GetMessageMedia(id, chatJID string) (mediaType, filen
 // GetMessages gets messages from a chat
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]types.Message, error) {
 	rows, err := store.db.Query(
-		"SELECT id, sender, sender_name, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
+		"SELECT id, sender, sender_name, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY datetime(timestamp) DESC LIMIT ?",
 		chatJID, limit,
 	)
 	if err != nil {
@@ -340,7 +340,7 @@ func (store *MessageStore) GetRecentMedia(chatJID string, limit int) ([]string, 
 	SELECT filename
 	FROM messages
 	WHERE chat_jid = ? AND media_type != '' AND media_type IS NOT NULL AND filename != '' AND filename IS NOT NULL
-	ORDER BY timestamp DESC
+	ORDER BY datetime(timestamp) DESC
 	LIMIT ?
 	`
 	rows, err := store.db.Query(query, chatJID, limit)
@@ -373,7 +373,7 @@ func (store *MessageStore) GetMessageSender(messageID, chatJID string) (sender s
 // GetMessageContentAndSender returns content, sender JID, and is_from_me for a message ID.
 func (store *MessageStore) GetMessageContentAndSender(messageID string) (content string, sender string, isFromMe bool, err error) {
 	err = store.db.QueryRow(
-		"SELECT content, sender, is_from_me FROM messages WHERE id = ? ORDER BY timestamp DESC LIMIT 1",
+		"SELECT content, sender, is_from_me FROM messages WHERE id = ? ORDER BY datetime(timestamp) DESC LIMIT 1",
 		messageID,
 	).Scan(&content, &sender, &isFromMe)
 	return
@@ -385,7 +385,7 @@ func (store *MessageStore) GetPreviousMessageTime(chatJID string, currentTime ti
 	SELECT timestamp
 	FROM messages
 	WHERE chat_jid = ? AND timestamp < ?
-	ORDER BY timestamp DESC
+	ORDER BY datetime(timestamp) DESC
 	LIMIT 1
 	`
 	var prevTime time.Time
@@ -401,7 +401,7 @@ func (store *MessageStore) GetPreviousMessageTime(chatJID string, currentTime ti
 func (store *MessageStore) OldestMessage(chatJID string) (id, sender string, isFromMe bool, timestamp time.Time, err error) {
 	var s sql.NullString
 	err = store.db.QueryRow(
-		"SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC LIMIT 1",
+		"SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? ORDER BY datetime(timestamp) ASC LIMIT 1",
 		chatJID,
 	).Scan(&id, &s, &isFromMe, &timestamp)
 	return id, s.String, isFromMe, timestamp, err
