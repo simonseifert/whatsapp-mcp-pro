@@ -37,7 +37,7 @@ Recommended answers in brackets.
    (bare-sender participants, bare-number recipients, :8082 reachable from the
    LAN/Docker, token sprawl, send duplicates on timeout, deploy rollback holes,
    anti-ban caps, recall memory), plus the webhook raw-JID issue and the failing
-   Security Scan CI job. [done 2026-10-22: fence, key rotation, idempotent sends, 463 handling (v0.5.0-pro). Next: MCP bearer tokens in 644 config.json files, per-recipient anti-ban caps, bare-sender participants, the sender-column normalisation, edit history + call log, chat-export import, /metrics]
+   Security Scan CI job. [done 2026-10-22: fence, key rotation, idempotent sends, 463 handling (v0.5.0-pro). Done 2026-10-23 (v0.6.0-pro, D10): token files 600, anti-ban caps, bare-sender participants, sender normalisation, webhook JID, deploy rollback holes. Next: edit history + call log, chat-export import, /metrics, recall memory]
 3. wa-dispatch / wa-assistant / wa-client: marked dormant/retired in the README status table (2026-10-22). Done.
 4. Multi-instance: done, see DECISIONS.md D6.
 5. Should Claude sessions get Friday's number through MCP as well (a second MCP
