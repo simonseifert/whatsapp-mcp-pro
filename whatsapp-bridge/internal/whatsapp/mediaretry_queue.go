@@ -28,6 +28,15 @@ import (
 // The pacing is the point. Every receipt makes the user's phone show
 // "Finished syncing", and an unpaced bulk download once sent 172 of them in
 // ten minutes. The idea follows mautrix-whatsapp's media request loop.
+//
+// Retries deliberately do not go through antiban (pacing, warm-up or send
+// caps). A media retry receipt is addressed to the account's own JID
+// (whatsmeow's SendMediaRetryReceipt sets to=ownID): it is traffic between the
+// user's own devices, never lands in anyone else's chat, and is not the
+// outbound-messaging pattern antiban models. Counting it would also let a
+// download backlog eat the message budget and block real replies. Its one
+// real cost, the "Finished syncing" notice on the user's phone, is bounded by
+// MEDIA_RETRY_MAX_PER_HOUR here instead.
 
 // MediaRetryConfig tunes the background media retry loop.
 type MediaRetryConfig struct {

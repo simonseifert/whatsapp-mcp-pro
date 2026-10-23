@@ -25,17 +25,22 @@ const (
 	SendErrForbidden        SendErrorKind = "forbidden"         // 403: allowlist / media refused
 	SendErrRateLimited      SendErrorKind = "rate_limited"      // 429: antiban pause or warm-up cap
 	SendErrReachoutTimelock SendErrorKind = "reachout_timelock" // 429: WhatsApp error 463, new contacts locked
-	SendErrNotConnected     SendErrorKind = "not_connected"     // 503: socket down / not logged in
-	SendErrUpstream         SendErrorKind = "whatsapp_error"    // 502: WhatsApp rejected or failed the send
-	SendErrTimeout          SendErrorKind = "timeout"           // 504: deadline hit or caller went away
+	// SendErrCapReached is the bridge's own volume ceiling (antiban caps), kept
+	// apart from rate_limited so a caller can tell "you sent too much" from
+	// "the account looks unhealthy" and wait out retry_after instead of backing
+	// off blindly.
+	SendErrCapReached   SendErrorKind = "send_cap"       // 429: per-chat / hourly / new-contact cap
+	SendErrNotConnected SendErrorKind = "not_connected"  // 503: socket down / not logged in
+	SendErrUpstream     SendErrorKind = "whatsapp_error" // 502: WhatsApp rejected or failed the send
+	SendErrTimeout      SendErrorKind = "timeout"        // 504: deadline hit or caller went away
 )
 
 // SendError is a classified send failure.
 type SendError struct {
 	Kind SendErrorKind
 	Err  error
-	// Until is set for SendErrReachoutTimelock: when the restriction is
-	// expected to lift.
+	// Until is set for SendErrReachoutTimelock and SendErrCapReached: when
+	// the restriction is expected to lift (the API's Retry-After).
 	Until time.Time
 }
 
@@ -90,6 +95,8 @@ func ClassifySendError(err error) SendErrorKind {
 		errors.Is(err, whatsmeow.ErrNotLoggedIn),
 		errors.Is(err, whatsmeow.ErrClientIsNil):
 		return SendErrNotConnected
+	case errors.Is(err, antiban.ErrSendCapReached):
+		return SendErrCapReached
 	case errors.Is(err, antiban.ErrHealthPaused),
 		errors.Is(err, antiban.ErrWarmUpLimitReached):
 		return SendErrRateLimited
@@ -104,7 +111,12 @@ func classify(err error, format string) *SendError {
 	if errors.As(err, &se) {
 		return se
 	}
-	return &SendError{Kind: ClassifySendError(err), Err: fmt.Errorf(format, err)}
+	out := &SendError{Kind: ClassifySendError(err), Err: fmt.Errorf(format, err)}
+	var ce *antiban.CapError
+	if errors.As(err, &ce) {
+		out.Until = time.Now().Add(ce.RetryAfter)
+	}
+	return out
 }
 
 // failed builds a failed SendResult from a classified error.

@@ -563,7 +563,7 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 	if c.antiban.Enabled() {
 		_ = c.SendTypingIndicator(recipientJID.String(), "typing")
 	}
-	if err := c.antiban.BeforeSend(ctx, antiban.Text, len(message)); err != nil {
+	if err := c.antiban.BeforeSend(ctx, c.antibanRequest(messageStore, antiban.Text, recipientJID, len(message), recipient)); err != nil {
 		_ = c.SendTypingIndicator(recipientJID.String(), "paused")
 		return failed(classify(err, "antiban blocked send: %w"), "")
 	}
@@ -659,7 +659,7 @@ func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *data
 
 	msg := c.Client.BuildReaction(chat, senderJID, msgID, emoji)
 
-	if err := c.antiban.BeforeSend(ctx, antiban.Reaction, 0); err != nil {
+	if err := c.antiban.BeforeSend(ctx, c.antibanRequest(messageStore, antiban.Reaction, chat, 0)); err != nil {
 		return failed(classify(err, "antiban blocked reaction: %w"), "")
 	}
 	reactionID := c.prepareMessageID(opts.MessageID, opts.BeforeDispatch)
@@ -698,15 +698,17 @@ func (c *Client) EditMessage(chatJID, messageID, newContent string) error {
 	if c.antiban.Enabled() {
 		_ = c.SendTypingIndicator(chatJID, "typing")
 	}
-	if err := c.antiban.BeforeSend(context.Background(), antiban.Edit, len(newContent)); err != nil {
+	// Errors are classified (*SendError) so /api/edit answers with the same
+	// status map as /api/send, a cap hit included, instead of a flat 500.
+	if err := c.antiban.BeforeSend(context.Background(), c.antibanRequest(nil, antiban.Edit, chat, len(newContent))); err != nil {
 		_ = c.SendTypingIndicator(chatJID, "paused")
-		return fmt.Errorf("antiban blocked edit: %v", err)
+		return classify(err, "antiban blocked edit: %w")
 	}
 	_, err = c.Client.SendMessage(context.Background(), chat, msg)
 	_ = c.SendTypingIndicator(chatJID, "paused")
 	if err != nil {
 		c.antiban.AfterSendFailed(antiban.Edit, err)
-		return fmt.Errorf("failed to edit message: %v", err)
+		return classify(err, "failed to edit message: %w")
 	}
 	c.antiban.AfterSend(antiban.Edit)
 
@@ -743,13 +745,13 @@ func (c *Client) DeleteMessage(chatJID, messageID, senderJID string) error {
 
 	msg := c.Client.BuildRevoke(chat, sender, msgID)
 
-	if err := c.antiban.BeforeSend(context.Background(), antiban.Delete, 0); err != nil {
-		return fmt.Errorf("antiban blocked delete: %v", err)
+	if err := c.antiban.BeforeSend(context.Background(), c.antibanRequest(nil, antiban.Delete, chat, 0)); err != nil {
+		return classify(err, "antiban blocked delete: %w")
 	}
 	_, err = c.Client.SendMessage(context.Background(), chat, msg)
 	if err != nil {
 		c.antiban.AfterSendFailed(antiban.Delete, err)
-		return fmt.Errorf("failed to delete message: %v", err)
+		return classify(err, "failed to delete message: %w")
 	}
 	c.antiban.AfterSend(antiban.Delete)
 
@@ -767,7 +769,7 @@ func (c *Client) GetGroupInfo(groupJID string) (*types.GroupInfo, error) {
 		return nil, fmt.Errorf("invalid group JID: %v", err)
 	}
 
-	return c.Client.GetGroupInfo(context.Background(), jid)
+	return c.cachedGroupInfo(context.Background(), jid)
 }
 
 // MarkMessagesRead marks messages as read (blue ticks)
@@ -1013,7 +1015,7 @@ func (c *Client) CreatePollWithOptions(ctx context.Context, messageStore *databa
 	if c.antiban.Enabled() {
 		_ = c.SendTypingIndicator(chatJID, "typing")
 	}
-	if err := c.antiban.BeforeSend(ctx, antiban.Poll, len(question)); err != nil {
+	if err := c.antiban.BeforeSend(ctx, c.antibanRequest(messageStore, antiban.Poll, chat, len(question), chatJID)); err != nil {
 		_ = c.SendTypingIndicator(chatJID, "paused")
 		return failed(classify(err, "antiban blocked poll: %w"), "")
 	}
@@ -1104,8 +1106,8 @@ func (c *Client) RequestChatHistory(chatJID string, oldestMsgID string, oldestMs
 
 	// Send as peer message to own device (NOT to the group/chat).
 	// History sync is a device-to-device protocol request to our own phone.
-	if err := c.antiban.BeforeSend(context.Background(), antiban.Peer, 0); err != nil {
-		return fmt.Errorf("antiban blocked history request: %v", err)
+	if err := c.antiban.BeforeSend(context.Background(), antiban.SendRequest{Type: antiban.Peer}); err != nil {
+		return fmt.Errorf("antiban blocked history request: %w", err)
 	}
 	_, err = c.Client.SendMessage(context.Background(), ownJID, msg, whatsmeow.SendRequestExtra{Peer: true})
 	if err != nil {
