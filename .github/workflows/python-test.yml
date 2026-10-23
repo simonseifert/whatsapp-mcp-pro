@@ -32,6 +32,14 @@ jobs:
           cd whatsapp-mcp-server
           uv sync --all-extras
 
+      - name: requirements.txt matches uv.lock
+        # Docker and pip-audit read requirements.txt; a stale one once kept
+        # dependencies the lock had already patched.
+        run: |
+          cd whatsapp-mcp-server
+          uv export --format requirements-txt --no-hashes --no-dev --no-emit-project -q -o requirements.txt
+          git diff --exit-code -- requirements.txt
+
       - name: Type check
         run: |
           cd whatsapp-mcp-server

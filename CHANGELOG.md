@@ -6,6 +6,23 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+## [v0.7.2-pro] - 2026-10-23
+
+Dependency security update. No behaviour change.
+
+### Security
+
+- MCP server: cryptography 48.0.1 to 50.0.2, certifi to 2026.10.23 and
+  opentelemetry-api 1.45.0 to 1.45.1, all with published advisories.
+- `requirements.txt` is now exported from `uv.lock` and CI fails if the two
+  drift. It had gone stale and still pinned older versions (and gradio, which
+  nothing uses); the Docker image installs from it.
+- Web UI: next 16.4.1 (with sharp 0.35.5) now actually installs. The pnpm lock
+  still held 16.2.11, so `pnpm install --frozen-lockfile` in the Docker build
+  failed. Overrides in `pnpm-workspace.yaml` lift postcss, nanoid, zod,
+  brace-expansion, js-yaml and source-map-js past their advisories.
+- `package-lock.json` is removed; the web UI is pnpm only.
+
 ## [v0.7.1-pro] - 2026-10-23
 
 Two hardening fixes on v0.7.0-pro's new paths.

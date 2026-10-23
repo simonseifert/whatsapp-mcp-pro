@@ -6,10 +6,10 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 COPY ./whatsapp-mcp-server/requirements.txt .
 
-# gradio/gradio_client only used in gradio-main.py (local dev UI), not main.py entrypoint
-RUN grep -vE "^gradio" requirements.txt > requirements-docker.txt \
-    && uv venv /opt/venv \
-    && uv pip install --python /opt/venv --no-cache -r requirements-docker.txt
+# requirements.txt is exported from uv.lock (CI checks it matches), so the image
+# gets the same pinned versions as the native install.
+RUN uv venv /opt/venv \
+    && uv pip install --python /opt/venv --no-cache -r requirements.txt
 
 # Runtime stage: slim base + ffmpeg + venv only, no build tools
 FROM python:3.13-slim AS runtime
