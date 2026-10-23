@@ -97,10 +97,15 @@ func callEventFrom(evt any, ids callJIDs) (database.CallEvent, bool) {
 
 // callLogEvent turns the phone's call-log message into a CallEvent. The phone
 // sends one to its companions after each call; it is the only source of a
-// duration for a call answered on the phone.
-func callLogEvent(log *waE2E.CallLogMessage, msgID, chatJID string, at time.Time, fromMe bool, source string) database.CallEvent {
+// duration for a call answered on the phone. Callers accept it only from the
+// user's own devices. It says nothing about direction (the phone sends it
+// for both), so it leaves that to the live events.
+//
+// The ID is the message's, namespaced so it can never coincide with a live
+// call ID; RecordCallEvent also refuses to fold it into a call in another chat.
+func callLogEvent(log *waE2E.CallLogMessage, msgID, chatJID string, at time.Time, source string) database.CallEvent {
 	ev := database.CallEvent{
-		CallID:   msgID,
+		CallID:   "log:" + msgID,
 		Kind:     database.CallEventLog,
 		ChatJID:  chatJID,
 		IsVideo:  log.GetIsVideo(),
@@ -108,12 +113,6 @@ func callLogEvent(log *waE2E.CallLogMessage, msgID, chatJID string, at time.Time
 		At:       at,
 		Duration: time.Duration(log.GetDurationSecs()) * time.Second,
 		Source:   source,
-	}
-	if fromMe {
-		ev.Direction = "outgoing"
-	} else {
-		ev.Direction = "incoming"
-		ev.CallerJID = chatJID
 	}
 	switch log.GetCallOutcome() {
 	case waE2E.CallLogMessage_CONNECTED, waE2E.CallLogMessage_ACCEPTED_ELSEWHERE:

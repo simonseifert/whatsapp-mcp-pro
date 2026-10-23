@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"context"
 	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -27,9 +28,15 @@ func emitChange(webhookManager any, eventType string, info bridgeTypes.WebhookMe
 
 // handleChange applies a live edit or revoke and tells the webhooks about it.
 func (c *Client) handleChange(store *database.MessageStore, webhookManager any, msg *events.Message, ch messageChange, sender string) {
-	out, err := c.applyChange(store, ch, c.chatCandidates(msg.Info.Chat), sender, msg.Info.IsFromMe, database.SourceLive)
+	actor := c.messageActor(msg, sender)
+	isAdmin := c.adminCheck(msg.Info.Chat, msg.Info.Sender, msg.Info.SenderAlt, msg.Info.IsFromMe)
+	out, err := c.applyChange(store, ch, c.chatCandidates(msg.Info.Chat), actor, isAdmin, database.SourceLive, false)
 	if err != nil {
 		c.logger.Warnf("Failed to store %s of %s: %v", ch.Kind, ch.TargetID, err)
+		return
+	}
+	if out.Refused != "" {
+		c.logger.Warnf("Ignored %s of %s in %s from %s: %s", ch.Kind, ch.TargetID, msg.Info.Chat, sender, out.Refused)
 		return
 	}
 	if !out.Applied {
@@ -128,12 +135,23 @@ func (c *Client) handleHistoryNonMessage(store *database.MessageStore, chatJID s
 	evt := unwrapHistory(wmi)
 	sender, isFromMe := c.historyMessageSender(jid, wmi.GetKey())
 	if ch := historyChange(wmi, evt); ch.Kind != changeNone {
-		by := sender
+		actor := database.Actor{JID: sender, IsMe: isFromMe}
+		// A revoke stub is the phone's own record of a revoke the server
+		// accepted; an edit or revoke still in protocol-message form is only
+		// what someone sent, and gets the same checks as a live one.
+		stub := wmi.GetMessage() == nil
 		if wmi.GetMessageStubType() == waWeb.WebMessageInfo_ADMIN_REVOKE {
-			by = "" // the stub names the author, not the admin who deleted it
+			actor.JID = "" // the stub names the author, not the admin who deleted it
 		}
-		if _, err := c.applyChange(store, ch, c.historyChats(chatJID, jid), by, isFromMe, database.SourceHistory); err != nil {
+		var isAdmin func() bool
+		if p, err := types.ParseJID(sender); err == nil && !stub {
+			isAdmin = c.adminCheck(jid, p, types.EmptyJID, isFromMe)
+		}
+		out, err := c.applyChange(store, ch, c.historyChats(chatJID, jid), actor, isAdmin, database.SourceHistory, stub)
+		if err != nil {
 			c.logger.Warnf("Failed to store history %s of %s: %v", ch.Kind, ch.TargetID, err)
+		} else if out.Refused != "" {
+			c.logger.Warnf("Ignored history %s of %s in %s: %s", ch.Kind, ch.TargetID, chatJID, out.Refused)
 		}
 		return true
 	}
@@ -143,7 +161,7 @@ func (c *Client) handleHistoryNonMessage(store *database.MessageStore, chatJID s
 	callChat := c.chatCandidates(jid)[0]
 	if isVideo, isGroup, ok := historyMissedCall(wmi); ok && wmi.GetKey().GetID() != "" {
 		c.recordCallLog(store, database.CallEvent{
-			CallID:    wmi.GetKey().GetID(),
+			CallID:    "stub:" + wmi.GetKey().GetID(),
 			Kind:      database.CallEventMissed,
 			ChatJID:   callChat,
 			CallerJID: sender,
@@ -155,8 +173,12 @@ func (c *Client) handleHistoryNonMessage(store *database.MessageStore, chatJID s
 		})
 		return true
 	}
-	if evt != nil && evt.Message.GetCallLogMesssage() != nil && wmi.GetKey().GetID() != "" {
-		c.recordCallLog(store, callLogEvent(evt.Message.GetCallLogMesssage(), wmi.GetKey().GetID(), callChat, at, isFromMe, database.SourceHistory))
+	if evt != nil && evt.Message.GetCallLogMesssage() != nil {
+		// Only the user's own phone writes call-log entries; one from anyone
+		// else is a forgery and is dropped like any other non-message.
+		if isFromMe && wmi.GetKey().GetID() != "" {
+			c.recordCallLog(store, callLogEvent(evt.Message.GetCallLogMesssage(), wmi.GetKey().GetID(), callChat, at, database.SourceHistory))
+		}
 		return true
 	}
 	return false
@@ -199,9 +221,14 @@ func classifyChange(msg *events.Message) messageChange {
 			if target == "" {
 				return messageChange{}
 			}
+			// TimestampMS is the sender's claim; Info.Timestamp is when the
+			// server took the edit. A claim later than that would make a forged
+			// or replayed edit outrank every genuine one, so it is clamped.
 			at := msg.Info.Timestamp
 			if ms := pm.GetTimestampMS(); ms > 0 {
-				at = time.UnixMilli(ms)
+				if claimed := time.UnixMilli(ms); at.IsZero() || claimed.Before(at) {
+					at = claimed
+				}
 			}
 			return messageChange{
 				Kind:       changeEdit,
@@ -219,11 +246,15 @@ func classifyChange(msg *events.Message) messageChange {
 		return messageChange{}
 	}
 	if msg.NewsletterMeta != nil && !msg.NewsletterMeta.EditTS.IsZero() {
+		at := msg.NewsletterMeta.EditTS
+		if now := time.Now(); at.After(now) {
+			at = now
+		}
 		return messageChange{
 			Kind:       changeEdit,
 			TargetID:   msg.Info.ID,
 			NewContent: ExtractTextContent(msg.Message),
-			At:         msg.NewsletterMeta.EditTS,
+			At:         at,
 			StanzaID:   msg.Info.ID + "@" + msg.NewsletterMeta.EditTS.UTC().Format(time.RFC3339Nano),
 		}
 	}
@@ -270,13 +301,15 @@ type ChangeOutcome struct {
 	MessageID  string
 	OldContent string
 	NewContent string
-	Applied    bool // an edit that changed the current text, or a first revoke
+	Applied    bool   // an edit that changed the current text, or a first revoke
+	Refused    string // why a change was not applied: not genuine, or not checkable
 }
 
-// applyChange stores an edit or revoke. sender is who sent the change event,
-// which is the editor, or for a revoke the one who deleted (the author, or a
-// group admin).
-func (c *Client) applyChange(store *database.MessageStore, ch messageChange, chats []string, sender string, fromMe bool, source string) (ChangeOutcome, error) {
+// applyChange stores an edit or revoke. actor is whoever sent the change
+// event; isAdmin (may be nil) says whether they administer the group, for a
+// revoke of someone else's message. trusted skips the authorship checks.
+func (c *Client) applyChange(store *database.MessageStore, ch messageChange, chats []string, actor database.Actor,
+	isAdmin func() bool, source string, trusted bool) (ChangeOutcome, error) {
 	out := ChangeOutcome{Kind: ch.Kind, MessageID: ch.TargetID, NewContent: ch.NewContent}
 	switch ch.Kind {
 	case changeEdit:
@@ -290,23 +323,108 @@ func (c *Client) applyChange(store *database.MessageStore, ch messageChange, cha
 			ChatJIDs:   chats,
 			NewContent: ch.NewContent,
 			EditedAt:   ch.At,
-			Editor:     sender,
-			EditorIsMe: fromMe,
+			Editor:     actor,
 			StanzaID:   ch.StanzaID,
 			Source:     source,
+			Trusted:    trusted,
 		})
 		if err != nil {
 			return out, err
 		}
 		out.ChatJID, out.OldContent, out.Applied = res.ChatJID, res.OldContent, res.Applied && !res.Duplicate
+		if res.Rejected && !res.Duplicate {
+			out.Refused = "editor is not the author"
+		}
 		return out, nil
 	case changeRevoke:
-		chatJID, newly, err := store.MarkDeleted(ch.TargetID, chats, ch.At, sender)
+		res, err := store.MarkDeleted(database.Revoke{
+			MessageID: ch.TargetID,
+			ChatJIDs:  chats,
+			At:        ch.At,
+			By:        actor,
+			IsAdmin:   isAdmin,
+			Trusted:   trusted,
+		})
 		if err != nil {
 			return out, err
 		}
-		out.ChatJID, out.Applied = chatJID, newly
+		out.ChatJID, out.Applied = res.ChatJID, res.Newly
+		switch {
+		case res.Rejected:
+			out.Refused = "revoker is neither the author nor a group admin"
+		case res.Ignored:
+			out.Refused = "message not stored and revoker not a group admin"
+		}
 		return out, nil
 	}
 	return out, nil
+}
+
+// messageActor is who sent a live edit or revoke, in every form the store
+// may have their messages under. A newsletter post can only come from the
+// newsletter itself, through WhatsApp's servers.
+func (c *Client) messageActor(msg *events.Message, sender string) database.Actor {
+	if msg.Info.Chat.Server == types.NewsletterServer {
+		return database.Actor{JID: msg.Info.Chat.String(), IsMe: msg.Info.IsFromMe}
+	}
+	a := database.Actor{JID: sender, IsMe: msg.Info.IsFromMe}
+	if alt := msg.Info.SenderAlt; !alt.IsEmpty() {
+		a.Forms = append(a.Forms, StoredSender(alt))
+	}
+	if c != nil && c.Client != nil && c.Store != nil && !msg.Info.Sender.IsEmpty() {
+		if alt, err := c.Store.GetAltJID(context.Background(), msg.Info.Sender.ToNonAD()); err == nil && !alt.IsEmpty() {
+			a.Forms = append(a.Forms, alt.ToNonAD().String())
+		}
+	}
+	return a
+}
+
+// adminCheck returns a lazy "is this sender a group admin" for a revoke in a
+// group, nil elsewhere. Lazy because it may cost a group-info query, and only
+// a revoke of someone else's message needs it.
+func (c *Client) adminCheck(chat, sender, senderAlt types.JID, fromMe bool) func() bool {
+	if chat.Server != types.GroupServer || c == nil || c.Client == nil {
+		return nil
+	}
+	return func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		info, err := c.cachedGroupInfo(ctx, chat)
+		if err != nil {
+			c.logger.Warnf("Could not check admins of %s for a revoke: %v", chat, err)
+			return false
+		}
+		jids := []types.JID{sender.ToNonAD(), senderAlt.ToNonAD()}
+		if fromMe && c.Store != nil {
+			if c.Store.ID != nil {
+				jids = append(jids, c.Store.ID.ToNonAD())
+			}
+			jids = append(jids, c.Store.LID.ToNonAD())
+		}
+		return participantIsAdmin(info, jids...)
+	}
+}
+
+// participantIsAdmin reports whether any of jids is an admin of the group.
+// Participants carry both a LID and a phone JID; the sender may be either.
+func participantIsAdmin(info *types.GroupInfo, jids ...types.JID) bool {
+	if info == nil {
+		return false
+	}
+	for _, p := range info.Participants {
+		if !p.IsAdmin && !p.IsSuperAdmin {
+			continue
+		}
+		for _, j := range jids {
+			if j.IsEmpty() || j.User == "" {
+				continue
+			}
+			for _, form := range []types.JID{p.JID, p.LID, p.PhoneNumber} {
+				if form.User == j.User && form.Server == j.Server {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

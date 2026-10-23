@@ -73,7 +73,12 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content
 			file_length     = COALESCE(NULLIF(messages.file_length, 0), excluded.file_length)`,
 		id, chatJID, sender, senderName, content, timestamp, isFromMe, mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Edits that arrived before the message could not be checked against its
+	// author until now.
+	return store.resolvePendingEdits(id, chatJID)
 }
 
 // StoreMessageContext records what a stored message replied to and whether it was forwarded.
