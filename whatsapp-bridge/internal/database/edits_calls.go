@@ -156,52 +156,53 @@ func findMessageChat(q querier, id string, chatJIDs []string) (string, error) {
 	return "", nil
 }
 
-// accountForms expands JIDs to every form the same account may be stored
-// under: the identities row joins LID and phone JID, and senders from before
-// full JIDs were stored are bare digits.
+// storedSenderJID turns a messages.sender value into one full JID. Rows from
+// before full JIDs were stored hold bare digits, which say nothing about the
+// namespace: a LID's digits can equal someone else's phone number. So a bare
+// sender is the chat's own JID when it is the other side of a 1:1 chat, a LID
+// only when the identity directory knows it as one, and a phone JID otherwise
+// (the rule of migration 008 and bareRecipientJID).
+func storedSenderJID(q querier, sender, chatJID string) string {
+	sender = strings.TrimSpace(sender)
+	if sender == "" || strings.Contains(sender, "@") {
+		return sender
+	}
+	if user, server, ok := strings.Cut(chatJID, "@"); ok && server != "g.us" && user == sender {
+		return chatJID
+	}
+	var one int
+	if err := q.QueryRow(`SELECT 1 FROM identities WHERE lid = ? LIMIT 1`, sender+"@lid").Scan(&one); err == nil {
+		return sender + "@lid"
+	}
+	return sender + "@s.whatsapp.net"
+}
+
+// accountForms expands full JIDs to the forms the same account is known
+// under. LID and phone JID are linked only through the identities row; the
+// caller adds what whatsmeow's LID map or the event's SenderAlt said. Values
+// without a server are dropped rather than guessed at.
 func accountForms(q querier, jids ...string) map[string]bool {
 	out := map[string]bool{}
-	var full []string
-	add := func(f string) {
-		f = strings.TrimSpace(f)
-		if f == "" || out[f] {
-			return
-		}
-		out[f] = true
-		if strings.Contains(f, "@") {
-			full = append(full, f)
-		}
-	}
+	var queue []string
 	for _, j := range jids {
-		j = strings.TrimSpace(j)
-		if j == "" {
-			continue
-		}
-		user, server, hasAt := strings.Cut(j, "@")
-		add(j)
-		switch {
-		case !hasAt:
-			add(j + "@s.whatsapp.net")
-			add(j + "@lid")
-		case server == "s.whatsapp.net" || server == "lid":
-			add(user)
+		if j = strings.TrimSpace(j); strings.Contains(j, "@") && !out[j] {
+			out[j] = true
+			queue = append(queue, j)
 		}
 	}
-	for i := 0; i < len(full); i++ {
+	for i := 0; i < len(queue); i++ {
 		var jid, lid, phone string
 		err := q.QueryRow(
 			`SELECT COALESCE(jid, ''), COALESCE(lid, ''), COALESCE(phone_jid, '') FROM identities WHERE ? IN (jid, lid, phone_jid) LIMIT 1`,
-			full[i],
+			queue[i],
 		).Scan(&jid, &lid, &phone)
 		if err != nil {
 			continue // no row, or a store without the directory
 		}
 		for _, f := range []string{jid, lid, phone} {
-			if f != "" && !out[f] {
-				add(f)
-				if user, _, ok := strings.Cut(f, "@"); ok {
-					add(user)
-				}
+			if strings.Contains(f, "@") && !out[f] {
+				out[f] = true
+				queue = append(queue, f)
 			}
 		}
 	}
@@ -209,16 +210,21 @@ func accountForms(q querier, jids ...string) map[string]bool {
 }
 
 // isAuthor reports whether actor wrote a message stored with sender and
-// isFromMe. Any participant can send an edit or revoke naming any message ID,
-// so this is what stops one chat member from rewriting another's messages.
-func isAuthor(q querier, sender sql.NullString, isFromMe bool, actor Actor) bool {
+// isFromMe in chatJID. Any participant can send an edit or revoke naming any
+// message ID, so this is what stops one chat member from rewriting another's
+// messages.
+func isAuthor(q querier, sender sql.NullString, chatJID string, isFromMe bool, actor Actor) bool {
 	if isFromMe {
 		return actor.IsMe
 	}
-	if actor.IsMe || !sender.Valid || strings.TrimSpace(sender.String) == "" {
+	if actor.IsMe || !sender.Valid {
 		return false
 	}
-	stored := accountForms(q, sender.String)
+	author := storedSenderJID(q, sender.String, chatJID)
+	if author == "" {
+		return false
+	}
+	stored := accountForms(q, author)
 	for f := range accountForms(q, append([]string{actor.JID}, actor.Forms...)...) {
 		if stored[f] {
 			return true
@@ -317,7 +323,7 @@ func (store *MessageStore) ApplyEdit(e Edit) (EditResult, error) {
 	).Scan(&current, &lastEdit, &sender, &fromMe); err != nil {
 		return res, fmt.Errorf("read message %s: %w", id, err)
 	}
-	if !e.Trusted && !isAuthor(tx, sender, fromMe, e.Editor) {
+	if !e.Trusted && !isAuthor(tx, sender, chat, fromMe, e.Editor) {
 		res.Rejected = true
 		added, err := record(chat, nil, EditRejected)
 		if err != nil {
@@ -443,7 +449,7 @@ func (store *MessageStore) resolvePendingEdits(id, chat string) error {
 	var genuine []pending
 	for _, p := range all {
 		status := EditRejected
-		if isAuthor(tx, sender, false, Actor{JID: p.editor}) {
+		if isAuthor(tx, sender, chat, false, Actor{JID: p.editor}) {
 			status = EditSuperseded
 			genuine = append(genuine, p)
 		}
@@ -546,7 +552,7 @@ func (store *MessageStore) MarkDeleted(r Revoke) (RevokeResult, error) {
 			Scan(&sender, &fromMe); err != nil {
 			return res, fmt.Errorf("read message %s: %w", id, err)
 		}
-		if !isAuthor(tx, sender, fromMe, r.By) && !admin() {
+		if !isAuthor(tx, sender, chat, fromMe, r.By) && !admin() {
 			res.ChatJID, res.Rejected = chat, true
 			return res, nil
 		}
