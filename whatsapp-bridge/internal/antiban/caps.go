@@ -97,12 +97,19 @@ type SendCaps struct {
 // It never fails: an unreadable state file is quarantined and treated as a
 // spent first-contact budget (see loadNewRecipients).
 func NewSendCaps(cfg *Config) *SendCaps {
+	return newSendCaps(cfg, time.Now)
+}
+
+// newSendCaps takes the clock so tests load the persisted window against the
+// same fake time they check against; loading with the real clock pruned or
+// kept entries depending on the day the tests ran.
+func newSendCaps(cfg *Config, now func() time.Time) *SendCaps {
 	if cfg == nil {
 		cfg = LoadConfig()
 	}
 	c := &SendCaps{
 		cfg:               cfg,
-		now:               time.Now,
+		now:               now,
 		recipient:         make(map[string][]time.Time),
 		feedbackRecipient: make(map[string][]time.Time),
 	}

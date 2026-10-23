@@ -138,3 +138,19 @@ def test_list_messages_orders_by_instant_across_the_dst_hour(db):
     got = whatsapp.list_messages(chat_jid=CHAT)
 
     assert [m["id"] for m in got] == ["winter", "summer"]
+
+
+def test_the_repeated_0230_filters_and_sorts_as_two_instants(db):
+    # The same wall-clock text twice, an hour apart: 02:30 summer time, then
+    # 02:30 winter time once the clocks went back.
+    _insert(
+        db,
+        [
+            ("summer-0230", "2026-10-25 02:30:00+02:00"),  # 00:30 UTC
+            ("winter-0230", "2026-10-25 02:30:00+01:00"),  # 01:30 UTC
+        ],
+    )
+
+    assert [m["id"] for m in whatsapp.list_messages(chat_jid=CHAT)] == ["winter-0230", "summer-0230"]
+    assert [m["id"] for m in whatsapp.list_messages(chat_jid=CHAT, after="2026-10-25T01:00:00Z")] == ["winter-0230"]
+    assert [m["id"] for m in whatsapp.list_messages(chat_jid=CHAT, before="2026-10-25T01:00:00Z")] == ["summer-0230"]

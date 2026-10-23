@@ -33,9 +33,7 @@ type fakeClock struct{ t time.Time }
 func (c *fakeClock) now() time.Time { return c.t }
 
 func newTestCaps(cfg *Config, clock *fakeClock) *SendCaps {
-	c := NewSendCaps(cfg)
-	c.now = clock.now
-	return c
+	return newSendCaps(cfg, clock.now)
 }
 
 func TestSendCaps(t *testing.T) {

@@ -404,12 +404,15 @@ func (store *MessageStore) GetPreviousMessageTime(chatJID string, currentTime ti
 	query := `
 	SELECT timestamp
 	FROM messages
-	WHERE chat_jid = ? AND timestamp < ?
+	WHERE chat_jid = ? AND datetime(timestamp) < ?
 	ORDER BY datetime(timestamp) DESC
 	LIMIT 1
 	`
+	// Compared in UTC: the stored text carries the local offset, so on the
+	// night the clocks go back 02:10+01:00 sorts before 02:30+02:00 as text
+	// although it is 40 minutes later.
 	var prevTime time.Time
-	err := store.db.QueryRow(query, chatJID, currentTime).Scan(&prevTime)
+	err := store.db.QueryRow(query, chatJID, currentTime.UTC().Format("2006-01-02 15:04:05")).Scan(&prevTime)
 	if err == sql.ErrNoRows {
 		return time.Time{}, nil
 	}
