@@ -54,6 +54,28 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check whatsapp-mcp-server/
 
+  web-ui-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install
+        working-directory: whatsapp-web-ui
+        run: |
+          corepack enable && corepack prepare pnpm@10 --activate
+          pnpm install --frozen-lockfile
+
+      - name: ESLint and type check
+        working-directory: whatsapp-web-ui
+        run: |
+          pnpm run lint
+          pnpm exec tsc --noEmit
+
   dockerfile-lint:
     runs-on: ubuntu-latest
 

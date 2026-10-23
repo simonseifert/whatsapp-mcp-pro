@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Webhook, WhatsAppAPI, getErrorMessage } from "@/lib/api";
 import { useSettings } from "@/lib/store";
 import { Button } from "@/components/ui/button";
@@ -31,24 +31,27 @@ export function WebhookList() {
   const [deleteDialog, setDeleteDialog] = useState<{ id: string; name: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const loadWebhooks = async () => {
+  const fetchWebhooks = useCallback(
+    () =>
+      new WhatsAppAPI(apiKey)
+        .getWebhooks()
+        .then(setWebhooks, (error) => {
+          const { title, description } = getErrorMessage(error);
+          toast.error(title, { description });
+          setWebhooks([]);
+        })
+        .finally(() => setLoading(false)),
+    [apiKey],
+  );
+
+  const loadWebhooks = () => {
     setLoading(true);
-    try {
-      const api = new WhatsAppAPI(apiKey);
-      const data = await api.getWebhooks();
-      setWebhooks(data);
-    } catch (error) {
-      const { title, description } = getErrorMessage(error);
-      toast.error(title, { description });
-      setWebhooks([]);
-    } finally {
-      setLoading(false);
-    }
+    fetchWebhooks();
   };
 
   useEffect(() => {
-    loadWebhooks();
-  }, [apiKey]);
+    fetchWebhooks();
+  }, [fetchWebhooks]);
 
   const handleCreate = () => {
     setEditingWebhook(null);
@@ -196,7 +199,7 @@ export function WebhookList() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Webhook</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deleteDialog?.name}"? This will also delete all webhook logs and cannot be undone.
+              Are you sure you want to delete &ldquo;{deleteDialog?.name}&rdquo;? This will also delete all webhook logs and cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

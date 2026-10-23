@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { WebhookLog, WhatsAppAPI, getErrorMessage } from "@/lib/api";
 import { useSettings } from "@/lib/store";
 import { Button } from "@/components/ui/button";
@@ -28,28 +28,42 @@ export function WebhookLogs({ open, onOpenChange, webhookId, webhookName }: Webh
   const [logs, setLogs] = useState<WebhookLog[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const loadLogs = async () => {
-    if (!webhookId) return;
-
-    setLoading(true);
-    try {
-      const api = new WhatsAppAPI(apiKey);
-      const data = await api.getWebhookLogs(webhookId);
-      setLogs(data.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
-    } catch (error) {
-      const { title, description } = getErrorMessage(error);
-      toast.error(title, { description });
+  // Opening the dialog for a webhook clears the previous list and shows the
+  // spinner (adjusted during render rather than in the effect).
+  const openFor = open ? webhookId : null;
+  const [prevOpenFor, setPrevOpenFor] = useState<string | null>(null);
+  if (openFor !== prevOpenFor) {
+    setPrevOpenFor(openFor);
+    if (openFor) {
       setLogs([]);
-    } finally {
-      setLoading(false);
+      setLoading(true);
     }
+  }
+
+  const fetchLogs = useCallback(() => {
+    if (!webhookId) return;
+    new WhatsAppAPI(apiKey)
+      .getWebhookLogs(webhookId)
+      .then(
+        (data) =>
+          setLogs(data.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())),
+        (error) => {
+          const { title, description } = getErrorMessage(error);
+          toast.error(title, { description });
+          setLogs([]);
+        },
+      )
+      .finally(() => setLoading(false));
+  }, [apiKey, webhookId]);
+
+  const loadLogs = () => {
+    setLoading(true);
+    fetchLogs();
   };
 
   useEffect(() => {
-    if (open && webhookId) {
-      loadLogs();
-    }
-  }, [open, webhookId]);
+    if (open) fetchLogs();
+  }, [open, fetchLogs]);
 
   const getStatusInfo = (log: WebhookLog) => {
     if (log.response_status) {
