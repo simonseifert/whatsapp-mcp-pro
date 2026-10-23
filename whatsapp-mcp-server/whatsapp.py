@@ -1970,12 +1970,9 @@ def edit_message(chat_jid: str, message_id: str, new_content: str) -> dict[str, 
                 "error": result.get("message") if not result.get("success") else None,
             }
         else:
-            return {
-                "success": False,
-                "chat_jid": chat_jid,
-                "message_id": message_id,
-                "error": f"HTTP {response.status_code} - {response.text}",
-            }
+            # Same structured fields as the sends (code, retryable, retry_after),
+            # so a send-cap 429 on an edit reads the same as on send_message.
+            return {"chat_jid": chat_jid, "message_id": message_id, **bridge_error(response)}
 
     except requests.RequestException as e:
         return {"success": False, "chat_jid": chat_jid, "message_id": message_id, "error": f"Request error: {str(e)}"}
@@ -2023,12 +2020,7 @@ def delete_message(chat_jid: str, message_id: str, sender_jid: str | None = None
                 "error": result.get("message") if not result.get("success") else None,
             }
         else:
-            return {
-                "success": False,
-                "chat_jid": chat_jid,
-                "message_id": message_id,
-                "error": f"HTTP {response.status_code} - {response.text}",
-            }
+            return {"chat_jid": chat_jid, "message_id": message_id, **bridge_error(response)}
 
     except requests.RequestException as e:
         return {"success": False, "chat_jid": chat_jid, "message_id": message_id, "error": f"Request error: {str(e)}"}

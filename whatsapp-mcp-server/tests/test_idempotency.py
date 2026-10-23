@@ -158,3 +158,42 @@ def test_reaction_has_no_automatic_key(bridge):
     assert "idempotency_key" not in bridge["calls"][0]["json"]
     whatsapp.send_reaction("123", "M1", "👍", idempotency_key="r1")
     assert bridge["calls"][1]["json"]["idempotency_key"] == "r1"
+
+
+SEND_CAP_BODY = {
+    "success": False,
+    "error": "antiban: recipient_per_minute cap reached (8 per 1m0s); retry in 42s",
+    "code": "send_cap",
+    "retry_after": "2026-10-23T10:00:42Z",
+}
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: whatsapp.send_message("4915112345678@s.whatsapp.net", "hello"),
+        lambda: whatsapp.send_reaction("4915112345678@s.whatsapp.net", "MSG1", "x"),
+        lambda: whatsapp.edit_message("4915112345678@s.whatsapp.net", "MSG1", "fixed"),
+        lambda: whatsapp.delete_message("123456789012345@lid", "MSG1"),
+    ],
+    ids=["send", "reaction", "edit", "delete"],
+)
+def test_send_cap_is_retryable_with_a_time(bridge, call):
+    """A cap hit sent nothing: it must say retryable, when, and not to loop."""
+    bridge["reply"] = FakeResponse(429, SEND_CAP_BODY, {"Retry-After": "42"})
+    result = call()
+    assert result["success"] is False
+    assert result["http_status"] == 429
+    assert result["code"] == "send_cap"
+    assert result["retryable"] is True
+    assert result["retry_after"] == "2026-10-23T10:00:42Z"
+    assert "retry_after" in result["hint"]
+
+
+def test_retry_after_header_is_used_when_body_lacks_it(bridge):
+    body = {"success": False, "error": "paused", "code": "rate_limited"}
+    bridge["reply"] = FakeResponse(429, body, {"Retry-After": "120"})
+    result = whatsapp.send_message("4915112345678@s.whatsapp.net", "hello")
+    assert result["retryable"] is True
+    assert result["retry_after_seconds"] == 120
+    assert "back off" in result["hint"]
