@@ -545,6 +545,46 @@ func TestHistoryChangesAuthorship(t *testing.T) {
 	}
 }
 
+// A newsletter delivers an edited post as the whole post under its original
+// ID. When the original was missed, that is the only copy, so it must be
+// stored as a post rather than wait as a pending edit of nothing.
+func TestNewsletterEditOfUnstoredPostIsAPost(t *testing.T) {
+	store := openTestStore(t)
+	newsletter := types.JID{User: "120363000000000002", Server: types.NewsletterServer}
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	post := func(id string) *events.Message {
+		return &events.Message{
+			Info:           types.MessageInfo{MessageSource: types.MessageSource{Chat: newsletter, Sender: newsletter}, ID: types.MessageID(id), Timestamp: at},
+			Message:        &waE2E.Message{Conversation: proto.String("edited post")},
+			NewsletterMeta: &events.NewsletterMessageMeta{EditTS: at.Add(time.Minute)},
+		}
+	}
+	chats := []string{newsletter.String()}
+	if !newsletterEditOfUnstored(store, post("77"), classifyChange(post("77")), chats) {
+		t.Error("edit of an unstored post is not stored as a post")
+	}
+	if err := store.StoreChat(newsletter.String(), "News", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreMessage("78", newsletter.String(), newsletter.String(), "News", "post", at, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if newsletterEditOfUnstored(store, post("78"), classifyChange(post("78")), chats) {
+		t.Error("edit of a stored post is not handled as an edit")
+	}
+	// Only newsletters: elsewhere an edit of an unstored message is pending.
+	edit := &events.Message{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: phoneJID, Sender: phoneJID}, ID: "E", Timestamp: at},
+		Message: editMsg("NOPE", "x", at.UnixMilli())}
+	if newsletterEditOfUnstored(store, edit, classifyChange(edit), []string{phoneJID.String()}) {
+		t.Error("a protocol-message edit was treated as a newsletter post")
+	}
+	c := &Client{logger: waLog.Noop}
+	c.HandleMessage(store, nil, post("78"))
+	if msgs, err := store.GetMessages(newsletter.String(), 5); err != nil || len(msgs) != 1 || msgs[0].Content != "edited post" {
+		t.Errorf("stored post after its edit = %+v, %v", msgs, err)
+	}
+}
+
 // A live revoke's key names the revoked message's author: the revoker when
 // FromMe is set, else the group participant.
 func TestRevokedAuthor(t *testing.T) {

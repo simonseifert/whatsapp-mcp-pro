@@ -154,7 +154,8 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 
 	// Edits and revokes change an earlier message instead of adding one. Handled
 	// before StoreChat so they don't count as new activity in the chat.
-	if ch := classifyChange(msg); ch.Kind != changeNone {
+	if ch := classifyChange(msg); ch.Kind != changeNone &&
+		!newsletterEditOfUnstored(messageStore, msg, ch, c.chatCandidates(msg.Info.Chat)) {
 		c.handleChange(messageStore, webhookManager, msg, ch, sender)
 		return
 	}
