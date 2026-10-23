@@ -703,3 +703,26 @@ func TestLookupMessageAuthor(t *testing.T) {
 		}
 	}
 }
+
+// A pending edit is filed under the canonical chat, but history sync can
+// store the original under the other form of the same 1:1 chat.
+func TestPendingEditResolvesUnderOtherChatForm(t *testing.T) {
+	store := newTestMessageStore(t)
+	if _, err := store.db.Exec(`INSERT INTO identities (jid, lid, phone_jid) VALUES (?, ?, ?)`, testPhoneChat, testLIDChat, testPhoneChat); err != nil {
+		t.Fatal(err)
+	}
+	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	got, err := store.ApplyEdit(Edit{MessageID: "SPLIT", ChatJIDs: []string{testPhoneChat}, NewContent: "fixed",
+		EditedAt: sent.Add(time.Minute), StanzaID: "E1", Editor: Actor{JID: testPhoneChat}, Source: SourceLive})
+	if err != nil || !got.Pending {
+		t.Fatalf("got %+v, %v; want pending", got, err)
+	}
+	storeFrom(t, store, "SPLIT", testLIDChat, testPhoneChat, "fixd", false, sent)
+	if m := readMsg(t, store, "SPLIT", testLIDChat); m.content.String != "fixed" || m.editCount != 1 {
+		t.Errorf("message = %+v, want the pending edit applied", m)
+	}
+	edits, err := store.GetMessageEdits("SPLIT", testLIDChat)
+	if err != nil || len(edits) != 1 || edits[0].Status != EditApplied {
+		t.Errorf("edits under the stored form = %+v, %v", edits, err)
+	}
+}

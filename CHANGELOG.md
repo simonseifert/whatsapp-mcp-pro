@@ -64,6 +64,10 @@ All notable changes to this fork are recorded here. The format follows
   message, not an imported one. `/api/read` drops `import-` IDs from the batch
   (reported as `skipped`), an explicit `import-` history anchor is refused, and
   the reconnect backfill no longer anchors on an imported row.
+- Bridge: merging a LID chat into its phone-JID twin also moves its edit
+  history and calls, and keeps a revoke or edit that only the dropped
+  duplicate had seen. An edit waiting under one chat form is applied when the
+  original arrives under the other.
 
 ### Fixed
 

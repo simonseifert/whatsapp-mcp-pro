@@ -355,6 +355,8 @@ type MergeResult struct {
 	MessagesDuplicate int
 	EmbeddingsMoved   int
 	EmbeddingsDropped int
+	EditsMoved        int
+	CallsMoved        int
 	TargetChatCreated bool
 }
 
@@ -370,7 +372,14 @@ type MergeResult struct {
 // so the merge leaves a breadcrumb and readers can still resolve an old LID.
 // Messages that already exist verbatim under the target (same message ID) are
 // dropped as true duplicates — UPDATE OR IGNORE leaves them behind, and keeping
-// them would resurrect the split.
+// them would resurrect the split. Before that, whatever the dropped copy knew
+// about edits and revokes is carried over: the two copies saw different events
+// (a revoke filed under the LID, the original under the phone JID), and losing
+// deleted_at would show a revoked message as live again.
+//
+// The edit history and call log are keyed on chat_jid too and move with the
+// messages, in the same transaction, so a merge never leaves a message's edits
+// behind under a chat nothing lists any more.
 func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
 	var result MergeResult
 	if from == to || from == "" || to == "" {
@@ -395,6 +404,28 @@ func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
 	}
 	if created, _ := res.RowsAffected(); created > 0 {
 		result.TargetChatCreated = true
+	}
+
+	// For each message stored under both: the first revoke wins, the newest
+	// edit wins (its text with it), and an empty stand-in row (a revoke or
+	// edit of a message not seen yet) takes the other copy's text and sender.
+	if _, err = tx.Exec(`
+		UPDATE messages AS t SET
+			deleted_at = COALESCE(t.deleted_at, s.deleted_at),
+			deleted_by = CASE WHEN t.deleted_at IS NULL THEN s.deleted_by ELSE t.deleted_by END,
+			content    = CASE WHEN s.edited_at IS NOT NULL AND (t.edited_at IS NULL OR datetime(s.edited_at) > datetime(t.edited_at))
+			                  THEN s.content
+			                  ELSE COALESCE(NULLIF(t.content, ''), s.content) END,
+			edited_at  = CASE WHEN s.edited_at IS NOT NULL AND (t.edited_at IS NULL OR datetime(s.edited_at) > datetime(t.edited_at))
+			                  THEN s.edited_at ELSE t.edited_at END,
+			is_edited  = MAX(COALESCE(t.is_edited, 0), COALESCE(s.is_edited, 0)),
+			edit_count = MAX(COALESCE(t.edit_count, 0), COALESCE(s.edit_count, 0)),
+			sender     = COALESCE(NULLIF(t.sender, ''), s.sender),
+			sender_name = COALESCE(NULLIF(t.sender_name, ''), s.sender_name)
+		FROM messages AS s
+		WHERE s.chat_jid = ? AND t.chat_jid = ? AND s.id = t.id
+	`, from, to); err != nil {
+		return result, fmt.Errorf("carry edits/revokes %s -> %s: %w", from, to, err)
 	}
 
 	res, err = tx.Exec("UPDATE OR IGNORE messages SET chat_jid = ? WHERE chat_jid = ?", to, from)
@@ -428,6 +459,28 @@ func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
 		result.EmbeddingsDropped = int(droppedEmb)
 	}
 
+	// message_edits is unique on (chat, message, edit): an edit recorded under
+	// both forms stays once. calls is keyed on call_id alone.
+	if store.tableExists(tx, "message_edits") {
+		res, err = tx.Exec("UPDATE OR IGNORE message_edits SET chat_jid = ? WHERE chat_jid = ?", to, from)
+		if err != nil {
+			return result, fmt.Errorf("move edits %s -> %s: %w", from, to, err)
+		}
+		movedEdits, _ := res.RowsAffected()
+		result.EditsMoved = int(movedEdits)
+		if _, err = tx.Exec("DELETE FROM message_edits WHERE chat_jid = ?", from); err != nil {
+			return result, fmt.Errorf("drop duplicate edits in %s: %w", from, err)
+		}
+	}
+	if store.tableExists(tx, "calls") {
+		res, err = tx.Exec("UPDATE calls SET chat_jid = ? WHERE chat_jid = ?", to, from)
+		if err != nil {
+			return result, fmt.Errorf("move calls %s -> %s: %w", from, to, err)
+		}
+		movedCalls, _ := res.RowsAffected()
+		result.CallsMoved = int(movedCalls)
+	}
+
 	// Keep the newer of the two last-activity timestamps on the target.
 	if _, err = tx.Exec(`
 		UPDATE chats SET last_message_time = (
@@ -444,7 +497,45 @@ func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
 	if err = tx.Commit(); err != nil {
 		return result, fmt.Errorf("commit merge %s -> %s: %w", from, to, err)
 	}
+	// An edit that waited under one chat for an original stored under the
+	// other now sits next to it; settle it as StoreMessage would have.
+	if result.EditsMoved > 0 {
+		if err := store.resolveMovedPendingEdits(to); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+func (store *MessageStore) resolveMovedPendingEdits(chat string) error {
+	rows, err := store.db.Query(
+		`SELECT DISTINCT e.message_id FROM message_edits e
+		  WHERE e.chat_jid = ? AND e.status = ?
+		    AND EXISTS (SELECT 1 FROM messages m WHERE m.id = e.message_id AND m.chat_jid = e.chat_jid)`,
+		chat, EditPending,
+	)
+	if err != nil {
+		return fmt.Errorf("find pending edits in %s: %w", chat, err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan pending edit: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("find pending edits in %s: %w", chat, err)
+	}
+	for _, id := range ids {
+		if err := store.resolvePendingEdits(id, chat); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (store *MessageStore) tableExists(tx *sql.Tx, name string) bool {
