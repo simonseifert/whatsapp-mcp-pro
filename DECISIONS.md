@@ -80,6 +80,10 @@ Real phone numbers, LIDs, a tailnet IP and personal paths were replaced in track
 code, tests and comments with obvious fakes (`4915112345678`, `123456789012345@lid`,
 `100.64.0.10`, `/home/alice`). Git history is not rewritten. The handoff note and
 `.coverage` were untracked; `docs/reviews/` and `docs/handoff-*.md` are gitignored.
+Checked again 2026-10-23: no tracked file holds a number from the live contact
+store; the deploy.env example below still named a real home path and now uses
+`/home/alice`. History keeps 8 real numbers (Simon's own among them) in 24 old
+commits, on GitHub too; removing them needs a history rewrite and force push.
 
 **Action for Simon before the next deploy:** `deploy-live.sh` no longer hard-codes the
 Friday bridge. It reads other bridges from `$OTHER_BRIDGES` or, if unset, from

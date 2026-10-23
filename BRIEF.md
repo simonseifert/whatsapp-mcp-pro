@@ -25,14 +25,15 @@ built and live before that, so the design steps don't apply.
 ## What may be committed
 
 The repo is public. Hostnames, tailnet IPs, ntfy topics, phone numbers and the
-ops topology stay in Simon's private infra folder, not here. `wa-assistant.py:195`
-and its README still contain a real phone JID (open question).
+ops topology stay in Simon's private infra folder, not here. Tracked files use
+obvious fakes (`4915112345678`, `123456789012345@lid`, `/home/alice`); see D7.
+Old commits still hold real numbers (history not rewritten, D7).
 
 ## Open questions
 
 Recommended answers in brackets.
 
-1. Real phone numbers and private paths: removed from tracked files 2026-10-22 (no history rewrite, by choice). Done.
+1. Real phone numbers and private paths: removed from tracked files 2026-10-22, last private path 2026-10-23 (D7). No history rewrite, by choice: 8 real numbers, Simon's own among them, remain in old commits on GitHub. [Open only if Simon wants the history rewritten.]
 2. Next from the reviews: the "Then" list in `docs/reviews/2026-10-21-full-review.md`
    (bare-sender participants, bare-number recipients, :8082 reachable from the
    LAN/Docker, token sprawl, send duplicates on timeout, deploy rollback holes,
