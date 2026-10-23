@@ -6,6 +6,12 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+## [v0.7.0-pro] - 2026-10-23
+
+Merges upstream through the media-filename/Opus fix (#99). Edit history,
+revokes and a call log, with the trust rules a forged edit has to get past;
+imports of WhatsApp's own chat exports; and an in-memory `recall`.
+
 ### Added
 
 - **Chat export import** (`uv run python -m lib.chat_import EXPORT.zip --chat JID`):
@@ -362,6 +368,8 @@ review.
 - Two exact-match send allowlists (`SEND_ALLOWED_JIDS`,
   `WHATSAPP_ALLOWLIST_JIDS`); no substring or prefix matching.
 
-[Unreleased]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.5.0-pro...main
+[Unreleased]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.7.0-pro...main
+[v0.7.0-pro]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.6.0-pro...v0.7.0-pro
+[v0.6.0-pro]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.5.0-pro...v0.6.0-pro
 [v0.5.0-pro]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.4.0-pro...v0.5.0-pro
 [v0.4.0-pro]: https://github.com/simonseifert/whatsapp-mcp-pro/compare/v0.4.0...v0.4.0-pro
