@@ -419,6 +419,19 @@ func (c *Client) revokedAuthor(msg *events.Message, revoker database.Actor) data
 	return author
 }
 
+// newsletterEditOfUnstored reports whether ch is a newsletter post's edit
+// flag on a post the store does not have. A newsletter delivers an edited post
+// as the whole post under its original ID, so when the original was missed it
+// is the only copy there is: it is stored as a normal message, as before edits
+// were tracked, rather than left waiting as a pending edit of nothing.
+func newsletterEditOfUnstored(store *database.MessageStore, msg *events.Message, ch messageChange, chats []string) bool {
+	if ch.Kind != changeEdit || msg.NewsletterMeta == nil || msg.Message.GetProtocolMessage() != nil || store == nil {
+		return false
+	}
+	_, found, err := store.LookupMessageAuthor(ch.TargetID, chats)
+	return err == nil && !found
+}
+
 // OwnGroupAdmin reports whether the linked account administers group chatJID.
 // The API's /api/delete asks before revoking someone else's message, using
 // the same cached group info the revoke check uses. False for a non-group.
