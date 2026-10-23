@@ -660,8 +660,8 @@ func TestStandInRowsAreReadable(t *testing.T) {
 		t.Fatalf("GetMessages = %+v, %v", msgs, err)
 	}
 	for _, m := range msgs {
-		if m.ID == "GONE" && (m.Sender != testPhoneChat || m.IsFromMe) {
-			t.Errorf("revoke stand-in = %+v, want the author from the revoke's key", m)
+		if m.ID == "GONE" && (m.Sender != "" || m.IsFromMe) {
+			t.Errorf("admin revoke stand-in = %+v, want no author: an untrusted key names it", m)
 		}
 	}
 	// A row some other writer left NULL (an older importer, an older bridge)
@@ -724,5 +724,32 @@ func TestPendingEditResolvesUnderOtherChatForm(t *testing.T) {
 	edits, err := store.GetMessageEdits("SPLIT", testLIDChat)
 	if err != nil || len(edits) != 1 || edits[0].Status != EditApplied {
 		t.Errorf("edits under the stored form = %+v, %v", edits, err)
+	}
+}
+
+// The author in a revoke's key is written by the revoker. An admin's live
+// revoke of an unstored message could name any member; if the stand-in took
+// that sender, the named member's forged edit would then pass isAuthor. Only a
+// history stub (the phone's own record) may give the stand-in its author.
+func TestRevokeStandInTakesAuthorOnlyWhenTrusted(t *testing.T) {
+	store := newTestMessageStore(t)
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := store.MarkDeleted(Revoke{MessageID: "ADMIN", ChatJIDs: []string{testGroup}, At: at,
+		By: Actor{JID: testStranger}, Author: Actor{JID: testPhoneChat}, IsAdmin: func() bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := store.ApplyEdit(Edit{MessageID: "ADMIN", ChatJIDs: []string{testGroup}, NewContent: "forged", EditedAt: at.Add(time.Minute),
+		Editor: Actor{JID: testPhoneChat}, StanzaID: "E1", Source: SourceLive})
+	if err != nil || res.Applied {
+		t.Fatalf("edit by the member an admin's revoke named = %+v, %v; want not applied", res, err)
+	}
+
+	if _, err := store.MarkDeleted(Revoke{MessageID: "STUB", ChatJIDs: []string{testGroup}, At: at,
+		Author: Actor{JID: testPhoneChat}, Trusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	sender, _, err := store.GetMessageSender("STUB", testGroup)
+	if err != nil || sender != testPhoneChat {
+		t.Fatalf("history stub stand-in sender = %q, %v; want %q", sender, err, testPhoneChat)
 	}
 }

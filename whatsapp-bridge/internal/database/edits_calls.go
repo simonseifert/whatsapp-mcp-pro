@@ -582,10 +582,20 @@ func (store *MessageStore) MarkDeleted(r Revoke) (RevokeResult, error) {
 		// '' rather than NULL, as for an edit placeholder: readers scan these
 		// columns into strings. StoreMessage fills them in if the original
 		// arrives later.
+		//
+		// The author comes from the revoke's key, which the revoker writes. Only
+		// a trusted (history) stub's key is the phone's own record; an admin's
+		// live revoke could name any member, and the stand-in's sender would
+		// then let that member's edits pass isAuthor. So untrusted stand-ins
+		// get no author at all.
+		author := Actor{}
+		if r.Trusted {
+			author = r.Author
+		}
 		if _, err := tx.Exec(
 			`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, filename)
 			 VALUES (?, ?, ?, ?, '', ?, ?, '', '')`,
-			id, chat, r.Author.JID, r.Author.JID, at, r.Author.IsMe,
+			id, chat, author.JID, author.JID, at, author.IsMe,
 		); err != nil {
 			return res, fmt.Errorf("placeholder for revoked message %s: %w", id, err)
 		}

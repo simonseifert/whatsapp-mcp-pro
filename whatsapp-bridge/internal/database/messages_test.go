@@ -220,3 +220,41 @@ func TestNewestMessageSkipsImportedRows(t *testing.T) {
 		t.Errorf("NewestMessage = %q, %v; want REAL", id, err)
 	}
 }
+
+func TestGetPreviousMessageTimeAcrossTheDSTChange(t *testing.T) {
+	store := newTestMessageStore(t)
+	chat := "123@s.whatsapp.net"
+	summer := time.FixedZone("CEST", 2*3600)
+	winter := time.FixedZone("CET", 3600)
+	// 25 Oct 2026, Europe/Zagreb: 03:00 CEST becomes 02:00 CET, so 02:30 occurs twice.
+	first := time.Date(2026, 10, 25, 2, 30, 0, 0, summer)   // 00:30 UTC
+	second := time.Date(2026, 10, 25, 2, 10, 0, 0, winter)  // 01:10 UTC, smaller as text
+	current := time.Date(2026, 10, 25, 2, 30, 0, 0, winter) // 01:30 UTC
+
+	if err := store.StoreChat(chat, "Alice", current); err != nil {
+		t.Fatal(err)
+	}
+	for id, ts := range map[string]time.Time{"A": first, "B": second} {
+		if _, err := store.db.Exec(
+			`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, '', ?, 0)`,
+			id, chat, chat, ts,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := store.GetPreviousMessageTime(chat, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(second) {
+		t.Fatalf("previous = %v, want %v", got.UTC(), second.UTC())
+	}
+	got, err = store.GetPreviousMessageTime(chat, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(first) {
+		t.Fatalf("previous of 02:10+01:00 = %v, want %v", got.UTC(), first.UTC())
+	}
+}

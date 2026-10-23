@@ -193,16 +193,18 @@ when code/data were split as above.)
   MESSAGE_EDIT or REVOKE is just "replace/delete message X" and any chat member
   can send one naming anyone's message. `database.ApplyEdit` applies an edit
   only from the stored author (`is_from_me` rows only from our own devices; a
-  newsletter only from itself). LID and phone JID are linked only through
-  `identities`, whatsmeow's LID map or the event's `SenderAlt`, never by equal
-  digits: a LID's digits can be someone else's phone number, so a bare legacy
-  sender counts as a phone JID unless `identities` knows it as a LID and records the rest as `rejected` in `message_edits`. An
+  newsletter only from itself) and records the rest as `rejected` in
+  `message_edits`. LID and phone JID are linked only through `identities`,
+  whatsmeow's LID map or the event's `SenderAlt`, never by equal digits: a
+  LID's digits can be someone else's phone number, so a bare legacy sender
+  counts as a phone JID unless `identities` knows it as a LID. An
   edit of a message not stored yet waits as `pending` until `StoreMessage`
   stores the original. `MarkDeleted` takes a revoke from the author or, in a
   group, an admin (cached group info). Edit times are clamped to the server's
   receive time so a claimed future timestamp can't win the replay ordering.
-  `CallLogMessage` is only accepted `IsFromMe`, keyed `log:<msgid>`. Our own
-  API edits/deletes and history revoke stubs are the only trusted paths.
+  `CallLogMessage` is only accepted `IsFromMe`, keyed `log:<msgid>`. History
+  revoke stubs are the only trusted path; `/api/edit` and `/api/delete` refuse
+  others' messages up front (403) and are recorded as own-device changes.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
 
