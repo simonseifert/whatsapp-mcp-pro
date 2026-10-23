@@ -37,12 +37,21 @@ log "python deps + checks"
   && uv run pytest -q --ignore=tests/test_recall.py >/dev/null) || die "Python checks failed — not deploying"
 
 # ── 2. Back up the live store (online, no downtime) ─────────────────────────
+# whatsapp.db holds the device keys: a copy of it is a copy of the account, so
+# backups are private whatever the caller's umask is.
 BACKUP_DIR="$DATA/backups/$(date +%Y%m%d-%H%M%S)"
 log "backing up store -> $BACKUP_DIR"
-mkdir -p "$BACKUP_DIR"
+(umask 077 && mkdir -p "$BACKUP_DIR")
 for db in messages.db whatsapp.db; do
-  sqlite3 "$DATA/store/$db" ".backup '$BACKUP_DIR/$db'"
+  (umask 077 && sqlite3 "$DATA/store/$db" ".backup '$BACKUP_DIR/$db'")
 done
+# The binary that was running goes in too. $BIN.prev alone only reaches one
+# deploy back: deploying twice in a row (a bad build that still connects, then
+# a fix that doesn't) would leave nothing good to roll back to.
+if [ -f "$BIN" ]; then
+  cp -p "$BIN" "$BACKUP_DIR/whatsapp-bridge"
+  cp -p "$DATA/deployed-commit" "$BACKUP_DIR/" 2>/dev/null || true
+fi
 ls -dt "$DATA/backups"/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf   # keep 5
 
 # ── 3. Swap in the new binary, keeping the old one for rollback ─────────────
@@ -53,16 +62,18 @@ rollback() {
   [ -f "$BIN.prev" ] || die "$1 — and no $BIN.prev to roll back to (backup: $BACKUP_DIR)"
   log "rolling back to previous binary"
   mv -f "$BIN.prev" "$BIN"
-  sudo systemctl restart whatsapp-bridge.service
-  sudo systemctl restart whatsapp-mcp.service
+  sudo systemctl restart whatsapp-bridge.service || true
+  sudo systemctl restart whatsapp-mcp.service || true
   restart_others 2>/dev/null || true
   die "$1 — rolled back to the previous bridge binary (backup: $BACKUP_DIR)"
 }
 
 # ── 4. Restart (bridge first, MCP follows via its dependency) ───────────────
+# A failed restart must roll back too: under `set -e` it used to abort right
+# here, after the swap, leaving the new binary in place and nothing restarted.
 log "restarting services"
-sudo systemctl restart whatsapp-bridge.service
-sudo systemctl restart whatsapp-mcp.service
+sudo systemctl restart whatsapp-bridge.service || rollback "whatsapp-bridge failed to restart"
+sudo systemctl restart whatsapp-mcp.service || rollback "whatsapp-mcp failed to restart"
 
 # ── 5. Verify every bridge on this binary comes back connected ──────────────
 # Other numbers can run the same binary from their own data dirs (one process
@@ -112,4 +123,6 @@ while IFS='|' read -r name unit port envf; do
     || rollback "$name bridge not connected within 2 min — see journalctl --user -u $unit -n 50"
   log "✓ $name bridge connected"
 done <<< "$OTHER_BRIDGES"
+git -C "$REPO" describe --always --dirty > "$DATA/deployed-commit" 2>/dev/null || true
 log "done (store backup: $BACKUP_DIR)"
+log "older binaries: $DATA/backups/*/whatsapp-bridge (cp one over $BIN and restart to go further back)"
