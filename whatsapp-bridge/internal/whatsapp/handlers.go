@@ -147,10 +147,13 @@ func (c *Client) NormalizeChatJID(chat types.JID) types.JID {
 func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManager interface{}, msg *events.Message) {
 	// Save message to database
 	chatJID := c.NormalizeChatJID(msg.Info.Chat).String()
-	sender := msg.Info.Sender.User
+	sender := StoredSender(msg.Info.Sender)
+	// Names fall back to the bare number, as before; only the sender column
+	// needs the full JID.
+	senderUser := msg.Info.Sender.User
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
-	name := c.GetChatName(messageStore, msg.Info.Chat, chatJID, nil, sender)
+	name := c.GetChatName(messageStore, msg.Info.Chat, chatJID, nil, senderUser)
 
 	// Update chat in database with the message timestamp (keeps last message time updated)
 	err := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp)
@@ -195,7 +198,7 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	// Get sender name (PushName from WhatsApp)
 	senderName := msg.Info.PushName
 	if senderName == "" {
-		senderName = sender // fallback to JID
+		senderName = senderUser
 	}
 
 	// Store message in database
@@ -387,6 +390,10 @@ func (c *Client) historyMessageSender(chat types.JID, key *waCommon.MessageKey) 
 		isFromMe = *key.FromMe
 	}
 	if !isFromMe && key != nil && key.Participant != nil && *key.Participant != "" {
+		// Participants can carry a device suffix; the sender column never does.
+		if p, err := types.ParseJID(*key.Participant); err == nil && p.User != "" {
+			return StoredSender(p), false
+		}
 		return *key.Participant, false
 	}
 	if isFromMe && c.Store != nil && c.Store.ID != nil {

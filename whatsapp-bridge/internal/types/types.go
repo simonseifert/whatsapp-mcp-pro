@@ -211,8 +211,11 @@ type WebhookTriggerInfo struct {
 }
 
 type WebhookMessageInfo struct {
-	ID               string `json:"id"`
+	ID string `json:"id"`
+	// ChatJID is the JID the store files the chat under (phone JID when the
+	// LID mapping is known); ChatJIDAlt is the other identity of a 1:1 chat.
 	ChatJID          string `json:"chat_jid"`
+	ChatJIDAlt       string `json:"chat_jid_alt,omitempty"`
 	ChatName         string `json:"chat_name"`
 	Sender           string `json:"sender"`
 	SenderName       string `json:"sender_name"`

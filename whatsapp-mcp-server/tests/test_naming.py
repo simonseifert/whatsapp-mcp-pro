@@ -412,3 +412,11 @@ def test_user_row_outranks_agent_row_in_display(naming_store):
     assert (found.display_name, found.name_source, found.nickname_source) == ("Ivo", "user", "user")
     msgs = {m["id"]: m for m in whatsapp.list_messages(limit=50)}
     assert (msgs["a1"]["sender_name"], msgs["a1"]["sender_name_source"]) == ("Ivo", "user")
+
+
+def test_sender_forms_expands_through_the_directory(naming_store):
+    with sqlite3.connect(naming_store) as conn:
+        for handle in ("385111", "385111@s.whatsapp.net", "111@lid"):
+            forms = set(naming.sender_forms(conn, handle))
+            assert {"385111", "385111@s.whatsapp.net", "111@lid", "111"} <= forms, handle
+            assert "441234@s.whatsapp.net" not in forms

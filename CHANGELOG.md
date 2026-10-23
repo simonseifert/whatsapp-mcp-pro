@@ -6,6 +6,40 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Webhook `chat_jid` is now the JID the store uses.** `message_received`
+  payloads used to carry the raw chat JID off the wire, which for many 1:1
+  chats is `<id>@lid`, while the store, the MCP tools and `list_chats` file the
+  same chat under the phone JID. `chat_jid` is now that normalised JID, and a
+  new `chat_jid_alt` carries the other identity of a 1:1 chat when the bridge
+  knows it (omitted for groups and unmapped chats). **Compatibility:** a
+  consumer that matched on the old `@lid` value of `chat_jid` now sees the
+  phone JID there; match on `chat_jid` or `chat_jid_alt`, or switch to the
+  phone JID. `chat_jid` webhook triggers match either identity, so existing
+  trigger rules written against the LID keep firing.
+- **`messages.sender` stores full JIDs.** Incoming messages used to store only
+  the user part (`4915112345678`, or a LID's digits), which could not be told
+  apart later. New rows hold `4915112345678@s.whatsapp.net` or
+  `123456789012345@lid` (device suffix stripped). Migration
+  `008_normalise_senders.sql` rewrites old bare rows the identity directory can
+  classify; the bridge applies it on every start, so rows whose mapping arrives
+  later are picked up too. Rows it cannot classify stay bare. Readers comparing
+  `sender` to a bare number should match both forms; the MCP tools already do,
+  and `recall(sender=...)` now matches every form of the person.
+  `sender_name` still falls back to the bare number.
+- `/api/send` refuses (400) a bare-number recipient that is a known LID's
+  digits instead of sending it to `<digits>@s.whatsapp.net`, a stranger's
+  phone number. Pass full JIDs; the MCP send tools now say so.
+
+### Fixed
+
+- Reactions and quoted replies to group messages whose stored sender was a
+  bare number went out with a participant JID that had no server, reported
+  success, and attached to nothing. The participant is now resolved (bare
+  digits are a phone number unless they match a known LID), and a sender that
+  cannot be resolved fails the request instead of sending a broken one.
+
 ## [v0.5.0-pro] - 2026-10-22
 
 Still based on upstream v0.4.0. This release is about not losing the account

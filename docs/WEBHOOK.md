@@ -15,7 +15,8 @@ The webhook extension allows the WhatsApp bridge to send HTTP notifications to e
 
 ### Trigger Types
 - **all**: Triggers on every message
-- **chat_jid**: Triggers on messages from specific chats/groups
+- **chat_jid**: Triggers on messages from specific chats/groups. A 1:1 chat
+  matches on either its phone JID or its `@lid` form.
 - **sender**: Triggers on messages from specific senders
 - **keyword**: Triggers on messages containing specific keywords
 - **media_type**: Triggers on specific types of media (image, video, audio, document)
@@ -128,9 +129,10 @@ When a message matches a webhook trigger, the following JSON payload is sent:
   },
   "message": {
     "id": "message-id-123",
-    "chat_jid": "1234567890@s.whatsapp.net",
+    "chat_jid": "4915112345678@s.whatsapp.net",
+    "chat_jid_alt": "123456789012345@lid",
     "chat_name": "Contact Name",
-    "sender": "1234567890",
+    "sender": "123456789012345@lid",
     "sender_name": "John Doe",
     "content": "This is an urgent message",
     "timestamp": "2025-07-16T12:00:00Z",
@@ -150,6 +152,11 @@ When a message matches a webhook trigger, the following JSON payload is sent:
   }
 }
 ```
+
+`chat_jid` is the JID the bridge stores the chat under, the same one
+`/api/chats` and the MCP tools return: the phone JID whenever the LID mapping
+is known. `chat_jid_alt` is the chat's other identity (`@lid` or phone JID),
+present only for 1:1 chats where the bridge knows both.
 
 ## Security
 

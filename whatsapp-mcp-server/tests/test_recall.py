@@ -246,3 +246,35 @@ def test_recall_chat_filter_follows_a_merged_lid(recall_db):
     result = recall_mod.recall("hello", chat_jid=MERGED_LID)
     assert "error" not in result, result
     assert {r["chat_jid"] for r in result["results"]} == {"123456789@s.whatsapp.net"}
+
+
+def test_recall_sender_filter_matches_every_stored_form(recall_db):
+    """Senders are stored as full JIDs now, older rows as bare digits, and one
+    person can be a phone JID or a LID. Filtering by any form finds all of them."""
+    conn = sqlite3.connect(recall_db)
+    conn.execute("DELETE FROM messages")
+    conn.execute("CREATE TABLE IF NOT EXISTS identities (jid TEXT PRIMARY KEY, lid TEXT, phone_jid TEXT, phone TEXT)")
+    conn.execute(
+        "INSERT INTO identities (jid, lid, phone_jid, phone) VALUES (?, ?, ?, ?)",
+        ("4915112345678@s.whatsapp.net", "123456789012345@lid", "4915112345678@s.whatsapp.net", "4915112345678"),
+    )
+    group = "120363000000000001@g.us"
+    conn.executemany(
+        "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, 0)",
+        [
+            ("bare", group, "4915112345678", "note one", "2026-10-20 12:00:00+00:00"),
+            ("phone", group, "4915112345678@s.whatsapp.net", "note two", "2026-10-20 12:01:00+00:00"),
+            ("lid", group, "123456789012345@lid", "note three", "2026-10-20 12:02:00+00:00"),
+            ("bare-lid", group, "123456789012345", "note four", "2026-10-20 12:03:00+00:00"),
+            ("other", group, "4915100000000@s.whatsapp.net", "note five", "2026-10-20 12:04:00+00:00"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    recall_mod._index_pending()
+
+    want = {"bare", "phone", "lid", "bare-lid"}
+    for handle in ("4915112345678", "4915112345678@s.whatsapp.net", "123456789012345@lid"):
+        result = recall_mod.recall("note", sender=handle, limit=20)
+        assert "error" not in result, result
+        assert {r["message_id"] for r in result["results"]} == want, handle
