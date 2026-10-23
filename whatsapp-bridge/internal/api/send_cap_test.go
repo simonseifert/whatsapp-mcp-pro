@@ -56,6 +56,7 @@ func TestSendCapIs429OnEveryEndpoint(t *testing.T) {
 					return types.SendResult{Success: false, Error: e.err.Error(), Err: e.err}
 				}}
 				s := newSendTestServer(t, f)
+				seedChangeTarget(t, s, ep.name, ep.body)
 				rec := post(t, ep.handler(s), ep.body, nil)
 				if rec.Code != http.StatusTooManyRequests {
 					t.Fatalf("status %d, want 429: %s", rec.Code, rec.Body)

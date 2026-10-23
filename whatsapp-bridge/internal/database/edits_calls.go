@@ -113,8 +113,11 @@ type Edit struct {
 	Editor     Actor
 	StanzaID   string // the edit's own message ID, the dedupe key; may be empty
 	Source     string // SourceLive, SourceHistory or SourceAPI
-	// Trusted skips the author check. Only for edits this bridge sent itself:
-	// WhatsApp already refused them unless they were ours.
+	// Trusted skips the author check and lets an edit of an unstored message
+	// create its row. WhatsApp does not refuse an edit of someone else's
+	// message (the server relays it and recipients ignore it), so not even
+	// our own /api/edit is trusted: it checks is_from_me before sending and
+	// records the edit as an own-device editor, which isAuthor then verifies.
 	Trusted bool
 }
 
@@ -589,6 +592,30 @@ func (store *MessageStore) MarkDeleted(r Revoke) (RevokeResult, error) {
 	n, _ := upd.RowsAffected()
 	res.Newly = n > 0
 	return res, tx.Commit()
+}
+
+// StoredAuthor is who wrote a stored message, for the API's checks before it
+// sends an edit or revoke.
+type StoredAuthor struct {
+	ChatJID  string // the form the message is stored under
+	Sender   string // full JID; "" when unknown
+	IsFromMe bool
+}
+
+// LookupMessageAuthor finds message id under any of chatJIDs. found is false
+// when the store does not have it.
+func (store *MessageStore) LookupMessageAuthor(id string, chatJIDs []string) (a StoredAuthor, found bool, err error) {
+	chat, err := findMessageChat(store.db, id, chatJIDs)
+	if err != nil || chat == "" {
+		return a, false, err
+	}
+	var sender sql.NullString
+	if err := store.db.QueryRow(`SELECT sender, COALESCE(is_from_me, 0) FROM messages WHERE id = ? AND chat_jid = ?`, id, chat).
+		Scan(&sender, &a.IsFromMe); err != nil {
+		return a, false, fmt.Errorf("read message %s: %w", id, err)
+	}
+	a.ChatJID, a.Sender = chat, storedSenderJID(store.db, sender.String, chat)
+	return a, true, nil
 }
 
 // GetMessageEdits returns the recorded edits of a message, oldest first,

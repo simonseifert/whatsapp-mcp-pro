@@ -419,6 +419,20 @@ func (c *Client) revokedAuthor(msg *events.Message, revoker database.Actor) data
 	return author
 }
 
+// OwnGroupAdmin reports whether the linked account administers group chatJID.
+// The API's /api/delete asks before revoking someone else's message, using
+// the same cached group info the revoke check uses. False for a non-group.
+func (c *Client) OwnGroupAdmin(chatJID string) bool {
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return false
+	}
+	if check := c.adminCheck(chat, types.EmptyJID, types.EmptyJID, true); check != nil {
+		return check()
+	}
+	return false
+}
+
 // adminCheck returns a lazy "is this sender a group admin" for a revoke in a
 // group, nil elsewhere. Lazy because it may cost a group-info query, and only
 // a revoke of someone else's message needs it.

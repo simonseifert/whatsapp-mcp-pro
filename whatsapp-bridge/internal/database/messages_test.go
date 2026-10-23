@@ -203,3 +203,20 @@ func TestStoreMessageNewTextOverwrites(t *testing.T) {
 		t.Fatalf("content = %q, want %q", content, "edited")
 	}
 }
+
+// The reconnect backfill anchors on the newest message; an imported row's
+// synthetic ID would anchor it on nothing.
+func TestNewestMessageSkipsImportedRows(t *testing.T) {
+	store := newTestMessageStore(t)
+	chat := "4915112345678@s.whatsapp.net"
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(chat, "Max", at); err != nil {
+		t.Fatal(err)
+	}
+	storeTestMessage(t, store, "REAL", chat, "hi", at)
+	storeTestMessage(t, store, ImportedIDPrefix+"abc", chat, "from the export", at.Add(time.Hour))
+	id, _, _, _, err := store.NewestMessage(chat)
+	if err != nil || id != "REAL" {
+		t.Errorf("NewestMessage = %q, %v; want REAL", id, err)
+	}
+}

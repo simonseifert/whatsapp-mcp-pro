@@ -318,6 +318,15 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 	if refuseImportedTarget(w, req.MessageID) {
 		return
 	}
+	target, ok := s.changeTarget(w, req.ChatJID, req.MessageID)
+	if !ok {
+		return
+	}
+	if !target.IsFromMe {
+		refuseChange(w, http.StatusForbidden, codeNotOwnMessage,
+			"message "+req.MessageID+" was not sent from this account; WhatsApp only shows edits from a message's author")
+		return
+	}
 
 	stanzaID, err := s.sender.EditMessage(req.ChatJID, req.MessageID, req.NewContent)
 	if err != nil {
@@ -325,7 +334,8 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// WhatsApp does not echo our own edit back to this device, so it would
-	// never reach the edit history unless recorded here.
+	// never reach the edit history unless recorded here. As an own-device
+	// edit, not a trusted one: ApplyEdit's author check stays the backstop.
 	s.recordOwnChange(func(chats []string, me string) error {
 		_, err := s.messageStore.ApplyEdit(database.Edit{
 			MessageID:  req.MessageID,
@@ -335,7 +345,6 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 			Editor:     database.Actor{JID: me, IsMe: true},
 			StanzaID:   stanzaID,
 			Source:     database.SourceAPI,
-			Trusted:    true,
 		})
 		return err
 	}, req.ChatJID)
@@ -351,7 +360,12 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 // Request body:
 //   - chat_jid: Chat containing the message (required)
 //   - message_id: Message to delete (required)
-//   - sender_jid: Original sender (required for group admin revoking others' messages)
+//   - sender_jid: Original sender, for a group admin revoking someone else's
+//     message (optional: the stored sender is used when it is left out)
+//
+// Only our own messages, or any message in a group we administer, can be
+// deleted; anything else is refused with 403, and a message not in the store
+// with 422.
 //
 // Response: { success: bool, message: string }
 func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
@@ -380,18 +394,49 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 	if refuseImportedTarget(w, req.MessageID) {
 		return
 	}
+	target, ok := s.changeTarget(w, req.ChatJID, req.MessageID)
+	if !ok {
+		return
+	}
+	admin := false
+	if target.IsFromMe {
+		// The revoke key names our own JID; a sender_jid naming anyone else
+		// would aim it at a different message than the one checked.
+		req.SenderJID = ""
+	} else {
+		if !isGroupChat(req.ChatJID) {
+			refuseChange(w, http.StatusForbidden, codeNotOwnMessage,
+				"message "+req.MessageID+" was not sent from this account; only its author can delete it in a 1:1 chat")
+			return
+		}
+		if admin = s.sender.OwnGroupAdmin(req.ChatJID); !admin {
+			refuseChange(w, http.StatusForbidden, codeNotGroupAdmin,
+				"message "+req.MessageID+" was sent by someone else and this account is not an admin of the group")
+			return
+		}
+		if req.SenderJID == "" {
+			req.SenderJID = target.Sender
+		}
+		if req.SenderJID == "" {
+			refuseChange(w, http.StatusUnprocessableEntity, codeSenderUnknown,
+				"the sender of message "+req.MessageID+" is not stored; pass sender_jid")
+			return
+		}
+	}
 
 	if err := s.sender.DeleteMessage(req.ChatJID, req.MessageID, req.SenderJID); err != nil {
 		writeSendFailure(w, "Failed to delete message: ", err)
 		return
 	}
 	s.recordOwnChange(func(chats []string, me string) error {
+		// Checked like a revoke from another device (author, or admin as
+		// established above), not trusted outright.
 		_, err := s.messageStore.MarkDeleted(database.Revoke{
 			MessageID: req.MessageID,
 			ChatJIDs:  chats,
 			At:        time.Now(),
 			By:        database.Actor{JID: me, IsMe: true},
-			Trusted:   true,
+			IsAdmin:   func() bool { return admin },
 		})
 		return err
 	}, req.ChatJID)
@@ -498,6 +543,20 @@ func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "chat_jid and message_ids are required", http.StatusBadRequest)
 		return
 	}
+	// An imported row was never unread on WhatsApp, and a receipt naming its
+	// synthetic ID would go to the sender's devices for nothing. Dropped
+	// rather than refused: a caller marking a chat read passes whatever it
+	// listed, imports included.
+	ids, skipped := withoutImportedIDs(req.MessageIDs)
+	if len(ids) == 0 {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Nothing to mark: every message ID was imported from a chat export",
+			"skipped": skipped,
+		})
+		return
+	}
+	req.MessageIDs = ids
 
 	receiptType := strings.ToLower(strings.TrimSpace(req.ReceiptType))
 	switch receiptType {
@@ -509,6 +568,7 @@ func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"message": "Messages marked as read",
+			"skipped": skipped,
 		})
 	case "played":
 		if err := s.client.MarkMessagesPlayed(req.ChatJID, req.MessageIDs, req.SenderJID); err != nil {
@@ -517,6 +577,7 @@ func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
+			"skipped": skipped,
 			"message": "Messages marked as played",
 		})
 	default:
@@ -913,6 +974,10 @@ func (s *Server) handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 
 	if req.ChatJID == "" {
 		SendJSONError(w, "chat_jid is required", http.StatusBadRequest)
+		return
+	}
+	// The phone looks the anchor up by ID; a synthetic one finds nothing.
+	if req.OldestMsgID != "" && refuseImportedTarget(w, req.OldestMsgID) {
 		return
 	}
 	// Without an explicit anchor, ask for what precedes the oldest stored

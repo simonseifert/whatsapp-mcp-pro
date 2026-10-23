@@ -182,12 +182,13 @@ func main() {
 							if lastMsgTime.Before(cutoff) {
 								continue // skip inactive chats
 							}
-							msgs, err := messageStore.GetMessages(chatJID, 1)
-							if err != nil || len(msgs) == 0 {
+							// Not GetMessages: an imported row can be the newest, and
+							// its synthetic ID anchors the request on nothing.
+							newest, err := client.NewestHistoryAnchor(messageStore, chatJID)
+							if err != nil {
 								continue
 							}
-							newest := msgs[0]
-							err = client.RequestChatHistory(chatJID, newest.ID, newest.IsFromMe, newest.Sender, newest.Time.UnixMilli(), 50)
+							err = client.RequestChatHistory(chatJID, newest.MsgID, newest.FromMe, newest.Sender, newest.Timestamp.UnixMilli(), 50)
 							if err != nil {
 								logger.Warnf("[RECONNECT] History request failed for %s: %v", chatJID, err)
 							} else {

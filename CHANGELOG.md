@@ -61,7 +61,9 @@ All notable changes to this fork are recorded here. The format follows
   hash-checked copy (such rows have no media key) and never goes to the network
   for it. Reactions, quotes, edits and deletes targeting an `import-` ID are
   refused with 422, and on-demand history requests anchor on the oldest real
-  message, not an imported one.
+  message, not an imported one. `/api/read` drops `import-` IDs from the batch
+  (reported as `skipped`), an explicit `import-` history anchor is refused, and
+  the reconnect backfill no longer anchors on an imported row.
 
 ### Fixed
 
@@ -82,6 +84,13 @@ All notable changes to this fork are recorded here. The format follows
 - A revoke is accepted only from the author or, in a group, an admin.
 - Call-log messages are accepted only from the user's own devices, and a call
   event cannot attach to a call in another chat.
+- `/api/edit` (`edit_message`) refuses a message not sent from this account
+  (403 `not_own_message`), and `/api/delete` (`delete_message`) one that is
+  neither ours nor in a group we administer (403 `not_group_admin`). Both
+  refuse a message that is not stored (422 `message_not_stored`). WhatsApp
+  relays such changes and recipients ignore them, so they used to report
+  success while rewriting only the local store. Our own changes are now
+  recorded through the same author check as everyone else's.
 
 ## [v0.6.0-pro] - 2026-10-23
 

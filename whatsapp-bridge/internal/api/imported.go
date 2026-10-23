@@ -15,6 +15,21 @@ func refuseImportedTarget(w http.ResponseWriter, messageID string) bool {
 	if !database.IsImportedMessageID(messageID) {
 		return false
 	}
-	SendJSONError(w, "message "+messageID+" was imported from a chat export and does not exist on WhatsApp", http.StatusUnprocessableEntity)
+	// With a code, so the MCP doesn't read this 422 as its idempotency one.
+	refuseChange(w, http.StatusUnprocessableEntity, codeImported,
+		"message "+messageID+" was imported from a chat export and does not exist on WhatsApp")
 	return true
+}
+
+// withoutImportedIDs splits off the imported IDs of a batch; skipped is how
+// many were dropped.
+func withoutImportedIDs(ids []string) (kept []string, skipped int) {
+	for _, id := range ids {
+		if database.IsImportedMessageID(id) {
+			skipped++
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept, skipped
 }

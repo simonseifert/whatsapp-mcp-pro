@@ -763,6 +763,11 @@ def send_reaction(chat_jid: str, message_id: str, emoji: str, idempotency_key: s
 def edit_message(chat_jid: str, message_id: str, new_content: str) -> dict[str, Any]:
     """Edit a previously sent WhatsApp message.
 
+    Only messages sent from this account and present in the local store can be
+    edited; anything else is refused before sending (code not_own_message or
+    message_not_stored, not retryable), since WhatsApp would relay the edit and
+    every recipient would ignore it.
+
     Args:
         chat_jid: The JID of the chat containing the message
         message_id: The ID of the message to edit
@@ -778,10 +783,15 @@ def edit_message(chat_jid: str, message_id: str, new_content: str) -> dict[str, 
 def delete_message(chat_jid: str, message_id: str, sender_jid: str | None = None) -> dict[str, Any]:
     """Delete/revoke a WhatsApp message.
 
+    Works on your own messages, and on anyone's in a group you administer.
+    Anything else, or a message not in the local store, is refused before
+    sending (code not_own_message, not_group_admin or message_not_stored).
+
     Args:
         chat_jid: The JID of the chat containing the message
         message_id: The ID of the message to delete
-        sender_jid: Optional sender JID for admin revoking others' messages in groups
+        sender_jid: Optional sender JID for admin revoking others' messages in groups;
+            defaults to the stored sender
 
     Returns:
         A dictionary containing success status, chat_jid, and message_id
