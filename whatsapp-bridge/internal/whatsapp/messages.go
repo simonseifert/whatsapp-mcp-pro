@@ -357,8 +357,6 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		return failed(newSendError(SendErrNotConnected, "Not connected to WhatsApp"), "")
 	}
 
-	c.GoOnlineBriefly()
-
 	// Create JID for recipient
 	var recipientJID types.JID
 	var err error
@@ -398,6 +396,12 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 			return failed(newSendError(SendErrForbidden, "recipient %s is blocked by WHATSAPP_ALLOWLIST_JIDS safety gate", recipient), "")
 		}
 	}
+
+	// Refused sends leave no trace: no presence, upload or typing first.
+	if err := c.antiban.Precheck(c.antibanRequest(messageStore, antiban.Text, recipientJID, len(message), recipient)); err != nil {
+		return failed(classify(err, "antiban blocked send: %w"), "")
+	}
+	c.GoOnlineBriefly()
 
 	msg := &waE2E.Message{}
 
@@ -629,8 +633,6 @@ func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *data
 		return failed(newSendError(SendErrNotConnected, "not connected to WhatsApp"), "")
 	}
 
-	c.GoOnlineBriefly()
-
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
 		return failed(newSendError(SendErrInvalid, "invalid chat JID: %w", err), "")
@@ -638,6 +640,11 @@ func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *data
 	if se := c.checkAllowlist(chat); se != nil {
 		return failed(se, "")
 	}
+	if err := c.antiban.Precheck(c.antibanRequest(messageStore, antiban.Reaction, chat, 0)); err != nil {
+		return failed(classify(err, "antiban blocked reaction: %w"), "")
+	}
+
+	c.GoOnlineBriefly()
 
 	msgID := types.MessageID(messageID)
 
@@ -686,6 +693,9 @@ func (c *Client) EditMessage(chatJID, messageID, newContent string) error {
 		return se
 	}
 
+	if err := c.antiban.Precheck(c.antibanRequest(nil, antiban.Edit, chat, len(newContent))); err != nil {
+		return classify(err, "antiban blocked edit: %w")
+	}
 	c.GoOnlineBriefly()
 
 	msgID := types.MessageID(messageID)
@@ -729,6 +739,9 @@ func (c *Client) DeleteMessage(chatJID, messageID, senderJID string) error {
 		return se
 	}
 
+	if err := c.antiban.Precheck(c.antibanRequest(nil, antiban.Delete, chat, 0)); err != nil {
+		return classify(err, "antiban blocked delete: %w")
+	}
 	c.GoOnlineBriefly()
 
 	msgID := types.MessageID(messageID)
@@ -998,6 +1011,9 @@ func (c *Client) CreatePollWithOptions(ctx context.Context, messageStore *databa
 	}
 	if se := c.checkReachoutGate(messageStore, chat, chatJID); se != nil {
 		return failed(se, "")
+	}
+	if err := c.antiban.Precheck(c.antibanRequest(messageStore, antiban.Poll, chat, len(question), chatJID)); err != nil {
+		return failed(classify(err, "antiban blocked poll: %w"), "")
 	}
 
 	c.GoOnlineBriefly()

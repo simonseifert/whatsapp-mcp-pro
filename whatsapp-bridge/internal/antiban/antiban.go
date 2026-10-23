@@ -84,6 +84,30 @@ func (s *SendInterceptor) BeforeSend(ctx context.Context, req SendRequest) error
 	return s.caps.Reserve(req)
 }
 
+// Precheck reports whether req would be refused right now, without counting
+// it or waiting. Senders call it before going online, uploading media or
+// showing "typing": an agent looping on refused sends must not keep putting
+// presence and typing in front of the contact, which is the pattern the caps
+// exist to stop. BeforeSend still decides; this only refuses early.
+func (s *SendInterceptor) Precheck(req SendRequest) error {
+	if s == nil {
+		return nil
+	}
+	if s.hasPacing() {
+		if s.health.IsPaused() {
+			return ErrHealthPaused
+		}
+		canSend, err := s.warmUp.CanSend()
+		if err != nil {
+			return err
+		}
+		if !canSend {
+			return ErrWarmUpLimitReached
+		}
+	}
+	return s.caps.Check(req)
+}
+
 // AfterSend records a successful send.
 func (s *SendInterceptor) AfterSend(_ MessageType) {
 	if !s.hasPacing() {
