@@ -76,11 +76,34 @@ func (c *Client) checkAllowlist(chat types.JID) *SendError {
 // only runs for types that open a conversation; a reaction or edit always
 // targets a message that already exists.
 func (c *Client) antibanRequest(store *database.MessageStore, msgType antiban.MessageType, chat types.JID, textLen int, aliases ...string) antiban.SendRequest {
-	req := antiban.SendRequest{Type: msgType, Len: textLen, Recipient: chat.ToNonAD().String()}
+	req := antiban.SendRequest{Type: msgType, Len: textLen, Recipient: c.capKey(chat)}
 	if msgType == antiban.Text || msgType == antiban.Poll {
 		req.NewRecipient = c.isNewContact(store, chat, aliases...)
 	}
 	return req
+}
+
+// capKey is the per-recipient cap bucket for chat. The same person can be
+// addressed as a phone JID or as an @lid; keyed on the raw form, alternating
+// between the two would get two budgets. A LID is resolved to its phone JID
+// through the same LID map isNewContact and SendMessage use; an unmapped LID
+// stays as given (there is nothing to unify it with yet).
+func (c *Client) capKey(chat types.JID) string {
+	chat = chat.ToNonAD()
+	if chat.Server != types.HiddenUserServer {
+		return chat.String()
+	}
+	lookup := c.altJIDLookup
+	if lookup == nil {
+		if c.Client == nil || c.Store == nil {
+			return chat.String()
+		}
+		lookup = c.Store.GetAltJID
+	}
+	if pn, err := lookup(context.Background(), chat); err == nil && !pn.IsEmpty() {
+		return pn.ToNonAD().String()
+	}
+	return chat.String()
 }
 
 // prepareMessageID returns the ID to send with (reusing want when given) and

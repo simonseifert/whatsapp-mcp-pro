@@ -70,6 +70,9 @@ type Client struct {
 	// Cooldown for group metadata queries; see groupcache.go.
 	groups *groupCache
 
+	// altJIDLookup overrides Store.GetAltJID for capKey; tests only.
+	altJIDLookup func(context.Context, types.JID) (types.JID, error)
+
 	// Persistent media retry queue; nil unless StartMediaRetryQueue ran.
 	mediaRetryQueue atomic.Pointer[MediaRetryQueue]
 }
