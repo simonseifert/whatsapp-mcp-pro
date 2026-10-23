@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Link2, MessageSquare, Settings, Webhook } from "lucide-react";
 import { WhatsAppAPI } from "@/lib/api";
@@ -30,21 +30,17 @@ export function Sidebar() {
   const { apiKey } = useSettings();
   const [connStatus, setConnStatus] = useState<ConnectionDotStatus>("unknown");
 
-  const pollConnection = useCallback(async () => {
-    try {
-      const api = new WhatsAppAPI(apiKey);
-      const status = await api.getConnectionStatus();
-      setConnStatus(status.connected ? "connected" : "disconnected");
-    } catch {
-      setConnStatus("unknown");
-    }
-  }, [apiKey]);
-
   useEffect(() => {
+    const api = new WhatsAppAPI(apiKey);
+    const pollConnection = () =>
+      api.getConnectionStatus().then(
+        (status) => setConnStatus(status.connected ? "connected" : "disconnected"),
+        () => setConnStatus("unknown"),
+      );
     pollConnection();
     const interval = setInterval(pollConnection, 10000);
     return () => clearInterval(interval);
-  }, [pollConnection]);
+  }, [apiKey]);
 
   const dotColor = {
     connected: "bg-green-500",

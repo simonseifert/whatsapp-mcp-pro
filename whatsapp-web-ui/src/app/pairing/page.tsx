@@ -28,7 +28,7 @@ export default function PairingPage() {
           setJid(status.jid);
           setStep("dashboard");
         }
-      } catch (error) {
+      } catch {
         console.log("No existing connection");
       } finally {
         setInitialized(true);

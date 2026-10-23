@@ -6,6 +6,13 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Web UI lint is clean (it had 8 errors and 5 warnings, inherited from
+  upstream) and now runs in CI. Data loading sets state from promise
+  callbacks, dialogs reset their fields during render instead of in an
+  effect, and unused imports are gone. No visible change.
+
 ## [v0.7.2-pro] - 2026-10-23
 
 Dependency security update. No behaviour change.

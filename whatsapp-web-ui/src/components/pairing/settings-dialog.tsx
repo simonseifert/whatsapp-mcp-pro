@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -27,11 +27,12 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [localApiKey, setLocalApiKey] = useState(apiKey);
   const [showKey, setShowKey] = useState(false);
 
-  useEffect(() => {
-    if (open) {
-      setLocalApiKey(apiKey);
-    }
-  }, [open, apiKey]);
+  // Start from the saved key each time the dialog opens.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) setLocalApiKey(apiKey);
+  }
 
   const handleSave = () => {
     if (!localApiKey.trim()) {

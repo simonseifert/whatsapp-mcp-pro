@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Webhook, WebhookTrigger } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,26 +49,29 @@ export function WebhookForm({ open, onOpenChange, webhook, onSubmit, isLoading }
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    if (webhook) {
-      setFormData({
-        name: webhook.name,
-        webhook_url: webhook.webhook_url,
-        secret_token: webhook.secret_token || "",
-        enabled: webhook.enabled,
-        triggers: webhook.triggers?.length ? webhook.triggers : [defaultTrigger],
-      });
-    } else {
-      setFormData({
-        name: "",
-        webhook_url: "",
-        secret_token: "",
-        enabled: true,
-        triggers: [defaultTrigger],
-      });
-    }
+  // Reload the form whenever the dialog opens or switches webhook.
+  const [prev, setPrev] = useState({ webhook, open });
+  if (prev.webhook !== webhook || prev.open !== open) {
+    setPrev({ webhook, open });
+    setFormData(
+      webhook
+        ? {
+            name: webhook.name,
+            webhook_url: webhook.webhook_url,
+            secret_token: webhook.secret_token || "",
+            enabled: webhook.enabled,
+            triggers: webhook.triggers?.length ? webhook.triggers : [defaultTrigger],
+          }
+        : {
+            name: "",
+            webhook_url: "",
+            secret_token: "",
+            enabled: true,
+            triggers: [defaultTrigger],
+          },
+    );
     setErrors({});
-  }, [webhook, open]);
+  }
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};

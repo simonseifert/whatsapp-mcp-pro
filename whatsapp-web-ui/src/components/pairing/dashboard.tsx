@@ -22,20 +22,17 @@ export function Dashboard({ onOpenSettings }: DashboardProps) {
   const [loading, setLoading] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      const api = new WhatsAppAPI(apiKey);
-      const [sync, conn] = await Promise.all([
-        api.getSyncStatus(),
-        api.getConnectionStatus(),
-      ]);
-      setSyncStatus(sync);
-      setConnStatus(conn);
-    } catch (error) {
-      console.error("Failed to fetch status:", error);
-    } finally {
-      setLoading(false);
-    }
+  // State is only set from promise callbacks, so the polling effect below
+  // never sets state synchronously.
+  const fetchStatus = useCallback(() => {
+    const api = new WhatsAppAPI(apiKey);
+    return Promise.all([api.getSyncStatus(), api.getConnectionStatus()])
+      .then(([sync, conn]) => {
+        setSyncStatus(sync);
+        setConnStatus(conn);
+      })
+      .catch((error) => console.error("Failed to fetch status:", error))
+      .finally(() => setLoading(false));
   }, [apiKey]);
 
   useEffect(() => {
