@@ -436,6 +436,10 @@ WorkingDirectory=/home/YOU/.local/share/whatsapp-mcp-pro
 EnvironmentFile=/home/YOU/.local/share/whatsapp-mcp-pro/.env
 # The MCP server reads the store directly; tell it where the data dir put it.
 Environment=WA_STORE_PATH=/home/YOU/.local/share/whatsapp-mcp-pro/store
+# Every tool call runs on a worker thread and glibc gives each thread its own
+# malloc arena, none of which it hands back. Two arenas kept ~90 MB off the
+# resident size under 8 concurrent recall calls, at no measurable latency cost.
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/home/YOU/whatsapp-mcp-pro/whatsapp-mcp-server/.venv/bin/python /home/YOU/whatsapp-mcp-pro/whatsapp-mcp-server/serve_http.py
 Restart=always
 RestartSec=5
@@ -445,6 +449,16 @@ WantedBy=multi-user.target
 ```
 
 Put `MCP_HOST`, `MCP_PORT` and the `WA_MCP_*_TOKEN` values in the same `.env`.
+
+**Memory of the shared server with `recall` on.** About 1.5 GB resident, flat,
+from the first recall call on: torch plus the embedding model is most of it,
+and it stays loaded (`RECALL_MODEL_IDLE_UNLOAD_SECONDS=0`; unloading frees the
+weights but the next call waits ~2 s to reload, and each cycle used to leave
+~40 MB of heap behind). On top of that, recall keeps every embedding in memory
+at 1.5 KB per embedded message: ~50 MB at 32k messages, ~250 MB at 160k,
+~1.5 GB at a million. Past a few hundred thousand messages that matrix, not the
+model, is what to budget for. Searches themselves add almost nothing.
+
 Then:
 
 ```bash
