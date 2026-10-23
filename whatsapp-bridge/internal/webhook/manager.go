@@ -12,6 +12,7 @@ import (
 	"whatsapp-bridge/internal/types"
 	"whatsapp-bridge/internal/whatsapp"
 
+	waTypes "go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -78,8 +79,10 @@ func (wm *Manager) GetWebhookConfigs() []*types.WebhookConfig {
 	return configs
 }
 
-// MatchesTriggers checks if a message matches any webhook triggers
-func (wm *Manager) MatchesTriggers(msg *events.Message, chatName string) []*types.WebhookConfig {
+// MatchesTriggers checks if a message matches any webhook triggers. chatJIDs
+// are extra identities of the chat (canonical and alternate) that a chat_jid
+// trigger may also match; see chatForms.
+func (wm *Manager) MatchesTriggers(msg *events.Message, chatName string, chatJIDs ...string) []*types.WebhookConfig {
 	wm.mutex.RLock()
 	defer wm.mutex.RUnlock()
 
@@ -100,7 +103,7 @@ func (wm *Manager) MatchesTriggers(msg *events.Message, chatName string) []*type
 				continue
 			}
 
-			if wm.matchesTrigger(trigger, msg, content, mediaType, chatName) {
+			if wm.matchesTrigger(trigger, msg, content, mediaType, chatName, chatJIDs) {
 				matched = true
 				break
 			}
@@ -115,13 +118,21 @@ func (wm *Manager) MatchesTriggers(msg *events.Message, chatName string) []*type
 }
 
 // matchesTrigger checks if a single trigger matches the message
-func (wm *Manager) matchesTrigger(trigger types.WebhookTrigger, msg *events.Message, content, mediaType, chatName string) bool {
+func (wm *Manager) matchesTrigger(trigger types.WebhookTrigger, msg *events.Message, content, mediaType, chatName string, chatJIDs []string) bool {
 	switch trigger.TriggerType {
 	case "all":
 		return true
 
 	case "chat_jid":
-		return wm.matchesString(msg.Info.Chat.String(), trigger.TriggerValue, trigger.MatchType)
+		// A trigger written against either identity keeps matching: the raw
+		// JID is what was sent before chat_jid was normalised, the others are
+		// what the payload and the store use now.
+		for _, jid := range append([]string{msg.Info.Chat.String()}, chatJIDs...) {
+			if jid != "" && wm.matchesString(jid, trigger.TriggerValue, trigger.MatchType) {
+				return true
+			}
+		}
+		return false
 
 	case "sender":
 		senderJID := msg.Info.Sender.String()
@@ -233,58 +244,18 @@ func (wm *Manager) senderName(msg *events.Message) string {
 func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatName string) {
 	startTime := time.Now()
 
+	chatJID, chatJIDAlt := chatForms(client, msg.Info.Chat)
+
 	// Find matching webhook configurations
-	matchedConfigs := wm.MatchesTriggers(msg, chatName)
+	matchedConfigs := wm.MatchesTriggers(msg, chatName, chatJID, chatJIDAlt)
 	if len(matchedConfigs) == 0 {
 		return
 	}
 
 	wm.logger.Infof("Found %d matching webhook configs for message %s", len(matchedConfigs), msg.Info.ID)
 
-	// Extract message content and media info
-	content := whatsapp.ExtractTextContent(msg.Message)
-	mediaType, filename, _, _, _, _, _, _ := whatsapp.ExtractMediaInfo(msg.Message)
-	quotedMsgID, quotedSender := whatsapp.ExtractQuotedContext(msg.Message)
-
-	senderName := wm.senderName(msg)
-
-	// Build base payload
-	basePayload := types.WebhookPayload{
-		EventType: "message_received",
-		Timestamp: msg.Info.Timestamp.Format(time.RFC3339),
-		Message: types.WebhookMessageInfo{
-			ID:              msg.Info.ID,
-			ChatJID:         msg.Info.Chat.String(),
-			ChatName:        chatName,
-			Sender:          msg.Info.Sender.String(),
-			SenderName:      senderName,
-			Content:         content,
-			Timestamp:       msg.Info.Timestamp.Format(time.RFC3339),
-			PushName:        msg.Info.PushName,
-			IsFromMe:        msg.Info.IsFromMe,
-			MediaType:       mediaType,
-			Filename:        filename,
-			QuotedMessageID: quotedMsgID,
-			QuotedSender:    quotedSender,
-		},
-		Metadata: types.WebhookMetadata{
-			ProcessingTimeMs: time.Since(startTime).Milliseconds(),
-		},
-	}
-
-	// Add media download URL if it's a media message
-	if mediaType != "" {
-		basePayload.Message.MediaDownloadURL = wm.downloadBaseURL
-	}
-
-	// Add group info if it's a group chat
-	if msg.Info.Chat.Server == "g.us" {
-		basePayload.Metadata.GroupInfo = &types.GroupInfo{
-			IsGroup:   true,
-			GroupName: chatName,
-			// ParticipantCount would require additional API call
-		}
-	}
+	basePayload := buildMessagePayload(msg, chatName, wm.senderName(msg), chatJID, chatJIDAlt, wm.downloadBaseURL)
+	basePayload.Metadata.ProcessingTimeMs = time.Since(startTime).Milliseconds()
 
 	// Send webhooks for each matched configuration
 	for _, config := range matchedConfigs {
@@ -294,7 +265,7 @@ func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatN
 		mediaType, _, _, _, _, _, _, _ := whatsapp.ExtractMediaInfo(msg.Message)
 
 		for _, trigger := range config.Triggers {
-			if trigger.Enabled && wm.matchesTrigger(trigger, msg, content, mediaType, chatName) {
+			if trigger.Enabled && wm.matchesTrigger(trigger, msg, content, mediaType, chatName, []string{chatJID, chatJIDAlt}) {
 				matchedTrigger = &trigger
 				break
 			}
@@ -318,6 +289,71 @@ func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatN
 		payload.Metadata.DeliveryAttempt = 1
 
 		// Send webhook asynchronously
-		go wm.delivery.DeliverWebhook(config, &payload, msg.Info.ID, msg.Info.Chat.String(), matchedTrigger)
+		go wm.delivery.DeliverWebhook(config, &payload, msg.Info.ID, chatJID, matchedTrigger)
 	}
+}
+
+// chatJIDResolver is the part of *whatsapp.Client the webhook needs; an
+// interface so tests can stand in for a live client.
+type chatJIDResolver interface {
+	ChatJIDForms(chat waTypes.JID) (canonical, alt waTypes.JID)
+}
+
+// chatForms returns the chat JID the store files the message under and the
+// other identity of the chat when known. Sending the raw msg.Info.Chat made
+// a consumer see "<lid>@lid" for a chat the store and the MCP call
+// "<phone>@s.whatsapp.net", so matching webhook events against stored chats
+// silently failed for LID-addressed contacts.
+func chatForms(client interface{}, chat waTypes.JID) (canonical, alt string) {
+	if r, ok := client.(chatJIDResolver); ok && r != nil {
+		c, a := r.ChatJIDForms(chat)
+		if !c.IsEmpty() {
+			canonical = c.String()
+			if !a.IsEmpty() && a != c {
+				alt = a.String()
+			}
+			return canonical, alt
+		}
+	}
+	return chat.ToNonAD().String(), ""
+}
+
+// buildMessagePayload assembles the message_received payload shared by every
+// matched webhook config.
+func buildMessagePayload(msg *events.Message, chatName, senderName, chatJID, chatJIDAlt, downloadBaseURL string) types.WebhookPayload {
+	content := whatsapp.ExtractTextContent(msg.Message)
+	mediaType, filename, _, _, _, _, _, _ := whatsapp.ExtractMediaInfo(msg.Message)
+	quotedMsgID, quotedSender := whatsapp.ExtractQuotedContext(msg.Message)
+
+	payload := types.WebhookPayload{
+		EventType: "message_received",
+		Timestamp: msg.Info.Timestamp.Format(time.RFC3339),
+		Message: types.WebhookMessageInfo{
+			ID:              msg.Info.ID,
+			ChatJID:         chatJID,
+			ChatJIDAlt:      chatJIDAlt,
+			ChatName:        chatName,
+			Sender:          msg.Info.Sender.String(),
+			SenderName:      senderName,
+			Content:         content,
+			Timestamp:       msg.Info.Timestamp.Format(time.RFC3339),
+			PushName:        msg.Info.PushName,
+			IsFromMe:        msg.Info.IsFromMe,
+			MediaType:       mediaType,
+			Filename:        filename,
+			QuotedMessageID: quotedMsgID,
+			QuotedSender:    quotedSender,
+		},
+	}
+	if mediaType != "" {
+		payload.Message.MediaDownloadURL = downloadBaseURL
+	}
+	if msg.Info.Chat.Server == waTypes.GroupServer {
+		payload.Metadata.GroupInfo = &types.GroupInfo{
+			IsGroup:   true,
+			GroupName: chatName,
+			// ParticipantCount would require additional API call
+		}
+	}
+	return payload
 }

@@ -238,6 +238,32 @@ def _handle_forms(handle: str) -> tuple[list[str], str]:
     return sorted(forms), bare
 
 
+def sender_forms(conn: sqlite3.Connection, handle: str) -> list[str]:
+    """Every value ``messages.sender`` may hold for this person, for SQL ``IN``.
+
+    The bridge now stores full JIDs, but older rows it could not classify stay
+    bare digits, and the same person can appear as phone JID or LID. An exact
+    match on whatever form the caller passed silently drops the rest, so expand
+    the handle through the identity directory to both halves, each also bare.
+    """
+    forms, bare = _handle_forms(handle)
+    found = {*forms, bare}
+    if _directory_ready(conn):
+        ph = ",".join("?" * len(forms))
+        rows = conn.execute(
+            f"""
+            SELECT jid, lid, phone_jid FROM identities
+            WHERE jid IN ({ph}) OR lid IN ({ph}) OR phone_jid IN ({ph}) OR (phone = ? AND phone <> '')
+            """,
+            (*forms, *forms, *forms, bare),
+        ).fetchall()
+        for row in rows:
+            for jid in row:
+                if jid:
+                    found.update({jid, _bare(jid)})
+    return sorted(f for f in found if f)
+
+
 class DisplayName(NamedTuple):
     """A resolved name and where it came from (see identities_source for the values)."""
 
