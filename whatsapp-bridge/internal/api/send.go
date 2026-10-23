@@ -303,6 +303,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "Message or media path is required", http.StatusBadRequest)
 		return
 	}
+	if refuseImportedTarget(w, req.QuotedMessageID) {
+		return
+	}
 
 	key := idempotencyKey(r, req.IdempotencyKey)
 	payload := req
@@ -393,6 +396,9 @@ func (s *Server) handleReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if refuseUnlistedRecipient(w, req.ChatJID) {
+		return
+	}
+	if refuseImportedTarget(w, req.MessageID) {
 		return
 	}
 
