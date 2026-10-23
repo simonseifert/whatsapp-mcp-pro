@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
+	"whatsapp-bridge/internal/database"
 	"whatsapp-bridge/internal/mediastore"
 	"whatsapp-bridge/internal/whatsapp"
 )
@@ -73,7 +74,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		mediaKey, fileSHA256     []byte
 	)
 	row := s.messageStore.GetDB().QueryRow(
-		`SELECT media_type, url, media_key, COALESCE(filename, ''), file_sha256
+		`SELECT COALESCE(media_type, ''), COALESCE(url, ''), media_key, COALESCE(filename, ''), file_sha256
 		 FROM messages WHERE id = ? AND chat_jid = ?`,
 		req.MessageID, req.ChatJID,
 	)
@@ -81,8 +82,19 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "message not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
+	// A row from a chat-export import has no media key: its file exists only
+	// as the copy the importer saved, so only the local lookups below apply.
+	// They need the hash, because nothing else ties a file on disk to a
+	// synthetic ID, and the network paths must never run for an ID WhatsApp
+	// has not seen (a media retry would ping the phone for nothing).
+	imported := database.IsImportedMessageID(req.MessageID)
 	info, ok := hkdfInfo[mediaType]
-	if !ok || len(mediaKey) == 0 {
+	if imported {
+		if !ok || len(fileSHA256) == 0 {
+			SendJSONError(w, "this imported message's media was not in the export", http.StatusNotFound)
+			return
+		}
+	} else if !ok || len(mediaKey) == 0 {
 		SendJSONError(w, "no downloadable media for this message", http.StatusBadRequest)
 		return
 	}
@@ -106,6 +118,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			writeDownloadResult(w, saved, "saved")
 			return
 		}
+	}
+	if imported {
+		SendJSONError(w, "imported media file is missing from the store", http.StatusNotFound)
+		return
 	}
 	if url == "" {
 		s.downloadViaWhatsmeow(w, r, req, "no stored media URL")

@@ -103,6 +103,17 @@ func TestOldestMessage(t *testing.T) {
 	if _, _, _, _, err := store.OldestMessage("nobody@s.whatsapp.net"); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("empty chat: got %v, want sql.ErrNoRows", err)
 	}
+
+	// Imported history is older still, but the phone cannot find its
+	// synthetic IDs, so it must never become a history-request anchor.
+	if _, err := store.GetDB().Exec(
+		"INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, 'x', 'x', ?, 0)",
+		ImportedIDPrefix+"abc", chat, base.Add(-24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if id, _, _, _, err := store.OldestMessage(chat); err != nil || id != "B" {
+		t.Errorf("with an imported row: got id=%s err=%v, want B", id, err)
+	}
 }
 
 func TestStoreMessageContext(t *testing.T) {
