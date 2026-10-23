@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
+from .naming import sender_forms
 from .utils import MESSAGES_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
 MAX_RECALL_LIMIT = 200  # a semantic search returning more than this is a scan, not a search
@@ -367,8 +368,11 @@ def recall(
         sql_parts.append(f" AND m.chat_jid IN ({','.join('?' * len(jids))})")
         params.extend(jids)
     if sender:
-        sql_parts.append(" AND m.sender = ?")
-        params.append(sender)
+        # Senders are stored as full JIDs now, older rows as bare digits, and one
+        # person can be a phone JID in one chat and a LID in another.
+        forms = sender_forms(conn, sender)
+        sql_parts.append(f" AND m.sender IN ({','.join('?' * len(forms))})")
+        params.extend(forms)
     # The bridge stores "2026-10-21 20:54:59+02:00" (space, local offset), so a
     # raw string compare against an ISO "2026-10-21T00:00:00" is wrong: " " sorts
     # before "T" and the whole day falls out of `after`. Compare in UTC instead.

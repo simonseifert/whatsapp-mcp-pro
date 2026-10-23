@@ -379,8 +379,10 @@ def send_message(
     twice on purpose just works.
 
     Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
-                 or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
+        recipient: Prefer the full JID exactly as other tools return it, e.g. "4915112345678@s.whatsapp.net",
+                 "123456789012345@lid" or a group "120363000000000001@g.us". A bare number (country code,
+                 no + or spaces) is treated as a phone number; a bare number that is really a LID's
+                 digits is refused with a 400 rather than sent to whoever owns that phone number.
         message: The message text to send
         mentioned_jids: Optional list of JIDs to mention in the message (e.g. ["123456789@s.whatsapp.net"])
         quoted_message_id: Optional ID of a message to quote or reply to
@@ -413,8 +415,10 @@ def send_file(
     twice on purpose just works.
 
     Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
-                 or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
+        recipient: Prefer the full JID exactly as other tools return it, e.g. "4915112345678@s.whatsapp.net",
+                 "123456789012345@lid" or a group "120363000000000001@g.us". A bare number (country code,
+                 no + or spaces) is treated as a phone number; a bare number that is really a LID's
+                 digits is refused with a 400 rather than sent to whoever owns that phone number.
         media_path: The absolute path to the media file to send (image, video, document).
                  This is a path on the *server*, so it only works for files already there,
                  inside /tmp or a MEDIA_ALLOWED_DIRS directory. Hidden paths and
@@ -448,8 +452,10 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
     twice on purpose just works.
 
     Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
-                 or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
+        recipient: Prefer the full JID exactly as other tools return it, e.g. "4915112345678@s.whatsapp.net",
+                 "123456789012345@lid" or a group "120363000000000001@g.us". A bare number (country code,
+                 no + or spaces) is treated as a phone number; a bare number that is really a LID's
+                 digits is refused with a 400 rather than sent to whoever owns that phone number.
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file).
                  Same path rules as send_file: /tmp or a MEDIA_ALLOWED_DIRS directory only.
         idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)

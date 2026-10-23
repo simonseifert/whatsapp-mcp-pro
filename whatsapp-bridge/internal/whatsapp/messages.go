@@ -386,10 +386,9 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 			}
 		}
 	} else {
-		// Create JID from phone number
-		recipientJID = types.JID{
-			User:   recipient,
-			Server: "s.whatsapp.net", // For personal chats
+		recipientJID, err = bareRecipientJID(recipient, c.knownLIDFunc(messageStore))
+		if err != nil {
+			return failed(newSendError(SendErrInvalid, "%w", err), "")
 		}
 	}
 
@@ -510,19 +509,15 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 
 	// Build quoted message context if quotedMessageID is provided
 	if quotedMessageID != "" && messageStore != nil {
-		content, sender, _, err := messageStore.GetMessageContentAndSender(quotedMessageID)
+		content, sender, isFromMe, err := messageStore.GetMessageContentAndSender(quotedMessageID)
 		if err == nil {
-			// Resolve a bare LID sender (e.g. "250723665199309") to its phone JID so
-			// WhatsApp accepts the quoted Participant. Received messages store the
-			// sender as a bare LID number; the reply context needs the phone JID.
-			participant := sender
-			if !strings.Contains(sender, "@") {
-				lidJID := types.JID{User: sender, Server: types.HiddenUserServer}
-				if pn, altErr := c.Store.GetAltJID(context.Background(), lidJID); altErr == nil && !pn.IsEmpty() {
-					participant = pn.String()
-					c.logger.Debugf("Resolved quoted LID %s to %s", sender, participant)
-				}
+			quoted, pErr := c.quotedParticipant(messageStore, sender, recipientJID, isFromMe)
+			if pErr != nil {
+				// A quote with a broken participant is delivered as a reply to
+				// nothing and still reports success, so refuse instead.
+				return failed(newSendError(SendErrInvalid, "cannot quote message %s: %w", quotedMessageID, pErr), "")
 			}
+			participant := quoted.String()
 			contextInfo := &waE2E.ContextInfo{
 				StanzaID:    proto.String(quotedMessageID),
 				Participant: proto.String(participant),
@@ -652,9 +647,13 @@ func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *data
 	if messageStore != nil {
 		senderStr, isFromMe, lookupErr := messageStore.GetMessageSender(messageID, chatJID)
 		if lookupErr == nil && !isFromMe {
-			if parsed, parseErr := types.ParseJID(senderStr); parseErr == nil {
-				senderJID = parsed.ToNonAD()
+			parsed, pErr := participantJID(senderStr, chatJID, c.knownLIDFunc(messageStore))
+			if pErr != nil {
+				// Sending anyway would report success for a reaction that
+				// WhatsApp attaches to no message.
+				return failed(newSendError(SendErrInvalid, "cannot resolve sender of message %s: %w", messageID, pErr), "")
 			}
+			senderJID = parsed
 		}
 	}
 
