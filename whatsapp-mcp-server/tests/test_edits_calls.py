@@ -131,6 +131,31 @@ def test_get_message_edits_oldest_first_by_real_time(store):
     assert got["edits"][0]["source"] == "history"
 
 
+def test_get_message_edits_shows_status_and_flags_rejected(store):
+    conn = sqlite3.connect(store)
+    conn.execute(
+        "INSERT INTO message_edits (message_id, chat_jid, edit_id, new_content, edited_at, editor_jid, source, status)"
+        " VALUES ('msg1', ?, 'F1', 'forged', '2026-10-20 09:30:00+00:00', '4915187654321@s.whatsapp.net', 'live', 'rejected')",
+        (CHAT,),
+    )
+    conn.commit()
+    conn.close()
+    got = changes.get_message_edits("msg1")
+    assert [e["status"] for e in got["edits"]] == ["applied", "applied", "rejected"]
+    assert got["content"] == "Hello world!"  # the rejected text never becomes the content
+    assert "1 edit(s)" in got["note"]
+
+
+def test_get_message_edits_before_status_column(store):
+    conn = sqlite3.connect(store)
+    conn.execute("ALTER TABLE message_edits DROP COLUMN status")
+    conn.commit()
+    conn.close()
+    got = changes.get_message_edits("msg1")
+    assert [e["status"] for e in got["edits"]] == ["applied", "applied"]
+    assert "note" not in got
+
+
 def test_get_message_edits_resolves_a_merged_lid(store):
     assert changes.get_message_edits("msg1", chat_jid=LID)["chat_jid"] == CHAT
 
