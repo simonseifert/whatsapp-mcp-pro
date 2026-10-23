@@ -396,12 +396,25 @@ func (store *MessageStore) GetPreviousMessageTime(chatJID string, currentTime ti
 	return prevTime, err
 }
 
+// ImportedIDPrefix marks rows written by the chat-export importer
+// (whatsapp-mcp-server/lib/chat_import.py). Their IDs are synthetic: WhatsApp
+// has never seen them, so nothing that sends a message key to WhatsApp may use
+// one. Real message IDs are uppercase hex, so the prefix cannot collide.
+const ImportedIDPrefix = "import-"
+
+// IsImportedMessageID reports whether id belongs to an imported row.
+func IsImportedMessageID(id string) bool {
+	return strings.HasPrefix(id, ImportedIDPrefix)
+}
+
 // OldestMessage returns the oldest stored message in a chat: the anchor an
 // on-demand history request needs. err is sql.ErrNoRows when the chat has none.
+// Imported rows are skipped: the phone cannot find a synthetic ID, so anchoring
+// a history request on one would fetch nothing.
 func (store *MessageStore) OldestMessage(chatJID string) (id, sender string, isFromMe bool, timestamp time.Time, err error) {
 	var s sql.NullString
 	err = store.db.QueryRow(
-		"SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? ORDER BY datetime(timestamp) ASC LIMIT 1",
+		"SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? AND id NOT LIKE '"+ImportedIDPrefix+"%' ORDER BY datetime(timestamp) ASC LIMIT 1",
 		chatJID,
 	).Scan(&id, &s, &isFromMe, &timestamp)
 	return id, s.String, isFromMe, timestamp, err
