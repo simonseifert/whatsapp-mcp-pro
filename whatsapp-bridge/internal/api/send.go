@@ -266,6 +266,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "Recipient is required", http.StatusBadRequest)
 		return
 	}
+	if s.refuseBareLIDRecipient(w, req.Recipient) {
+		return
+	}
 	if refuseUnlistedRecipient(w, req.Recipient) {
 		return
 	}
@@ -313,6 +316,24 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 	})
+}
+
+// refuseBareLIDRecipient writes a 400 and returns true when a bare-number
+// recipient is a LID the identity directory knows. A bare number is sent as
+// {digits}@s.whatsapp.net, so a LID passed without its server would message
+// whoever owns that phone number. Checked here, before the idempotency record
+// and the connection check, so the caller gets a stable 400 rather than a 503
+// while offline; the client repeats the check against whatsmeow's LID map.
+func (s *Server) refuseBareLIDRecipient(w http.ResponseWriter, recipient string) bool {
+	if s.messageStore == nil || strings.Contains(recipient, "@") {
+		return false
+	}
+	known, err := s.messageStore.IsKnownLID(recipient)
+	if err != nil || !known {
+		return false
+	}
+	SendJSONError(w, fmt.Sprintf("recipient %s is a LID, not a phone number; pass the full JID (%s@lid, or the contact's phone JID)", recipient, recipient), http.StatusBadRequest)
+	return true
 }
 
 // errorBody is the {success:false,error,code} shape the other endpoints use.

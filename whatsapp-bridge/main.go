@@ -122,6 +122,14 @@ func main() {
 	}
 	defer func() { _ = messageStore.Close() }()
 
+	// Old rows stored bare sender numbers (migrations/008). A failure here only
+	// means those rows keep being resolved at use time, so it must not block start.
+	if n, err := messageStore.NormaliseBareSenders(); err != nil {
+		logger.Warnf("Sender normalisation failed: %v", err)
+	} else if n > 0 {
+		logger.Infof("Normalised %d bare message senders to full JIDs", n)
+	}
+
 	// Create WhatsApp client with config (Phase 4: HistorySyncConfig)
 	client, err := whatsapp.NewClientWithConfig(logger, cfg)
 	if err != nil {

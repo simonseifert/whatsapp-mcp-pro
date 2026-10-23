@@ -59,7 +59,12 @@ MESSAGES = [
     (TEAM, ME, "2026-11-02 09:30:00+01:00", "Notes from the standup are in the shared doc"),
     (TEAM, JONAS, "2026-11-03 14:00:00+01:00", "Staging is green again, thanks for the fix"),
     (TEAM, ANA, "2026-11-03 16:20:00+01:00", "New icons are uploaded to the drive"),
-    (TEAM, JONAS, "2026-11-05 11:15:00+01:00", "Heads up: we're moving the launch to March, the payment provider needs more time"),
+    (
+        TEAM,
+        JONAS,
+        "2026-11-05 11:15:00+01:00",
+        "Heads up: we're moving the launch to March, the payment provider needs more time",
+    ),
     (TEAM, LENA, "2026-11-05 11:17:00+01:00", "Makes sense, better than rushing it"),
     (TEAM, ME, "2026-11-05 11:20:00+01:00", "I'll update the roadmap and tell the client"),
     (TEAM, JONAS, "2026-11-06 17:45:00+01:00", "Who's in for pizza on Friday?"),

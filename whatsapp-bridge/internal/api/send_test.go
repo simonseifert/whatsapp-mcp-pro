@@ -314,6 +314,43 @@ func TestReactionAndPollIdempotency(t *testing.T) {
 	}
 }
 
+func TestSendRefusesBareKnownLID(t *testing.T) {
+	tests := []struct {
+		name      string
+		recipient string
+		wantCode  int
+		wantSends int
+	}{
+		{"bare known LID", "123456789012345", http.StatusBadRequest, 0},
+		{"full LID JID", "123456789012345@lid", http.StatusOK, 1},
+		{"bare phone number", "4915112345678", http.StatusOK, 1},
+		{"phone JID", "4915112345678@s.whatsapp.net", http.StatusOK, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeSender{}
+			s := newSendTestServer(t, f)
+			if _, err := s.messageStore.GetDB().Exec(
+				`INSERT INTO identities (jid, lid, phone_jid) VALUES ('4915112345678@s.whatsapp.net', '123456789012345@lid', '4915112345678@s.whatsapp.net')`,
+			); err != nil {
+				t.Fatal(err)
+			}
+			rec := post(t, s.handleSendMessage, map[string]any{"recipient": tt.recipient, "message": "hi"}, nil)
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tt.wantCode, rec.Body)
+			}
+			if f.callCount() != tt.wantSends {
+				t.Fatalf("sends = %d, want %d", f.callCount(), tt.wantSends)
+			}
+			if tt.wantCode == http.StatusBadRequest {
+				if msg, _ := decode(t, rec)["error"].(string); !strings.Contains(msg, "LID") || !strings.Contains(msg, "@lid") {
+					t.Errorf("error should name the problem and the fix, got %q", msg)
+				}
+			}
+		})
+	}
+}
+
 // setSendAllowlist swaps SEND_ALLOWED_JIDS for one test; the allowlist is
 // loaded once per process, so the cache is reset around it.
 func setSendAllowlist(t *testing.T, value string) {
