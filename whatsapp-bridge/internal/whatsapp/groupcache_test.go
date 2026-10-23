@@ -155,3 +155,37 @@ func TestClassifyCapErrorCarriesRetryTime(t *testing.T) {
 		t.Fatalf("Until is %s away, want ~1h", d)
 	}
 }
+
+// A slow fetch for one group must not block another group's lookup, nor
+// invalidate, which whatsmeow calls synchronously from its event loop.
+func TestGroupCacheSlowFetchBlocksNothingElse(t *testing.T) {
+	g := newGroupCache(time.Minute)
+	slowA := types.NewJID("120363000000000001", types.GroupServer)
+	fastB := types.NewJID("120363000000000002", types.GroupServer)
+	release := make(chan struct{})
+	started := make(chan struct{})
+
+	go func() {
+		_, _ = g.groupInfo(context.Background(), slowA, func(context.Context, types.JID) (*types.GroupInfo, error) {
+			close(started)
+			<-release
+			return &types.GroupInfo{}, nil
+		})
+	}()
+	<-started
+
+	done := make(chan struct{})
+	go func() {
+		g.invalidate(slowA)
+		_, _ = g.groupInfo(context.Background(), fastB, func(context.Context, types.JID) (*types.GroupInfo, error) {
+			return &types.GroupInfo{}, nil
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("invalidate or another group's lookup waited on a slow fetch")
+	}
+	close(release)
+}
