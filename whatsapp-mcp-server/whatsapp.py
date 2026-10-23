@@ -1333,7 +1333,7 @@ def send_file(
             }
 
         if file_content_base64:
-            if not filename:
+            if filename is None:
                 return {
                     "success": False,
                     "error": "filename must be provided with file_content_base64",
@@ -1346,20 +1346,17 @@ def send_file(
 
             # The bridge reads the file off disk, so the bytes have to land
             # there first — and somewhere validateMediaPath allows.
-            base_dir = os.path.join(MEDIA_TEMP_DIR, "whatsapp-outgoing")
-            os.makedirs(base_dir, exist_ok=True)
-            # Only the basename: a filename like "../x" must not escape. The
-            # bridge also rejects any path containing "..", so a traversal
-            # attempt would fail there too.
-            safe_name = os.path.basename(filename) or "upload"
-            # Stage inside a unique subdirectory keeping the real name, rather
-            # than a mkstemp-suffixed file. The bridge names the sent document
-            # after basename(media_path); a "tmpXXXX-" prefix would otherwise
-            # ride along into the recipient's chat (arrived as e.g.
-            # "tmpkzbilqkf-report.md").
-            temp_dir = tempfile.mkdtemp(dir=base_dir)
+            media_dir = os.path.join(MEDIA_TEMP_DIR, "whatsapp-outgoing")
+            os.makedirs(media_dir, exist_ok=True)
+            # Keep the document name exact; put uniqueness in its directory.
+            # Empty names and directory markers must still name a regular file.
+            safe_name = os.path.basename(filename)
+            if safe_name in ("", ".", ".."):
+                safe_name = "upload"
+            temp_dir = tempfile.mkdtemp(dir=media_dir)
             temp_path = os.path.join(temp_dir, safe_name)
-            with open(temp_path, "wb") as f:
+            with open(temp_path, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as f:
+                os.fchmod(f.fileno(), 0o600)
                 f.write(content)
 
             media_path = temp_path
