@@ -634,3 +634,50 @@ func TestEditsAndRevokesOfImportedRowsAreRejected(t *testing.T) {
 		t.Fatalf("revoke of imported row: %+v, %v", rev, err)
 	}
 }
+
+// Stand-in rows (a revoke or our own edit of a message not stored) once held
+// NULL sender/content/media_type/filename, and GetMessages scanning one into a
+// string failed the whole chat: /api/messages 500'd and the reconnect
+// backfill skipped it.
+func TestStandInRowsAreReadable(t *testing.T) {
+	store := newTestMessageStore(t)
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := store.MarkDeleted(Revoke{MessageID: "GONE", ChatJIDs: []string{testGroup}, At: at,
+		By: Actor{JID: testStranger}, Author: Actor{JID: testPhoneChat}, IsAdmin: func() bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyEdit(Edit{MessageID: "LATE", ChatJIDs: []string{testGroup}, NewContent: "fixed", EditedAt: at,
+		Editor: Actor{JID: testOwnJID, IsMe: true}, StanzaID: "E1", Source: SourceAPI, Trusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	var nulls int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE sender IS NULL OR content IS NULL OR media_type IS NULL OR filename IS NULL`).
+		Scan(&nulls); err != nil || nulls != 0 {
+		t.Fatalf("%d stand-in rows with NULL text columns (err %v)", nulls, err)
+	}
+	msgs, err := store.GetMessages(testGroup, 10)
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("GetMessages = %+v, %v", msgs, err)
+	}
+	for _, m := range msgs {
+		if m.ID == "GONE" && (m.Sender != testPhoneChat || m.IsFromMe) {
+			t.Errorf("revoke stand-in = %+v, want the author from the revoke's key", m)
+		}
+	}
+	// A row some other writer left NULL (an older importer, an older bridge)
+	// must not fail the chat either.
+	if _, err := store.db.Exec(`INSERT INTO messages (id, chat_jid, timestamp) VALUES ('BARE', ?, ?)`, testGroup, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if msgs, err := store.GetMessages(testGroup, 10); err != nil || len(msgs) != 3 {
+		t.Fatalf("GetMessages with a NULL row = %d messages, %v", len(msgs), err)
+	}
+	if _, _, err := store.GetMessageSender("BARE", testGroup); err != nil {
+		t.Errorf("GetMessageSender on a NULL row: %v", err)
+	}
+	// The original arriving later fills the stand-in in.
+	storeFrom(t, store, "GONE", testGroup, testPhoneChat, "late original", false, at.Add(-time.Hour))
+	if m := readMsg(t, store, "GONE", testGroup); m.content.String != "late original" || !m.deletedAt.Valid {
+		t.Errorf("after replay = %+v", m)
+	}
+}

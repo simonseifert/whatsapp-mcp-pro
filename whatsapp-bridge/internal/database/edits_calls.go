@@ -310,9 +310,12 @@ func (store *MessageStore) ApplyEdit(e Edit) (EditResult, error) {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO chats (jid) VALUES (?)`, chat); err != nil {
 			return res, fmt.Errorf("ensure chat %s: %w", chat, err)
 		}
+		// '' rather than NULL in the text columns: readers scan them into
+		// strings (GetMessages, the MCP's list_messages), and a NULL there
+		// failed the whole chat. setEditedContent fills content below.
 		if _, err := tx.Exec(
-			`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_edited, edit_count)
-			 VALUES (?, ?, ?, ?, NULL, ?, ?, 0, 0)`,
+			`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, filename, is_edited, edit_count)
+			 VALUES (?, ?, ?, ?, '', ?, ?, '', '', 0, 0)`,
 			id, chat, e.Editor.JID, e.Editor.JID, editedAt, e.Editor.IsMe,
 		); err != nil {
 			return res, fmt.Errorf("placeholder for edited message %s: %w", id, err)
@@ -490,6 +493,10 @@ type Revoke struct {
 	ChatJIDs  []string // every form the chat may be stored under, canonical first
 	At        time.Time
 	By        Actor
+	// Author is who wrote the revoked message, as the revoke's message key
+	// names it; empty when unknown. Used only for the stand-in row of a
+	// message the store never saw, so a later replay or reader has a sender.
+	Author Actor
 	// IsAdmin reports whether By is an admin of the (group) chat, who may
 	// delete anyone's message. Called only when By is not the author; nil
 	// means not an admin.
@@ -548,10 +555,13 @@ func (store *MessageStore) MarkDeleted(r Revoke) (RevokeResult, error) {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO chats (jid) VALUES (?)`, chat); err != nil {
 			return res, fmt.Errorf("ensure chat %s: %w", chat, err)
 		}
+		// '' rather than NULL, as for an edit placeholder: readers scan these
+		// columns into strings. StoreMessage fills them in if the original
+		// arrives later.
 		if _, err := tx.Exec(
-			`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me)
-			 VALUES (?, ?, NULL, NULL, NULL, ?, 0)`,
-			id, chat, at,
+			`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, filename)
+			 VALUES (?, ?, ?, ?, '', ?, ?, '', '')`,
+			id, chat, r.Author.JID, r.Author.JID, at, r.Author.IsMe,
 		); err != nil {
 			return res, fmt.Errorf("placeholder for revoked message %s: %w", id, err)
 		}

@@ -96,6 +96,26 @@ def test_list_messages_marks_edited_and_deleted(store):
     assert got["msg2"]["deleted"] is True and "edited" not in got["msg2"]
 
 
+def test_readers_tolerate_null_text_columns(store):
+    """A stand-in row with NULL sender/content/media (a revoke of a message never
+    stored, written by an older bridge or importer) used to crash list_messages."""
+    import whatsapp
+
+    conn = sqlite3.connect(store)
+    conn.execute(
+        "INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, filename,"
+        " deleted_at) VALUES ('stub', ?, NULL, NULL, NULL, '2026-10-20 12:00:00+00:00', 0, NULL, NULL,"
+        " '2026-10-20 12:00:00+00:00')",
+        (CHAT,),
+    )
+    conn.commit()
+    conn.close()
+    got = _by_id(whatsapp.list_messages(chat_jid=CHAT))
+    assert got["stub"]["sender"] == "" and got["stub"]["content"] == "(deleted)"
+    ctx = whatsapp.get_message_context("stub", before=5, after=5).to_dict()
+    assert ctx["message"]["id"] == "stub"
+
+
 def test_get_message_context_marks_changes(store):
     import whatsapp
 

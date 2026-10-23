@@ -429,7 +429,7 @@ def _context(conn: sqlite3.Connection, cand: _Candidate, skip_system: bool) -> d
         FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid
         WHERE (m.chat_jid IN ({cph})
                OR (m.chat_jid LIKE '%@g.us' AND m.sender IN ({sph}) AND COALESCE(m.is_from_me, 0) = 0))
-          AND (TRIM(COALESCE(m.content, '')) <> '' OR m.media_type IS NOT NULL){system}
+          AND (TRIM(COALESCE(m.content, '')) <> '' OR COALESCE(m.media_type, '') <> ''){system}
         ORDER BY datetime(m.timestamp) DESC
         LIMIT ?
         """,

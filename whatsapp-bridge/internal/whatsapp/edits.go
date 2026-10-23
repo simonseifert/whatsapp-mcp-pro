@@ -29,6 +29,9 @@ func emitChange(webhookManager any, eventType string, info bridgeTypes.WebhookMe
 // handleChange applies a live edit or revoke and tells the webhooks about it.
 func (c *Client) handleChange(store *database.MessageStore, webhookManager any, msg *events.Message, ch messageChange, sender string) {
 	actor := c.messageActor(msg, sender)
+	if ch.Kind == changeRevoke {
+		ch.Author = c.revokedAuthor(msg, actor)
+	}
 	isAdmin := c.adminCheck(msg.Info.Chat, msg.Info.Sender, msg.Info.SenderAlt, msg.Info.IsFromMe)
 	out, err := c.applyChange(store, ch, c.chatCandidates(msg.Info.Chat), actor, isAdmin, database.SourceLive, false)
 	if err != nil {
@@ -140,6 +143,8 @@ func (c *Client) handleHistoryNonMessage(store *database.MessageStore, chatJID s
 		// accepted; an edit or revoke still in protocol-message form is only
 		// what someone sent, and gets the same checks as a live one.
 		stub := wmi.GetMessage() == nil
+		// A stub is keyed on the revoked message, so its key names the author.
+		ch.Author = database.Actor{JID: sender, IsMe: isFromMe}
 		if wmi.GetMessageStubType() == waWeb.WebMessageInfo_ADMIN_REVOKE {
 			actor.JID = "" // the stub names the author, not the admin who deleted it
 		}
@@ -198,6 +203,9 @@ type messageChange struct {
 	NewContent string // edits only
 	At         time.Time
 	StanzaID   string // the edit's own message ID, the dedupe key
+	// Author wrote the revoked message, as the revoke's key names it; only
+	// for the stand-in row of a revoke of a message not stored. May be empty.
+	Author database.Actor
 }
 
 // classifyChange reports whether msg edits or revokes an earlier message.
@@ -342,6 +350,7 @@ func (c *Client) applyChange(store *database.MessageStore, ch messageChange, cha
 			ChatJIDs:  chats,
 			At:        ch.At,
 			By:        actor,
+			Author:    ch.Author,
 			IsAdmin:   isAdmin,
 			Trusted:   trusted,
 		})
@@ -377,6 +386,37 @@ func (c *Client) messageActor(msg *events.Message, sender string) database.Actor
 		}
 	}
 	return a
+}
+
+// revokedAuthor reads who wrote the message a live revoke names. The key is
+// written from the revoker's point of view: FromMe means the revoker's own
+// message; otherwise a group key names the author as Participant. A 1:1 key
+// without FromMe is left unknown rather than guessed.
+func (c *Client) revokedAuthor(msg *events.Message, revoker database.Actor) database.Actor {
+	key := msg.Message.GetProtocolMessage().GetKey()
+	if key == nil {
+		return database.Actor{}
+	}
+	if key.GetFromMe() {
+		return database.Actor{JID: revoker.JID, IsMe: revoker.IsMe}
+	}
+	p, err := types.ParseJID(key.GetParticipant())
+	if err != nil || p.User == "" {
+		return database.Actor{}
+	}
+	author := database.Actor{JID: StoredSender(p)}
+	if c != nil && c.Client != nil && c.Store != nil {
+		own := []types.JID{c.Store.LID.ToNonAD()}
+		if c.Store.ID != nil {
+			own = append(own, c.Store.ID.ToNonAD())
+		}
+		for _, o := range own {
+			if o.User != "" && o.User == p.User && o.Server == p.Server {
+				author.IsMe = true
+			}
+		}
+	}
+	return author
 }
 
 // adminCheck returns a lazy "is this sender a group admin" for a revoke in a

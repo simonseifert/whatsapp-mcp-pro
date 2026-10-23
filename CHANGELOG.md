@@ -63,6 +63,14 @@ All notable changes to this fork are recorded here. The format follows
   refused with 422, and on-demand history requests anchor on the oldest real
   message, not an imported one.
 
+### Fixed
+
+- Rows standing in for a revoked or edited message the store never saw, and
+  imported text rows, no longer hold NULL sender/content/media columns, which
+  made `/api/messages` fail for the whole chat (and the reconnect backfill skip
+  it) and crashed `list_messages`. Readers on both sides now tolerate NULLs
+  left by older versions.
+
 ### Security
 
 - An edit is applied only when it comes from the message's author (phone JID

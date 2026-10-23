@@ -204,6 +204,13 @@ class Message:
     is_edited: bool = False  # content is the latest edit; see get_message_edits
     deleted_at: str | None = None  # revoked ("deleted for everyone"); content kept
 
+    def __post_init__(self) -> None:
+        # sender and content come straight from the store, where a stand-in
+        # row (a revoke or edit of a message never stored), an import or an
+        # older bridge may have left NULL. Every reader treats them as text.
+        self.sender = self.sender or ""
+        self.content = self.content or ""
+
     def to_dict(self) -> dict[str, Any]:
         """Convert Message to dictionary for structured output."""
         result: dict[str, Any] = {
@@ -592,7 +599,7 @@ def list_messages(
                 resolved = names.get(message.sender)
                 if resolved:
                     message.sender_name, message.sender_name_source = resolved
-                elif message.sender.startswith(IMPORT_SENDER_PREFIX):
+                elif (message.sender or "").startswith(IMPORT_SENDER_PREFIX):
                     # A name from a chat export that could not be tied to a
                     # JID: show it, but labelled as the export's word only.
                     message.sender_name = message.sender[len(IMPORT_SENDER_PREFIX) :]
