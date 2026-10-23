@@ -400,3 +400,66 @@ func TestGetNicknamesSkipsAgentInferred(t *testing.T) {
 		t.Fatalf("GetContactInfo returned the agent-inferred name: %+v %v", info, err)
 	}
 }
+
+// The edit history and call log are keyed on chat_jid like messages; a merge
+// that moved only messages left them under a chat nothing lists. And where
+// both forms held the same message, the dropped copy may be the one that saw
+// the revoke or the edit.
+func TestMergeChatMovesEditsCallsAndKeepsChangeState(t *testing.T) {
+	store := newTestMessageStore(t)
+	lid, phone := testLIDChat, testPhoneChat
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	for _, c := range []string{lid, phone} {
+		if err := store.StoreChat(c, "Max", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Revoked under the LID, original under the phone JID.
+	storeFrom(t, store, "DUP", lid, phone, "secret", false, at)
+	storeFrom(t, store, "DUP", phone, phone, "secret", false, at)
+	if _, err := store.MarkDeleted(Revoke{MessageID: "DUP", ChatJIDs: []string{lid}, At: at.Add(time.Minute), By: Actor{JID: phone}}); err != nil {
+		t.Fatal(err)
+	}
+	// Edited under the LID only.
+	storeFrom(t, store, "ED", lid, phone, "helo", false, at)
+	storeFrom(t, store, "ED", phone, phone, "helo", false, at)
+	if _, err := store.ApplyEdit(Edit{MessageID: "ED", ChatJIDs: []string{lid}, NewContent: "hello", EditedAt: at.Add(time.Minute),
+		StanzaID: "E1", Editor: Actor{JID: phone}, Source: SourceLive}); err != nil {
+		t.Fatal(err)
+	}
+	// An edit pending under the LID whose original sits under the phone JID.
+	if _, err := store.ApplyEdit(Edit{MessageID: "WAIT", ChatJIDs: []string{lid}, NewContent: "v2", EditedAt: at.Add(time.Minute),
+		StanzaID: "E2", Editor: Actor{JID: phone}, Source: SourceLive}); err != nil {
+		t.Fatal(err)
+	}
+	storeFrom(t, store, "WAIT", phone, phone, "v1", false, at)
+	if _, err := store.db.Exec(`INSERT INTO calls (call_id, chat_jid, started_at) VALUES ('C1', ?, ?)`, lid, at); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := store.MergeChat(lid, phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.EditsMoved != 2 || res.CallsMoved != 1 {
+		t.Errorf("result = %+v, want 2 edits and 1 call moved", res)
+	}
+	if m := readMsg(t, store, "DUP", phone); !m.deletedAt.Valid || m.deletedBy.String != phone || m.content.String != "secret" {
+		t.Errorf("DUP = %+v, want the revoke kept", m)
+	}
+	if m := readMsg(t, store, "ED", phone); m.content.String != "hello" || !m.isEdited || m.editCount != 1 {
+		t.Errorf("ED = %+v, want the edit kept", m)
+	}
+	if m := readMsg(t, store, "WAIT", phone); m.content.String != "v2" {
+		t.Errorf("WAIT = %+v, want the pending edit applied after the merge", m)
+	}
+	for _, q := range []string{`SELECT COUNT(*) FROM message_edits WHERE chat_jid = ?`, `SELECT COUNT(*) FROM calls WHERE chat_jid = ?`} {
+		var n int
+		if err := store.db.QueryRow(q, lid).Scan(&n); err != nil || n != 0 {
+			t.Errorf("%s: %d left under the LID (err %v)", q, n, err)
+		}
+	}
+	if edits, err := store.GetMessageEdits("ED", phone); err != nil || len(edits) != 1 {
+		t.Errorf("ED edits under the phone JID = %+v, %v", edits, err)
+	}
+}

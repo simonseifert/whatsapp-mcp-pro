@@ -401,10 +401,15 @@ func setEditedContent(tx *sql.Tx, id, chat, content string, editedAt time.Time, 
 // message itself was stored: those from its author are applied (the newest
 // becomes the content), the rest rejected. StoreMessage calls it after every
 // insert, so it must be cheap when there is nothing pending.
+//
+// A pending edit is filed under the canonical chat form, but the original can
+// arrive under the other one (history sync files a message under its raw
+// conversation ID, often the LID). So edits pending under any form the
+// identity directory links to chat count, and are moved to chat first.
 func (store *MessageStore) resolvePendingEdits(id, chat string) error {
 	var n int
 	if err := store.db.QueryRow(
-		`SELECT COUNT(*) FROM message_edits WHERE message_id = ? AND chat_jid = ? AND status = ?`, id, chat, EditPending,
+		`SELECT COUNT(*) FROM message_edits WHERE message_id = ? AND status = ?`, id, EditPending,
 	).Scan(&n); err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil
@@ -419,6 +424,22 @@ func (store *MessageStore) resolvePendingEdits(id, chat string) error {
 		return fmt.Errorf("begin pending edits: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	for form := range accountForms(tx, chat) {
+		if form == chat {
+			continue
+		}
+		// OR IGNORE: the same edit may already be recorded under chat; the
+		// copy left behind under the other form is then a duplicate.
+		if _, err := tx.Exec(`UPDATE OR IGNORE message_edits SET chat_jid = ? WHERE message_id = ? AND chat_jid = ? AND status = ?`,
+			chat, id, form, EditPending); err != nil {
+			return fmt.Errorf("move pending edits of %s: %w", id, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM message_edits WHERE message_id = ? AND chat_jid = ? AND status = ?`,
+			id, form, EditPending); err != nil {
+			return fmt.Errorf("drop duplicate pending edits of %s: %w", id, err)
+		}
+	}
 
 	var content, sender sql.NullString
 	var lastEdit sql.NullTime
