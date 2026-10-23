@@ -13,7 +13,7 @@ import (
 
 const (
 	testPhoneJID    = "4915112345678@s.whatsapp.net"
-	testLID         = "123456789012345@lid"
+	testLIDJID      = "123456789012345@lid"
 	testUnmappedLID = "123456789012399@lid"
 )
 
@@ -40,7 +40,7 @@ func TestCapKeyCanonicalisesLID(t *testing.T) {
 	}{
 		{"phone JID as is", testPhoneJID, testPhoneJID},
 		{"device suffix stripped", "4915112345678:3@s.whatsapp.net", testPhoneJID},
-		{"mapped LID resolves to the phone JID", testLID, testPhoneJID},
+		{"mapped LID resolves to the phone JID", testLIDJID, testPhoneJID},
 		{"unmapped LID stays as given", testUnmappedLID, testUnmappedLID},
 		{"group untouched", "120363000000000001@g.us", "120363000000000001@g.us"},
 	}
@@ -81,7 +81,7 @@ func TestPhoneAndLIDShareOneCapBucket(t *testing.T) {
 				t.Fatal(err)
 			}
 			phone, _ := types.ParseJID(testPhoneJID)
-			lid, _ := types.ParseJID(testLID)
+			lid, _ := types.ParseJID(testLIDJID)
 			sequence := []types.JID{phone, lid, lid}
 			for i, chat := range sequence {
 				err := ic.BeforeSend(context.Background(), c.antibanRequest(nil, tt.msgType, chat, 0))
