@@ -432,9 +432,22 @@ func IsImportedMessageID(id string) bool {
 // Imported rows are skipped: the phone cannot find a synthetic ID, so anchoring
 // a history request on one would fetch nothing.
 func (store *MessageStore) OldestMessage(chatJID string) (id, sender string, isFromMe bool, timestamp time.Time, err error) {
+	return store.anchorMessage(chatJID, "ASC")
+}
+
+// NewestMessage is OldestMessage's counterpart for the reconnect backfill,
+// which anchors on the newest stored message. Imported rows are skipped for
+// the same reason: an export made after the bridge last saw a chat ends with
+// rows only the import has, and the phone cannot find their IDs.
+func (store *MessageStore) NewestMessage(chatJID string) (id, sender string, isFromMe bool, timestamp time.Time, err error) {
+	return store.anchorMessage(chatJID, "DESC")
+}
+
+func (store *MessageStore) anchorMessage(chatJID, order string) (id, sender string, isFromMe bool, timestamp time.Time, err error) {
 	var s sql.NullString
 	err = store.db.QueryRow(
-		"SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? AND id NOT LIKE '"+ImportedIDPrefix+"%' ORDER BY datetime(timestamp) ASC LIMIT 1",
+		"SELECT id, sender, COALESCE(is_from_me, 0), timestamp FROM messages WHERE chat_jid = ? AND id NOT LIKE '"+
+			ImportedIDPrefix+"%' ORDER BY datetime(timestamp) "+order+" LIMIT 1",
 		chatJID,
 	).Scan(&id, &s, &isFromMe, &timestamp)
 	return id, s.String, isFromMe, timestamp, err

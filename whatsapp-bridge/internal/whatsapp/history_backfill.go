@@ -40,6 +40,20 @@ func (c *Client) OldestHistoryAnchor(store *database.MessageStore, chatJID strin
 	return HistoryAnchor{MsgID: id, FromMe: fromMe, Sender: c.historySenderJID(chatJID, sender), Timestamp: ts}, nil
 }
 
+// NewestHistoryAnchor is OldestHistoryAnchor for the newest stored message,
+// the reconnect backfill's anchor. Imported rows are skipped (see
+// database.NewestMessage).
+func (c *Client) NewestHistoryAnchor(store *database.MessageStore, chatJID string) (HistoryAnchor, error) {
+	id, sender, fromMe, ts, err := store.NewestMessage(chatJID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HistoryAnchor{}, ErrNoStoredMessages
+	}
+	if err != nil {
+		return HistoryAnchor{}, fmt.Errorf("lookup newest message: %w", err)
+	}
+	return HistoryAnchor{MsgID: id, FromMe: fromMe, Sender: c.historySenderJID(chatJID, sender), Timestamp: ts}, nil
+}
+
 // historySenderJID turns a stored sender into a full JID. Senders are stored
 // bare (a phone number, or a LID number since WhatsApp's LID migration), but
 // the history request needs the full JID of the anchor message's author.

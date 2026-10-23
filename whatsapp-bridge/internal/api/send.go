@@ -53,6 +53,9 @@ type sendBackend interface {
 	CreatePollWithOptions(ctx context.Context, store *database.MessageStore, opts whatsapp.PollOptions) types.SendResult
 	EditMessage(chatJID, messageID, newContent string) (string, error)
 	DeleteMessage(chatJID, messageID, senderJID string) error
+	// OwnGroupAdmin reports whether this account administers the group, the
+	// only case in which /api/delete revokes someone else's message.
+	OwnGroupAdmin(chatJID string) bool
 }
 
 const (

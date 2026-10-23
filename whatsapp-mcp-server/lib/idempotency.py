@@ -22,6 +22,22 @@ from typing import Any
 # HTTP statuses where repeating the identical call is pointless or harmful.
 _NOT_RETRYABLE = {400, 403, 409, 422}
 
+# Codes of requests the bridge refuses before sending anything. WhatsApp itself
+# would have accepted them and reported success: an edit or delete of someone
+# else's message is relayed and ignored by every recipient, and an imported
+# row's synthetic ID refers to nothing.
+_CHANGE_REFUSALS = {
+    "not_own_message": "Only messages sent from this account can be edited, or deleted outside a group "
+    "you administer. Nothing was sent.",
+    "not_group_admin": "That message is someone else's and this account is not an admin of the group, "
+    "so it cannot be deleted for everyone. Nothing was sent.",
+    "message_not_stored": "The message is not in the local store, so its author cannot be checked. "
+    "Check message_id and chat_jid with list_messages. Nothing was sent.",
+    "sender_unknown": "The stored message has no sender; pass sender_jid. Nothing was sent.",
+    "imported_message": "That message came from a chat-export import and does not exist on WhatsApp, "
+    "so nothing can be sent that refers to it. Nothing was sent.",
+}
+
 
 def auto_idempotency_key(tool: str) -> str:
     """A fresh random key for one tool call, e.g. ``mcp-send_message-<32 hex>``."""
@@ -93,7 +109,9 @@ def bridge_error(response: Any) -> dict[str, Any]:
             result["retry_after_seconds"] = seconds
     if status == 409:
         result["hint"] = "The same send is still in progress; wait and check list_messages instead of retrying."
-    elif status == 422:
+    elif result.get("code") in _CHANGE_REFUSALS:
+        result["hint"] = _CHANGE_REFUSALS[result["code"]]
+    elif status == 422 and not result.get("code"):
         result["hint"] = "This idempotency_key was already used for a different message; pass a new key."
     elif result.get("code") == "reachout_timelock":
         result["hint"] = (

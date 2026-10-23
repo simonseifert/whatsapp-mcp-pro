@@ -30,6 +30,8 @@ type fakeSender struct {
 	result    func(n int) types.SendResult
 	block     chan struct{} // if set, sends wait on it
 	entered   chan struct{} // if set, signalled when a send starts
+	admin     bool          // what OwnGroupAdmin answers
+	deletes   []string      // sender_jid of each DeleteMessage call
 }
 
 func (f *fakeSender) record(ctx context.Context, priorID string, beforeDispatch func(string)) types.SendResult {
@@ -81,9 +83,14 @@ func (f *fakeSender) EditMessage(_, _, _ string) (string, error) {
 	return res.MessageID, res.Err
 }
 
-func (f *fakeSender) DeleteMessage(_, _, _ string) error {
+func (f *fakeSender) DeleteMessage(_, _, senderJID string) error {
+	f.mu.Lock()
+	f.deletes = append(f.deletes, senderJID)
+	f.mu.Unlock()
 	return f.record(context.Background(), "", nil).Err
 }
+
+func (f *fakeSender) OwnGroupAdmin(string) bool { return f.admin }
 
 func (f *fakeSender) callCount() int {
 	f.mu.Lock()
@@ -100,6 +107,22 @@ func newSendTestServer(t *testing.T, f *fakeSender) *Server {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return &Server{sender: f, messageStore: store}
+}
+
+// seedChangeTarget stores the message an edit or delete test names as one of
+// our own: /api/edit and /api/delete refuse anything else before sending.
+func seedChangeTarget(t *testing.T, s *Server, endpoint string, body map[string]any) {
+	t.Helper()
+	if endpoint != "edit" && endpoint != "delete" {
+		return
+	}
+	chat, id := fmt.Sprint(body["chat_jid"]), fmt.Sprint(body["message_id"])
+	if err := s.messageStore.StoreChat(chat, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.messageStore.StoreMessage(id, chat, "", "", "original", time.Now(), true, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func post(t *testing.T, h http.HandlerFunc, body any, header map[string]string) *httptest.ResponseRecorder {
@@ -411,6 +434,7 @@ func TestMessageEndpointsApplySendAllowlist(t *testing.T) {
 				setSendAllowlist(t, allowed)
 				f := &fakeSender{}
 				s := newSendTestServer(t, f)
+				seedChangeTarget(t, s, ep.name, ep.body(tc.jid))
 				rec := post(t, ep.handler(s), ep.body(tc.jid), nil)
 				if rec.Code != tc.want {
 					t.Fatalf("status %d, want %d: %s", rec.Code, tc.want, rec.Body)

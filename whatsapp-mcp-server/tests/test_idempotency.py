@@ -98,6 +98,8 @@ def test_replay_is_surfaced(bridge):
         (403, {"success": False, "error": "Recipient not in SEND_ALLOWED_JIDS allowlist"}, None, False),
         (409, {"success": False, "error": "still being sent"}, None, False),
         (422, {"success": False, "error": "different payload"}, None, False),
+        (403, {"success": False, "error": "not ours", "code": "not_own_message"}, "not_own_message", False),
+        (422, {"success": False, "error": "imported", "code": "imported_message"}, "imported_message", False),
         (
             429,
             {
@@ -197,3 +199,25 @@ def test_retry_after_header_is_used_when_body_lacks_it(bridge):
     assert result["retryable"] is True
     assert result["retry_after_seconds"] == 120
     assert "back off" in result["hint"]
+
+
+@pytest.mark.parametrize(
+    ("call", "status", "code", "hint"),
+    [
+        (
+            lambda: whatsapp.edit_message("123@s.whatsapp.net", "M", "x"),
+            403,
+            "not_own_message",
+            "sent from this account",
+        ),
+        (lambda: whatsapp.delete_message("1@g.us", "M"), 403, "not_group_admin", "not an admin"),
+        (lambda: whatsapp.delete_message("1@g.us", "M"), 422, "message_not_stored", "not in the local store"),
+    ],
+)
+def test_refused_edit_or_delete_says_why_and_is_final(bridge, call, status, code, hint):
+    """The bridge refuses an edit/delete WhatsApp would relay and recipients ignore."""
+    bridge["reply"] = FakeResponse(status, {"success": False, "error": "refused", "code": code})
+    result = call()
+    assert result["success"] is False and result["code"] == code
+    assert result["retryable"] is False
+    assert hint in result["hint"] and "idempotency_key" not in result["hint"]

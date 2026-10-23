@@ -681,3 +681,25 @@ func TestStandInRowsAreReadable(t *testing.T) {
 		t.Errorf("after replay = %+v", m)
 	}
 }
+
+func TestLookupMessageAuthor(t *testing.T) {
+	store := newTestMessageStore(t)
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	storeFrom(t, store, "THEIRS", testLIDChat, "4915112345678", "hi", false, at)
+	storeFrom(t, store, "MINE", testPhoneChat, testOwnJID, "hi", true, at)
+	tests := []struct {
+		id    string
+		found bool
+		want  StoredAuthor
+	}{
+		{"THEIRS", true, StoredAuthor{ChatJID: testLIDChat, Sender: "4915112345678@s.whatsapp.net"}},
+		{"MINE", true, StoredAuthor{ChatJID: testPhoneChat, Sender: testOwnJID, IsFromMe: true}},
+		{"NOPE", false, StoredAuthor{}},
+	}
+	for _, tc := range tests {
+		got, found, err := store.LookupMessageAuthor(tc.id, []string{testPhoneChat, testLIDChat})
+		if err != nil || found != tc.found || got != tc.want {
+			t.Errorf("%s: got %+v found=%v err=%v, want %+v found=%v", tc.id, got, found, err, tc.want, tc.found)
+		}
+	}
+}
