@@ -152,6 +152,26 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	// needs the full JID.
 	senderUser := msg.Info.Sender.User
 
+	// Edits and revokes change an earlier message instead of adding one. Handled
+	// before StoreChat so they don't count as new activity in the chat.
+	if ch := classifyChange(msg); ch.Kind != changeNone {
+		c.handleChange(messageStore, webhookManager, msg, ch, sender)
+		return
+	}
+
+	// The phone tells its companions about each call with a call-log message.
+	// It has no text and belongs in the call log, not the chat. Only the user's
+	// own phone writes these: one from anyone else is a forgery meant to plant
+	// or rewrite a call, and is dropped.
+	if logMsg := msg.Message.GetCallLogMesssage(); logMsg != nil {
+		if msg.Info.IsFromMe {
+			c.recordCallLog(messageStore, callLogEvent(logMsg, msg.Info.ID, chatJID, msg.Info.Timestamp, database.SourceLive))
+		} else {
+			c.logger.Warnf("Ignored call-log message %s in %s from %s: not from an own device", msg.Info.ID, chatJID, sender)
+		}
+		return
+	}
+
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := c.GetChatName(messageStore, msg.Info.Chat, chatJID, nil, senderUser)
 
@@ -284,6 +304,12 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 					continue
 				}
 
+				// Edits, revokes and calls change or describe other things rather
+				// than being messages themselves; see historyChange.
+				if c.handleHistoryNonMessage(messageStore, chatJID, jid, msg.Message) {
+					continue
+				}
+
 				// Extract text content
 				var content string
 				if msg.Message.Message != nil {
@@ -396,7 +422,7 @@ func (c *Client) historyMessageSender(chat types.JID, key *waCommon.MessageKey) 
 		}
 		return *key.Participant, false
 	}
-	if isFromMe && c.Store != nil && c.Store.ID != nil {
+	if isFromMe && c.Client != nil && c.Store != nil && c.Store.ID != nil {
 		return c.Store.ID.ToNonAD().String(), true
 	}
 	return chat.ToNonAD().String(), isFromMe

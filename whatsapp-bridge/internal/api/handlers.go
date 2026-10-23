@@ -319,10 +319,26 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.sender.EditMessage(req.ChatJID, req.MessageID, req.NewContent); err != nil {
+	stanzaID, err := s.sender.EditMessage(req.ChatJID, req.MessageID, req.NewContent)
+	if err != nil {
 		writeSendFailure(w, "Failed to edit message: ", err)
 		return
 	}
+	// WhatsApp does not echo our own edit back to this device, so it would
+	// never reach the edit history unless recorded here.
+	s.recordOwnChange(func(chats []string, me string) error {
+		_, err := s.messageStore.ApplyEdit(database.Edit{
+			MessageID:  req.MessageID,
+			ChatJIDs:   chats,
+			NewContent: req.NewContent,
+			EditedAt:   time.Now(),
+			Editor:     database.Actor{JID: me, IsMe: true},
+			StanzaID:   stanzaID,
+			Source:     database.SourceAPI,
+			Trusted:    true,
+		})
+		return err
+	}, req.ChatJID)
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -369,6 +385,16 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		writeSendFailure(w, "Failed to delete message: ", err)
 		return
 	}
+	s.recordOwnChange(func(chats []string, me string) error {
+		_, err := s.messageStore.MarkDeleted(database.Revoke{
+			MessageID: req.MessageID,
+			ChatJIDs:  chats,
+			At:        time.Now(),
+			By:        database.Actor{JID: me, IsMe: true},
+			Trusted:   true,
+		})
+		return err
+	}, req.ChatJID)
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,

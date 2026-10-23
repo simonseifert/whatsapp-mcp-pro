@@ -17,7 +17,7 @@ before you point automation at a real account.
 A Go bridge pairs with your WhatsApp account as a linked device (the same way
 WhatsApp Web does), stores your history in SQLite on your machine, and exposes a
 local REST API. A Python MCP server sits on top and gives any MCP client (Claude
-Code, Claude Desktop, others) 37 tools to read, search, send, and manage chats.
+Code, Claude Desktop, others) 39 tools to read, search, send, and manage chats.
 Nothing goes to a third party unless you choose a hosted transcription backend.
 
 It is a fork of [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended)

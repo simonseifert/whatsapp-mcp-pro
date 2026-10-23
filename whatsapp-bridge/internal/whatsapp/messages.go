@@ -685,22 +685,23 @@ func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *data
 	return bridgeTypes.SendResult{Success: true, MessageID: string(resp.ID), Timestamp: resp.Timestamp}
 }
 
-// EditMessage edits a previously sent message
-func (c *Client) EditMessage(chatJID, messageID, newContent string) error {
+// EditMessage edits a previously sent message and returns the edit's own
+// message ID, which is what the edit history dedupes on.
+func (c *Client) EditMessage(chatJID, messageID, newContent string) (string, error) {
 	if !c.IsConnected() {
-		return fmt.Errorf("not connected to WhatsApp")
+		return "", fmt.Errorf("not connected to WhatsApp")
 	}
 
 	chat, err := types.ParseJID(chatJID)
 	if err != nil {
-		return fmt.Errorf("invalid chat JID: %v", err)
+		return "", fmt.Errorf("invalid chat JID: %v", err)
 	}
 	if se := c.checkAllowlist(chat); se != nil {
-		return se
+		return "", se
 	}
 
 	if err := c.antiban.Precheck(c.antibanRequest(nil, antiban.Edit, chat, len(newContent))); err != nil {
-		return classify(err, "antiban blocked edit: %w")
+		return "", classify(err, "antiban blocked edit: %w")
 	}
 	c.GoOnlineBriefly()
 
@@ -718,17 +719,17 @@ func (c *Client) EditMessage(chatJID, messageID, newContent string) error {
 	// status map as /api/send, a cap hit included, instead of a flat 500.
 	if err := c.antiban.BeforeSend(context.Background(), c.antibanRequest(nil, antiban.Edit, chat, len(newContent))); err != nil {
 		_ = c.SendTypingIndicator(chatJID, "paused")
-		return classify(err, "antiban blocked edit: %w")
+		return "", classify(err, "antiban blocked edit: %w")
 	}
-	_, err = c.Client.SendMessage(context.Background(), chat, msg)
+	resp, err := c.Client.SendMessage(context.Background(), chat, msg)
 	_ = c.SendTypingIndicator(chatJID, "paused")
 	if err != nil {
 		c.antiban.AfterSendFailed(antiban.Edit, err)
-		return classify(err, "failed to edit message: %w")
+		return "", classify(err, "failed to edit message: %w")
 	}
 	c.antiban.AfterSend(antiban.Edit)
 
-	return nil
+	return string(resp.ID), nil
 }
 
 // DeleteMessage revokes/deletes a message

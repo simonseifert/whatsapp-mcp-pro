@@ -37,6 +37,7 @@ except ImportError:
 
 import audio
 from lib.bridge import _get_headers
+from lib.changes import change_columns, change_flags, mark_content
 from lib.chat_import import IMPORT_SENDER_PREFIX
 from lib.idempotency import (
     TIMEOUT_ERROR,
@@ -200,6 +201,8 @@ class Message:
     file_length: int | None = None
     sender_name: str | None = None  # resolved display name (nickname first), when one is known
     sender_name_source: str | None = None  # user, agent_inferred (shown "(unverified)"), address_book, ...
+    is_edited: bool = False  # content is the latest edit; see get_message_edits
+    deleted_at: str | None = None  # revoked ("deleted for everyone"); content kept
 
     def to_dict(self) -> dict[str, Any]:
         """Convert Message to dictionary for structured output."""
@@ -208,10 +211,11 @@ class Message:
             "chat_jid": self.chat_jid,
             "chat_name": self.chat_name,
             "sender": self.sender,
-            "content": self.content,
+            "content": mark_content(self.content, self.is_edited, self.deleted_at),
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
             "is_from_me": self.is_from_me,
             "media_type": self.media_type,
+            **change_flags(self.is_edited, self.deleted_at),
         }
         if self.sender_name:
             result["sender_name"] = self.sender_name
@@ -500,7 +504,9 @@ def list_messages(
 
         # Build base query - include filename and file_length for media metadata
         query_parts = [
-            "SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length FROM messages"
+            "SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length, "
+            + change_columns(conn)
+            + " FROM messages"
         ]
         query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
         where_clauses = []
@@ -570,6 +576,8 @@ def list_messages(
                 media_type=msg[7],
                 filename=msg[8],
                 file_length=msg[9],
+                is_edited=bool(msg[10]),
+                deleted_at=msg[11],
             )
             result.append(message)
 
@@ -628,10 +636,11 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
+        changes = change_columns(conn)
         # Get the target message first
         cursor.execute(
-            """
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type, messages.filename, messages.file_length
+            f"""
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type, messages.filename, messages.file_length, {changes}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.id = ?
@@ -654,14 +663,16 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
             media_type=msg_data[8],
             filename=msg_data[9],
             file_length=msg_data[10],
+            is_edited=bool(msg_data[11]),
+            deleted_at=msg_data[12],
         )
 
         # Get messages before. Compared through datetime() because one chat's
         # history mixes offsets (+01:00 in winter, +02:00 in summer), and as
         # text those misorder across the DST change.
         cursor.execute(
-            """
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length
+            f"""
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length, {changes}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.chat_jid = ? AND datetime(messages.timestamp) < datetime(?)
@@ -685,13 +696,15 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
                     media_type=msg[7],
                     filename=msg[8],
                     file_length=msg[9],
+                    is_edited=bool(msg[10]),
+                    deleted_at=msg[11],
                 )
             )
 
         # Get messages after
         cursor.execute(
-            """
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length
+            f"""
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.filename, messages.file_length, {changes}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.chat_jid = ? AND datetime(messages.timestamp) > datetime(?)
@@ -715,6 +728,8 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
                     media_type=msg[7],
                     filename=msg[8],
                     file_length=msg[9],
+                    is_edited=bool(msg[10]),
+                    deleted_at=msg[11],
                 )
             )
 

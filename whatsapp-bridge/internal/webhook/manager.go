@@ -146,6 +146,10 @@ func (wm *Manager) matchesTrigger(trigger types.WebhookTrigger, msg *events.Mess
 	case "media_type":
 		return wm.matchesString(mediaType, trigger.TriggerValue, trigger.MatchType)
 
+	case "event":
+		// Matches change events only (DeliverEvent), never a new message.
+		return false
+
 	default:
 		wm.logger.Warnf("Unknown trigger type: %s", trigger.TriggerType)
 		return false
@@ -217,6 +221,70 @@ func (wm *Manager) DeliverConnectionEvent(payload *types.ConnectionEventPayload)
 		localTrigger := systemTrigger
 		go wm.delivery.DeliverWebhook(localConfig, wp, "system-"+payload.EventType, "", &localTrigger)
 	}
+}
+
+// DeliverEvent sends a message_edited, message_deleted or call event to the
+// webhooks that asked for it with an "event" trigger whose value matches the
+// event type (e.g. trigger_type "event", trigger_value "message_edited").
+//
+// Opt-in on purpose: these payloads carry a chat, a sender and text just like
+// message_received, and a consumer subscribed with "all" that never looks at
+// event_type would take an edit for a new message and act on it twice.
+func (wm *Manager) DeliverEvent(eventType string, info types.WebhookMessageInfo, call *types.WebhookCallInfo) {
+	if wm == nil {
+		return
+	}
+	wm.mutex.RLock()
+	configs := make([]*types.WebhookConfig, len(wm.configs))
+	copy(configs, wm.configs)
+	wm.mutex.RUnlock()
+
+	if info.ChatName == "" && wm.messageStore != nil && info.ChatJID != "" {
+		info.ChatName = wm.messageStore.IdentityDisplayName(info.ChatJID)
+	}
+	if info.SenderName == "" && wm.messageStore != nil && info.Sender != "" {
+		info.SenderName = wm.messageStore.IdentityDisplayName(info.Sender)
+	}
+	for _, config := range configs {
+		matched := eventTrigger(config, eventType, wm.matchesString)
+		if matched == nil {
+			continue
+		}
+		payload := buildEventPayload(config, matched, eventType, info, call)
+		go wm.delivery.DeliverWebhook(config, payload, eventType+"-"+info.ID, info.ChatJID, matched)
+	}
+}
+
+// eventTrigger returns the config's enabled "event" trigger for eventType, or
+// nil. Only an explicit event trigger opts in (see DeliverEvent).
+func eventTrigger(config *types.WebhookConfig, eventType string, match func(text, pattern, matchType string) bool) *types.WebhookTrigger {
+	if config == nil || !config.Enabled {
+		return nil
+	}
+	for i := range config.Triggers {
+		t := config.Triggers[i]
+		if t.Enabled && t.TriggerType == "event" && match(eventType, t.TriggerValue, t.MatchType) {
+			return &t
+		}
+	}
+	return nil
+}
+
+func buildEventPayload(config *types.WebhookConfig, trig *types.WebhookTrigger, eventType string,
+	info types.WebhookMessageInfo, call *types.WebhookCallInfo) *types.WebhookPayload {
+	payload := &types.WebhookPayload{
+		EventType:     eventType,
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		WebhookConfig: types.WebhookConfigInfo{ID: config.ID, Name: config.Name},
+		Trigger:       types.WebhookTriggerInfo{Type: trig.TriggerType, Value: trig.TriggerValue, MatchType: trig.MatchType},
+		Message:       info,
+		Metadata:      types.WebhookMetadata{DeliveryAttempt: 1},
+		Call:          call,
+	}
+	if strings.HasSuffix(info.ChatJID, "@g.us") {
+		payload.Metadata.GroupInfo = &types.GroupInfo{IsGroup: true, GroupName: info.ChatName}
+	}
+	return payload
 }
 
 // senderName resolves a message's author the way the MCP tools do: the

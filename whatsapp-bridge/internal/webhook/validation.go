@@ -171,7 +171,9 @@ func (wm *Manager) ValidateWebhookConfig(config *types.WebhookConfig) error {
 			return fmt.Errorf("trigger type is required")
 		}
 
-		validTypes := []string{"all", "chat_jid", "sender", "keyword", "media_type"}
+		// "event" opts a webhook into message_edited, message_deleted and call
+		// events (trigger_value = the event type); see Manager.DeliverEvent.
+		validTypes := []string{"all", "chat_jid", "sender", "keyword", "media_type", "event"}
 		valid := false
 		for _, validType := range validTypes {
 			if trigger.TriggerType == validType {

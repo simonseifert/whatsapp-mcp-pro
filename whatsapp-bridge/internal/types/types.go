@@ -197,6 +197,21 @@ type WebhookPayload struct {
 	Trigger       WebhookTriggerInfo `json:"trigger"`
 	Message       WebhookMessageInfo `json:"message"`
 	Metadata      WebhookMetadata    `json:"metadata"`
+	// Call is set on "call" events only.
+	Call *WebhookCallInfo `json:"call,omitempty"`
+}
+
+// WebhookCallInfo describes the call behind a "call" webhook event. Event is
+// what just happened (offer, accept, reject, terminate); Outcome is the call's
+// state after it (missed, answered, rejected, unknown).
+type WebhookCallInfo struct {
+	CallID          string `json:"call_id"`
+	Event           string `json:"event"`
+	Direction       string `json:"direction"`
+	IsVideo         bool   `json:"is_video"`
+	IsGroup         bool   `json:"is_group"`
+	Outcome         string `json:"outcome"`
+	DurationSeconds *int64 `json:"duration_seconds,omitempty"`
 }
 
 type WebhookConfigInfo struct {
@@ -228,6 +243,8 @@ type WebhookMessageInfo struct {
 	MediaDownloadURL string `json:"media_download_url"`
 	QuotedMessageID  string `json:"quoted_message_id,omitempty"`
 	QuotedSender     string `json:"quoted_sender,omitempty"`
+	// PreviousContent is the text a message_edited event replaced, when known.
+	PreviousContent string `json:"previous_content,omitempty"`
 }
 
 type WebhookMetadata struct {

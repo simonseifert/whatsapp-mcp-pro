@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS webhook_triggers (
 | `sender` | Match specific sender | `1234567890@s.whatsapp.net` |
 | `keyword` | Match message content | `urgent` |
 | `media_type` | Match media type | `image` |
+| `event` | Opt in to an event type that `all` does not receive | `message_edited`, `message_deleted`, `call` |
 
 #### Table: `webhook_logs`
 Audit trail of webhook delivery attempts.
@@ -321,6 +322,10 @@ CREATE INDEX idx_receipts_message ON read_receipts(message_id, chat_jid);
 - "When did they see my message?"
 
 ### 3. Message Edit History
+
+> Shipped in a different shape: see `whatsapp-bridge/migrations/009_edits_calls.sql`
+> (one row per edit with old/new text, editor, source and an applied /
+> superseded / rejected / pending status). The sketch below is the original proposal.
 
 ```sql
 CREATE TABLE IF NOT EXISTS message_edits (
