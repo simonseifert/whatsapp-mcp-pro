@@ -6,6 +6,28 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Chat export import** (`uv run python -m lib.chat_import EXPORT.zip --chat JID`):
+  brings WhatsApp's own "Export chat" files (iOS and Android, any date order,
+  12h/24h, English/German/Croatian placeholders) into `messages.db`, so history
+  older than linked-device sync reaches `list_messages`, `recall`,
+  `download_media` and transcription. Dry run by default; `--apply` backs up
+  the store and writes in one short transaction, safe while the bridge runs.
+  Rows already stored are matched by chat, sender, time window and text and
+  never duplicated; imported rows get stable `import-<hash>` IDs, so re-runs
+  are idempotent. Export names map to JIDs only on evidence; the rest are
+  stored as `import:<name>`. Attachments are copied into `store/media/`. See
+  `docs/IMPORT.md`. No schema change.
+
+### Changed
+
+- Bridge: `/api/download` serves an imported row's media from its saved,
+  hash-checked copy (such rows have no media key) and never goes to the network
+  for it. Reactions, quotes, edits and deletes targeting an `import-` ID are
+  refused with 422, and on-demand history requests anchor on the oldest real
+  message, not an imported one.
+
 ## [v0.6.0-pro] - 2026-10-23
 
 Still based on upstream v0.4.0. Send caps that outlast warm-up, one JID form

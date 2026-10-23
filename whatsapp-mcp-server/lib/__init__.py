@@ -8,6 +8,7 @@ actually import:
 - bridge:     auth headers for the bridge REST API
 - recall:     semantic search over message history (pro toolset)
 - transcribe: local voice-note transcription (pro toolset)
+- chat_import: CLI that imports phone "Export chat" files (python -m lib.chat_import)
 
 An earlier parallel implementation (models/database, and most of bridge) was
 removed: production never called it, but it was 1,700 lines and the CI coverage
