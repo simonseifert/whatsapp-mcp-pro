@@ -145,34 +145,39 @@ func isUserChat(jid types.JID) bool {
 	return jid.Server == types.DefaultUserServer || jid.Server == types.HiddenUserServer
 }
 
-// checkReachoutGate refuses a send to a contact with no stored history while a
-// reachout timelock is active. aliases are other identifiers of the same chat
-// (the raw recipient as given, its LID/phone twin) so a chat filed under either
-// form counts as existing. A store error fails closed: during a lock, guessing
-// "existing" wrongly is exactly the send that makes the restriction worse.
-func (c *Client) checkReachoutGate(store *database.MessageStore, recipient types.JID, aliases ...string) *SendError {
-	until := c.ReachoutTimelockUntil()
-	if until.IsZero() || !isUserChat(recipient) {
-		return nil
+// isNewContact reports whether a send to recipient would be a first contact: a
+// one-to-one chat with no stored messages. It is the single definition shared
+// by the reachout gate and the antiban new-recipients cap, so the two can
+// never disagree about who counts as new. aliases are other identifiers of the
+// same chat (the raw recipient as given, its LID/phone twin) so a chat filed
+// under either form counts as existing. A store error answers "new": guessing
+// "existing" wrongly is exactly the send both checks exist to stop.
+func (c *Client) isNewContact(store *database.MessageStore, recipient types.JID, aliases ...string) bool {
+	if !isUserChat(recipient) {
+		return false
 	}
-
 	candidates := append([]string{recipient.ToNonAD().String()}, aliases...)
 	if c.Client != nil && c.Store != nil {
 		if alt, err := c.Store.GetAltJID(context.Background(), recipient.ToNonAD()); err == nil && !alt.IsEmpty() {
 			candidates = append(candidates, alt.String())
 		}
 	}
-
-	existing := false
-	if store != nil {
-		var err error
-		existing, err = store.ChatHasMessages(candidates...)
-		if err != nil {
-			c.logger.Warnf("Reachout gate could not check history for %s, treating as new contact: %v", recipient, err)
-			existing = false
-		}
+	if store == nil {
+		return true
 	}
-	if existing {
+	existing, err := store.ChatHasMessages(candidates...)
+	if err != nil {
+		c.logger.Warnf("Could not check history for %s, treating as new contact: %v", recipient, err)
+		return true
+	}
+	return !existing
+}
+
+// checkReachoutGate refuses a send to a contact with no stored history while a
+// reachout timelock is active.
+func (c *Client) checkReachoutGate(store *database.MessageStore, recipient types.JID, aliases ...string) *SendError {
+	until := c.ReachoutTimelockUntil()
+	if until.IsZero() || !c.isNewContact(store, recipient, aliases...) {
 		return nil
 	}
 	return &SendError{

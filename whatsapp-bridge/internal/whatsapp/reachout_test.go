@@ -199,6 +199,8 @@ func TestClassifySendError(t *testing.T) {
 		{"logged out", whatsmeow.ErrNotLoggedIn, SendErrNotConnected},
 		{"antiban paused", antiban.ErrHealthPaused, SendErrRateLimited},
 		{"warm-up cap", antiban.ErrWarmUpLimitReached, SendErrRateLimited},
+		{"send cap", &antiban.CapError{Cap: antiban.CapGlobalPerHour, RetryAfter: time.Minute}, SendErrCapReached},
+		{"wrapped send cap", fmt.Errorf("antiban blocked edit: %w", &antiban.CapError{}), SendErrCapReached},
 		{"typed wins", &SendError{Kind: SendErrForbidden, Err: errors.New("x")}, SendErrForbidden},
 		{"unknown", errors.New("boom"), SendErrUpstream},
 		{"nil", nil, ""},
