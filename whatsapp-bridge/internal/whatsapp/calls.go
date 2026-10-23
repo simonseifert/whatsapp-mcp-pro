@@ -82,13 +82,13 @@ func callEventFrom(evt any, ids callJIDs) (database.CallEvent, bool) {
 	}
 
 	// Only From is the server's word; CallCreator, CallCreatorAlt and GroupJID
-	// are attributes the sending client wrote. Believe them when From is one of
-	// our own devices, when the claimed creator is From's own account, or when
-	// it claims us (the call then files under From's chat, nobody else's).
-	// Otherwise an offer is filed as From's own call, and any other event may
-	// only update a call already recorded: a callee's or third participant's
-	// accept/terminate legitimately names someone else as creator, but must not
-	// plant a call in a chat it was never in.
+	// are attributes the sending client wrote. Believe the creator when From is
+	// one of our own devices or the creator is From's own account. A stranger
+	// claiming the call was ours is not believed either: that is how a forged
+	// "outgoing call" would land in their chat. An unbelieved offer is filed as
+	// From's own call; any other unbelieved event may only update a call
+	// already recorded (a callee's or third participant's accept/terminate
+	// legitimately names someone else as creator, but must not plant a call).
 	from := meta.From.ToNonAD()
 	fromOwn := ids.isOwn(from)
 	creator, creatorAlt := meta.CallCreator, meta.CallCreatorAlt
@@ -96,8 +96,12 @@ func callEventFrom(evt any, ids callJIDs) (database.CallEvent, bool) {
 		creator, creatorAlt = meta.From, types.EmptyJID
 	}
 	creator = creator.ToNonAD()
-	vouched := fromOwn || ids.sameAccount(creator, from) || ids.sameAccount(creatorAlt, from) ||
-		ids.isOwn(creator) || (!creatorAlt.IsEmpty() && ids.isOwn(creatorAlt))
+	if !fromOwn && !ids.sameAccount(creatorAlt, from) {
+		// The alt is what CallerJID prefers, so it must pass on its own: a
+		// creator matching From says nothing about an alt naming someone else.
+		creatorAlt = types.EmptyJID
+	}
+	vouched := fromOwn || ids.sameAccount(creator, from)
 	if !vouched {
 		if ev.Kind == database.CallEventOffer {
 			creator, creatorAlt = from, types.EmptyJID

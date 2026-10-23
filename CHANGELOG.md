@@ -15,9 +15,10 @@ Two hardening fixes on v0.7.0-pro's new paths.
 - A live or history message whose ID carries the importer's `import-` prefix
   is dropped. Message IDs are the sender's choice, and one matching an
   imported row would have overwritten it.
-- Call events only take the claimed creator and group from the stanza when
-  the sending device backs them: our own device, the creator's own account,
-  or a member of the group. Otherwise an offer is filed as the sender's own
+- Call events only take the claimed creator (and its alternate JID) and group
+  from the stanza when the sending device backs them: our own device, the
+  creator's own account, or a member of the group. A stranger claiming the
+  call was ours is not believed. Otherwise an offer is filed as the sender's own
   call, and any other event may only update a call already recorded, so a
   forged offer can no longer plant a call in someone else's chat or in a
   group.
