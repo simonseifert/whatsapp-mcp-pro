@@ -158,6 +158,28 @@ When a message matches a webhook trigger, the following JSON payload is sent:
 is known. `chat_jid_alt` is the chat's other identity (`@lid` or phone JID),
 present only for 1:1 chats where the bridge knows both.
 
+## Edit, delete and call events
+
+Three more event types are delivered, but only to webhooks that opt in with an
+`event` trigger. They carry a chat, a sender and text like `message_received`,
+so a consumer subscribed with `all` that never looks at `event_type` would take
+an edit for a new message; that is why `all` does not receive them.
+
+```json
+{ "trigger_type": "event", "trigger_value": "message_edited", "match_type": "exact", "enabled": true }
+```
+
+| `event_type` | Sent when | Notes |
+|---|---|---|
+| `message_edited` | The author edits a message | `message.content` is the new text, `message.previous_content` the text it replaced (when known). |
+| `message_deleted` | A message is deleted for everyone | `message.id` is the deleted message. The bridge keeps its text in the store. |
+| `call` | A call rings, is answered, declined or ends | A `call` object rides along: `call_id`, `event` (offer, accept, reject, terminate), `direction`, `is_video`, `is_group`, `outcome`, `duration_seconds` (when known). |
+
+Use `match_type` `contains` with value `message_` to get both message events.
+An edit or delete sent by anyone other than the message's author (or, for a
+delete in a group, a group admin) is refused by the bridge and fires nothing.
+Redelivered events fire once.
+
 ## Security
 
 ### HMAC Authentication

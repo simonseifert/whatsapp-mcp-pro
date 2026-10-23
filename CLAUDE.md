@@ -36,7 +36,7 @@ our versions of `lib/recall.py` and `lib/transcribe.py` to be supersets.
 | Component | What it is |
 |---|---|
 | `whatsapp-bridge/` | Go daemon on whatsmeow. Pairs as a linked device, stores history in SQLite, exposes REST + webhooks. Packages: `api`, `whatsapp`, `webhook`, `database`, `config`, `antiban`, `security`, `types`. |
-| `whatsapp-mcp-server/` | Python, mcp 2.x `MCPServer` (formerly FastMCP). 37 tools (19 read-only) with every toolset enabled. Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
+| `whatsapp-mcp-server/` | Python, mcp 2.x `MCPServer` (formerly FastMCP). 39 tools (21 read-only) with every toolset enabled. Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
 | `wa-client/` | Chat web UI riding the bridge's session — costs **zero** extra device slots. Default :8084 (`WA_WEB_PORT`). |
 | `wa-assistant/` | Message your own chat, a persistent Claude Code session replies. Voice both ways. |
 | `wa-dispatch/` | An incoming message from a routed chat opens/wakes a Claude session in that project. Drafts, never sends. macOS + tmux. |
@@ -178,11 +178,25 @@ when code/data were split as above.)
   directory and webhook sender names never carry it. Never let an agent write
   `user` provenance without `confirmed_by_user`, and never treat a stranger's
   self-claim as confirmation.
-- **Migration numbering.** `005_phone_status`, `006_media_requests`,
-  `007_send_idempotency`; the next one is `008`. The older numbers have
+- **Migration numbering.** `007_send_idempotency`, `008_normalise_senders`,
+  `009_edits_calls`; the next one is `010`. The older numbers have
   duplicates (two 002s, two 003s) from merging upstream, so check
   `ls whatsapp-bridge/migrations` rather than counting, and renumber a branch's
   migration when merging if another branch took the number first.
+- **Edits, revokes and call logs are checked, not trusted.** A
+  MESSAGE_EDIT or REVOKE is just "replace/delete message X" and any chat member
+  can send one naming anyone's message. `database.ApplyEdit` applies an edit
+  only from the stored author (`is_from_me` rows only from our own devices; a
+  newsletter only from itself). LID and phone JID are linked only through
+  `identities`, whatsmeow's LID map or the event's `SenderAlt`, never by equal
+  digits: a LID's digits can be someone else's phone number, so a bare legacy
+  sender counts as a phone JID unless `identities` knows it as a LID and records the rest as `rejected` in `message_edits`. An
+  edit of a message not stored yet waits as `pending` until `StoreMessage`
+  stores the original. `MarkDeleted` takes a revoke from the author or, in a
+  group, an admin (cached group info). Edit times are clamped to the server's
+  receive time so a claimed future timestamp can't win the replay ordering.
+  `CallLogMessage` is only accepted `IsFromMe`, keyed `log:<msgid>`. Our own
+  API edits/deletes and history revoke stubs are the only trusted paths.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
 

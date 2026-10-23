@@ -125,8 +125,11 @@ def get_message_edits(message_id: str, chat_jid: str | None = None, db_path: str
         if not _has_table(conn, "message_edits"):
             result["note"] = "This store predates edit history (bridge migration 009); no edits are recorded."
             return result
+        # status arrived after the first cut of migration 009; a store
+        # migrated before then has only applied edits.
+        status = "status" if "status" in _columns(conn, "message_edits") else "'applied' AS status"
         edits = conn.execute(
-            "SELECT edited_at, old_content, new_content, editor_jid, source FROM message_edits "
+            f"SELECT edited_at, old_content, new_content, editor_jid, source, {status} FROM message_edits "
             "WHERE message_id = ? AND chat_jid = ? ORDER BY datetime(edited_at), id",
             (msg["id"], msg["chat_jid"]),
         ).fetchall()
@@ -139,9 +142,18 @@ def get_message_edits(message_id: str, chat_jid: str | None = None, db_path: str
                 "new_content": e["new_content"],
                 "editor": e["editor_jid"],
                 "source": e["source"],
+                # rejected: sent by someone other than the author, so never
+                # applied; pending: the original is not stored yet.
+                "status": e["status"],
             }
             for e in edits
         ]
+        rejected = sum(1 for e in result["edits"] if e["status"] == "rejected")
+        if rejected:
+            result["note"] = (
+                f"{rejected} edit(s) were sent by someone other than the author and were not applied; "
+                "their text is shown only as a record of the attempt."
+            )
         return result
     finally:
         conn.close()
