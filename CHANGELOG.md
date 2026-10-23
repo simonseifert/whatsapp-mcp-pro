@@ -6,6 +6,25 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+## [v0.6.0-pro] - 2026-10-23
+
+Still based on upstream v0.4.0. Send caps that outlast warm-up, one JID form
+per message and webhook, and a bridge that survives a panicking handler.
+
+### Added
+
+- **Send caps, on by default** (`ANTIBAN_CAPS_ENABLED`, independent of
+  `ANTIBAN_ENABLED`): per chat 15/min and 60/h, 120/h overall, and 10 new
+  contacts per rolling 24h for text, media and polls; reactions, edits and
+  deletes get a looser separate budget (20/min per chat, 300/h). A cap hit is
+  HTTP 429 `send_cap` with `Retry-After`, on every message-creating endpoint;
+  the MCP marks it retryable with a "wait, don't loop" hint. A capped send is
+  refused before any presence, upload or typing reaches WhatsApp, and leaves
+  its idempotency key retryable. The phone JID and the LID of one person share
+  a budget. The new-contact window persists in `store/antiban_caps.json`.
+- Group metadata cache (`GROUP_METADATA_CACHE_TTL`, default 5m) in front of
+  `GetJoinedGroups` / `GetGroupInfo`, invalidated by WhatsApp's group events.
+
 ### Changed
 
 - **Webhook `chat_jid` is now the JID the store uses.** `message_received`
@@ -39,6 +58,15 @@ All notable changes to this fork are recorded here. The format follows
   success, and attached to nothing. The participant is now resolved (bare
   digits are a phone number unless they match a known LID), and a sender that
   cannot be resolved fails the request instead of sending a broken one.
+- A corrupt warm-up or caps state file disabled protection. It is now moved
+  aside as `.corrupt-<time>` and the strictest limit applies; an antiban that
+  fails to start stops the bridge instead of running unprotected.
+- Messages are ordered by instant (`datetime(timestamp)`), not timestamp text,
+  which misordered the repeated hour on DST-change night.
+- A panic in any whatsmeow event handler is logged with a stack instead of
+  killing the bridge (whatsmeow runs handlers without a recover).
+- `deploy-live.sh` keeps the running binary and every bridge's store in each
+  of the last five backups (mode 700), and rolls back when a restart fails.
 
 ## [v0.5.0-pro] - 2026-10-22
 
