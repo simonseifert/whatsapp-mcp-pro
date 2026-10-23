@@ -6,6 +6,25 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`recall` keeps its embeddings in memory instead of reading them all per
+  call.** Every call used to SELECT every embedding blob that passed the
+  filters and stack them, ~130 MB transient and linear in history. The vectors
+  now live in one float32 matrix per model, loaded on the first call and
+  extended with the rows the backfill adds; SQL still decides which messages
+  match, so filters, merged LID chats, sender forms and edits behave exactly as
+  before, and results are identical. At 32k messages an unfiltered search went
+  from ~280 ms to ~60 ms with ~1 MB transient instead of ~66 MB; at a synthetic
+  160k, ~1 s to ~210 ms and ~360 MB to ~25 MB. The cost is resident memory:
+  1.5 KB per embedded message (~50 MB at 32k), held for the life of the
+  process. Searches with a date or `is_from_me` filter are bound by the SQL
+  filter and gain little. A covering index (`idx_msgemb_model_key`) is created
+  on `message_embeddings` the first time recall runs. `scripts/bench_recall.py`
+  reproduces the numbers against a copy of a store.
+- SETUP.md: `MALLOC_ARENA_MAX=2` in the example MCP unit, and what the shared
+  server's memory consists of.
+
 ## [v0.6.0-pro] - 2026-10-23
 
 Still based on upstream v0.4.0. Send caps that outlast warm-up, one JID form
