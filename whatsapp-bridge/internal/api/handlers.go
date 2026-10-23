@@ -315,6 +315,10 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if refuseImportedTarget(w, req.MessageID) {
+		return
+	}
+
 	if err := s.sender.EditMessage(req.ChatJID, req.MessageID, req.NewContent); err != nil {
 		writeSendFailure(w, "Failed to edit message: ", err)
 		return
@@ -354,6 +358,10 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if refuseUnlistedRecipient(w, req.ChatJID) {
+		return
+	}
+
+	if refuseImportedTarget(w, req.MessageID) {
 		return
 	}
 

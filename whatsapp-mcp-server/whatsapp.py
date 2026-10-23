@@ -37,6 +37,7 @@ except ImportError:
 
 import audio
 from lib.bridge import _get_headers
+from lib.chat_import import IMPORT_SENDER_PREFIX
 from lib.idempotency import (
     TIMEOUT_ERROR,
     bridge_error,
@@ -583,6 +584,11 @@ def list_messages(
                 resolved = names.get(message.sender)
                 if resolved:
                     message.sender_name, message.sender_name_source = resolved
+                elif message.sender.startswith(IMPORT_SENDER_PREFIX):
+                    # A name from a chat export that could not be tied to a
+                    # JID: show it, but labelled as the export's word only.
+                    message.sender_name = message.sender[len(IMPORT_SENDER_PREFIX) :]
+                    message.sender_name_source = "chat_export"
             if message.chat_jid in dm_nicks:
                 message.chat_name = dm_nicks[message.chat_jid].name
 

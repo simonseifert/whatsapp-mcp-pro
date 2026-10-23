@@ -183,6 +183,12 @@ when code/data were split as above.)
   duplicates (two 002s, two 003s) from merging upstream, so check
   `ls whatsapp-bridge/migrations` rather than counting, and renumber a branch's
   migration when merging if another branch took the number first.
+- **`import-` message IDs are not WhatsApp's.** `lib/chat_import.py` writes rows
+  from phone chat exports with synthetic IDs (`import-<hash>`) and, for group
+  members it could not map, sender `import:<name>`. Anything that sends a
+  message key to WhatsApp (reaction, quote, edit, revoke, history anchor, media
+  retry) must skip or refuse them: `database.IsImportedMessageID`. Their media
+  has no key; `/api/download` serves only the hash-checked copy in `store/media/`.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
 
