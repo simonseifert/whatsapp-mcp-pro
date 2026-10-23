@@ -1,7 +1,9 @@
 package whatsapp
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,6 +21,23 @@ import (
 type callJIDs struct {
 	isOwn     func(types.JID) bool
 	normalize func(types.JID) types.JID
+	// inGroup reports whether member (either JID form) is in group, from the
+	// cached group info. nil, or false when it cannot be checked.
+	inGroup func(group, member types.JID) bool
+}
+
+// sameAccount reports whether a and b are one account, directly or through
+// the LID map. Never by equal digits: a LID's digits can be someone else's
+// phone number.
+func (ids callJIDs) sameAccount(a, b types.JID) bool {
+	if a.IsEmpty() || b.IsEmpty() {
+		return false
+	}
+	a, b = a.ToNonAD(), b.ToNonAD()
+	if a == b {
+		return true
+	}
+	return ids.normalize != nil && ids.normalize(a) == ids.normalize(b)
 }
 
 // callEventFrom translates a whatsmeow call event into a database.CallEvent.
@@ -62,12 +81,32 @@ func callEventFrom(evt any, ids callJIDs) (database.CallEvent, bool) {
 		ev.At = time.Now()
 	}
 
-	creator := meta.CallCreator
+	// Only From is the server's word; CallCreator, CallCreatorAlt and GroupJID
+	// are attributes the sending client wrote. Believe them when From is one of
+	// our own devices, when the claimed creator is From's own account, or when
+	// it claims us (the call then files under From's chat, nobody else's).
+	// Otherwise an offer is filed as From's own call, and any other event may
+	// only update a call already recorded: a callee's or third participant's
+	// accept/terminate legitimately names someone else as creator, but must not
+	// plant a call in a chat it was never in.
+	from := meta.From.ToNonAD()
+	fromOwn := ids.isOwn(from)
+	creator, creatorAlt := meta.CallCreator, meta.CallCreatorAlt
 	if creator.IsEmpty() {
-		creator = meta.From
+		creator, creatorAlt = meta.From, types.EmptyJID
 	}
 	creator = creator.ToNonAD()
-	fromMeCreator := ids.isOwn(creator) || (!meta.CallCreatorAlt.IsEmpty() && ids.isOwn(meta.CallCreatorAlt))
+	vouched := fromOwn || ids.sameAccount(creator, from) || ids.sameAccount(creatorAlt, from) ||
+		ids.isOwn(creator) || (!creatorAlt.IsEmpty() && ids.isOwn(creatorAlt))
+	if !vouched {
+		if ev.Kind == database.CallEventOffer {
+			creator, creatorAlt = from, types.EmptyJID
+		} else {
+			ev.UpdateOnly = true
+		}
+	}
+	meta.CallCreatorAlt = creatorAlt
+	fromMeCreator := ids.isOwn(creator) || (!creatorAlt.IsEmpty() && ids.isOwn(creatorAlt))
 	if fromMeCreator {
 		ev.Direction = "outgoing"
 	} else {
@@ -85,8 +124,14 @@ func callEventFrom(evt any, ids callJIDs) (database.CallEvent, bool) {
 
 	switch {
 	case !meta.GroupJID.IsEmpty():
-		ev.ChatJID = meta.GroupJID.ToNonAD().String()
+		group := meta.GroupJID.ToNonAD()
+		ev.ChatJID = group.String()
 		ev.IsGroup = true
+		// A group call is filed in the group only for a sender who is in it;
+		// an unverified one may still update a call already recorded there.
+		if !fromOwn && (ids.inGroup == nil || !ids.inGroup(group, from)) {
+			ev.UpdateOnly = true
+		}
 	case !fromMeCreator:
 		ev.ChatJID = ev.CallerJID
 	case !meta.From.IsEmpty() && !ids.isOwn(meta.From.ToNonAD()):
@@ -147,7 +192,36 @@ func (c *Client) callIDs() callJIDs {
 			}
 			return c.NormalizeChatJID(j)
 		},
+		inGroup: func(group, member types.JID) bool {
+			if c == nil || c.Client == nil {
+				return false
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			info, err := c.cachedGroupInfo(ctx, group)
+			if err != nil {
+				c.logger.Warnf("[CALL] could not check members of %s: %v", group, err)
+				return false
+			}
+			return groupHasParticipant(info, member)
+		},
 	}
+}
+
+// groupHasParticipant reports whether jid is a member of the group under any
+// of the forms a participant carries.
+func groupHasParticipant(info *types.GroupInfo, jid types.JID) bool {
+	if info == nil || jid.IsEmpty() {
+		return false
+	}
+	for _, p := range info.Participants {
+		for _, form := range []types.JID{p.JID, p.LID, p.PhoneNumber} {
+			if form.User == jid.User && form.Server == jid.Server {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // HandleCallEvent records a whatsmeow call event in the call log and keeps the
@@ -164,6 +238,11 @@ func (c *Client) HandleCallEvent(store *database.MessageStore, webhookManager an
 		return false
 	}
 	call, err := store.RecordCallEvent(ev)
+	if errors.Is(err, database.ErrCallUnknown) {
+		// Routine for a call this device never saw start; see callEventFrom.
+		c.logger.Debugf("[CALL] ignored %s for unrecorded call %s from %s", ev.Kind, ev.CallID, ev.ChatJID)
+		return true
+	}
 	if err != nil {
 		c.logger.Warnf("[CALL] failed to record %s for %s: %v", ev.Kind, ev.CallID, err)
 		return true

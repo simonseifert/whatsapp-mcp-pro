@@ -63,7 +63,15 @@ type CallEvent struct {
 	Outcome  string
 	Duration time.Duration
 	Source   string
+	// UpdateOnly is set on an event whose chat or creator came from attributes
+	// the sender could forge: it may fold into a call already recorded, never
+	// create one.
+	UpdateOnly bool
 }
+
+// ErrCallUnknown is returned by RecordCallEvent for an UpdateOnly event whose
+// call is not recorded.
+var ErrCallUnknown = errors.New("event for an unrecorded call that may not create one")
 
 // ErrCallChatMismatch is returned by RecordCallEvent for an event whose call ID
 // belongs to a call in a different chat.
@@ -187,6 +195,9 @@ func (store *MessageStore) RecordCallEvent(ev CallEvent) (Call, error) {
 
 	cur, err := scanCall(tx.QueryRow(`SELECT `+callColumns+` FROM calls WHERE call_id = ?`, ev.CallID))
 	if errors.Is(err, sql.ErrNoRows) {
+		if ev.UpdateOnly {
+			return Call{}, fmt.Errorf("%w: %s", ErrCallUnknown, ev.CallID)
+		}
 		cur = Call{}
 		if (ev.Kind == CallEventLog || ev.Kind == CallEventMissed) && ev.ChatJID != "" {
 			if cur, err = nearbyCall(tx, ev); err != nil {
