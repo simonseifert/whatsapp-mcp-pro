@@ -510,6 +510,19 @@ server talks to one bridge (`BRIDGE_HOST`) and one store (`WA_STORE_PATH`), so
 run a second MCP server on another `MCP_PORT` if you want tools for the second
 number.
 
+### Older history from a chat export
+
+Linked-device sync stops at whatever the phone chose to send. To fill in older
+messages, export the chat on the phone (Export chat, with media) and import it:
+
+```bash
+cd whatsapp-mcp-server
+WA_STORE_PATH=<data>/store uv run python -m lib.chat_import "WhatsApp Chat with Bob.zip" \
+  --chat 4915112345678@s.whatsapp.net            # dry run; add --apply to write
+```
+
+Safe while the bridge runs. Details, name mapping and limits: [docs/IMPORT.md](docs/IMPORT.md).
+
 ---
 
 ## Troubleshooting
