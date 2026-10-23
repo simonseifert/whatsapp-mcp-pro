@@ -549,7 +549,7 @@ def list_messages(
 
         # Add pagination
         offset = page * limit
-        query_parts.append("ORDER BY messages.timestamp DESC")
+        query_parts.append("ORDER BY datetime(messages.timestamp) DESC")
         query_parts.append("LIMIT ? OFFSET ?")
         params.extend([limit, offset])
 
@@ -773,7 +773,7 @@ def list_chats(
                     is_from_me,
                     ROW_NUMBER() OVER (
                         PARTITION BY chat_jid
-                        ORDER BY timestamp DESC, id DESC
+                        ORDER BY datetime(timestamp) DESC, id DESC
                     ) as rn
                 FROM messages
             ) lm ON chats.jid = lm.chat_jid AND lm.rn = 1
@@ -1041,7 +1041,7 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
             FROM messages m
             JOIN chats c ON m.chat_jid = c.jid
             WHERE m.sender IN ({placeholders}) OR c.jid IN ({placeholders})
-            ORDER BY m.timestamp DESC
+            ORDER BY datetime(m.timestamp) DESC
             LIMIT 1
         """,
             (*forms, *forms),
@@ -1098,7 +1098,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
                     is_from_me,
                     ROW_NUMBER() OVER (
                         PARTITION BY chat_jid
-                        ORDER BY timestamp DESC, id DESC
+                        ORDER BY datetime(timestamp) DESC, id DESC
                     ) as rn
                 FROM messages
             ) lm ON c.jid = lm.chat_jid AND lm.rn = 1

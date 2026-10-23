@@ -122,3 +122,19 @@ def test_transcribe_age_cutoff_compares_in_utc(db, monkeypatch):
     pending = transcribe._pending_voice_notes(limit=10, max_age_days=1)
 
     assert [mid for mid, _ in pending] == ["recent"]
+
+
+def test_list_messages_orders_by_instant_across_the_dst_hour(db):
+    # 25 Oct: 02:00-03:00 local happens twice. As text the summer 02:30 sorts
+    # after the winter 02:10 although it is 40 minutes earlier.
+    _insert(
+        db,
+        [
+            ("summer", "2026-10-25 02:30:00+02:00"),  # 00:30 UTC
+            ("winter", "2026-10-25 02:10:00+01:00"),  # 01:10 UTC
+        ],
+    )
+
+    got = whatsapp.list_messages(chat_jid=CHAT)
+
+    assert [m["id"] for m in got] == ["winter", "summer"]

@@ -208,7 +208,7 @@ def _pending_voice_notes(limit: int, max_age_days: int) -> list[tuple[str, str]]
             WHERE media_type IN ('audio', 'ptt')
               AND (content IS NULL OR TRIM(content) = '')
               AND datetime(timestamp) >= datetime('now', ?)
-            ORDER BY timestamp DESC LIMIT ?
+            ORDER BY datetime(timestamp) DESC LIMIT ?
             """,
             (f"-{max_age_days} days", limit),
         ).fetchall()

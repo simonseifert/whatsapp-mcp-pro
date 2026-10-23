@@ -72,7 +72,7 @@ func (store *MessageStore) GetChatMetadata(chatJID string) (map[string]interface
 	err = store.db.QueryRow(`
 		SELECT sender, timestamp, content FROM messages
 		WHERE chat_jid = ?
-		ORDER BY timestamp DESC LIMIT 1
+		ORDER BY datetime(timestamp) DESC LIMIT 1
 	`, chatJID).Scan(&lastSender, &lastTimestamp, &lastContent)
 	if err == nil {
 		if lastTimestamp.Valid {
@@ -152,7 +152,7 @@ func (store *MessageStore) GetContactMetadata(senderJID string) (map[string]inte
 	err = store.db.QueryRow(`
 		SELECT content FROM messages
 		WHERE sender = ?
-		ORDER BY timestamp DESC LIMIT 1
+		ORDER BY datetime(timestamp) DESC LIMIT 1
 	`, senderJID).Scan(&lastContent)
 	if err == nil && lastContent.Valid {
 		metadata["latest_message_preview"] = truncateString(lastContent.String, 100)
