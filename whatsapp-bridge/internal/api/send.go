@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"whatsapp-bridge/internal/antiban"
 	"whatsapp-bridge/internal/database"
 	"whatsapp-bridge/internal/types"
 	"whatsapp-bridge/internal/whatsapp"
@@ -36,7 +37,9 @@ import (
 //     as "transient, retry", so a send that was merely slow got delivered
 //     twice. Now: 400 bad input, 403 refused (allowlist / media path), 409
 //     duplicate in flight, 422 key/payload mismatch, 429 rate-limited / antiban
-//     / reachout timelock, 502 WhatsApp error, 503 not connected, 504 timeout.
+//     / send cap / reachout timelock, 502 WhatsApp error, 503 not connected,
+//     504 timeout. A 429 with a known end carries Retry-After and retry_after,
+//     and like every failure it leaves the idempotency key retryable.
 //
 // The send runs on the request context bounded by SEND_TIMEOUT_SECONDS, so a
 // caller that disconnects cancels it, and the bridge answers 504 before a
@@ -48,6 +51,8 @@ type sendBackend interface {
 	SendMessageWithOptions(ctx context.Context, store *database.MessageStore, opts whatsapp.SendOptions) types.SendResult
 	SendReactionWithOptions(ctx context.Context, store *database.MessageStore, opts whatsapp.ReactionOptions) types.SendResult
 	CreatePollWithOptions(ctx context.Context, store *database.MessageStore, opts whatsapp.PollOptions) types.SendResult
+	EditMessage(chatJID, messageID, newContent string) error
+	DeleteMessage(chatJID, messageID, senderJID string) error
 }
 
 const (
@@ -89,7 +94,7 @@ func httpStatusForSendError(err error) int {
 		return http.StatusBadRequest
 	case whatsapp.SendErrForbidden:
 		return http.StatusForbidden
-	case whatsapp.SendErrRateLimited, whatsapp.SendErrReachoutTimelock:
+	case whatsapp.SendErrRateLimited, whatsapp.SendErrReachoutTimelock, whatsapp.SendErrCapReached:
 		return http.StatusTooManyRequests
 	case whatsapp.SendErrNotConnected:
 		return http.StatusServiceUnavailable
@@ -102,11 +107,15 @@ func httpStatusForSendError(err error) int {
 	}
 }
 
-// retryAfterOf returns the time a reachout-timelocked send may be retried.
+// retryAfterOf returns when a timelocked or capped send may be retried.
 func retryAfterOf(err error) time.Time {
 	var se *whatsapp.SendError
-	if errors.As(err, &se) {
+	if errors.As(err, &se) && !se.Until.IsZero() {
 		return se.Until
+	}
+	var ce *antiban.CapError
+	if errors.As(err, &ce) {
+		return time.Now().Add(ce.RetryAfter)
 	}
 	return time.Time{}
 }
@@ -121,12 +130,30 @@ type sendOutcome struct {
 
 func failureOutcome(res types.SendResult, body func(code, msg string) any) sendOutcome {
 	code := string(whatsapp.ClassifySendError(res.Err))
+	retryAfter := retryAfterOf(res.Err)
+	b := body(code, res.Error)
+	// /api/send's typed response sets retry_after itself; the map bodies of
+	// the other endpoints get it here, so every 429 carries the hint in the
+	// body as well as the Retry-After header.
+	if m, ok := b.(map[string]any); ok && !retryAfter.IsZero() {
+		m["retry_after"] = retryAfter.Format(time.RFC3339)
+	}
 	return sendOutcome{
 		status:     httpStatusForSendError(res.Err),
-		body:       body(code, res.Error),
+		body:       b,
 		messageID:  res.MessageID,
-		retryAfter: retryAfterOf(res.Err),
+		retryAfter: retryAfter,
 	}
+}
+
+// writeSendFailure answers a non-idempotent message endpoint (/api/edit,
+// /api/delete) with the same status, code and retry hint as /api/send.
+func writeSendFailure(w http.ResponseWriter, prefix string, err error) {
+	out := failureOutcome(types.SendResult{Error: err.Error(), Err: err}, func(code, msg string) any {
+		return errorBody(code, prefix+msg)
+	})
+	body, _ := json.Marshal(out.body)
+	writeOutcome(w, out, body)
 }
 
 // payloadHash fingerprints the request minus its idempotency key, so a key
@@ -250,7 +277,7 @@ func writeReplay(w http.ResponseWriter, rec *database.IdempotencyRecord) {
 //   - idempotency_key: optional (or Idempotency-Key header), see top of file
 //
 // Response: { success, message_id, timestamp, recipient, message (error text),
-// code (failure class), retry_after (RFC 3339, on 429 timelock) }
+// code (failure class), retry_after (RFC 3339, on 429 timelock or send cap) }
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)

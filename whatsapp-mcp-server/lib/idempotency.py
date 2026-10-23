@@ -86,6 +86,11 @@ def bridge_error(response: Any) -> dict[str, Any]:
             result["code"] = body["code"]
         if body.get("retry_after"):
             result["retry_after"] = body["retry_after"]
+    if "retry_after" not in result:
+        # Older bridges and some endpoints only set the header (seconds).
+        seconds = _retry_after_header(response)
+        if seconds is not None:
+            result["retry_after_seconds"] = seconds
     if status == 409:
         result["hint"] = "The same send is still in progress; wait and check list_messages instead of retrying."
     elif status == 422:
@@ -95,12 +100,34 @@ def bridge_error(response: Any) -> dict[str, Any]:
             "WhatsApp is restricting this account from starting new chats. Do not message new "
             "contacts until retry_after; replies in existing chats still work."
         )
+    elif result.get("code") == "send_cap":
+        result["hint"] = (
+            "The bridge's send cap was hit (too many messages to this chat, in total, or to new "
+            "contacts). Nothing was sent. Wait until retry_after before retrying; do not loop."
+        )
+    elif result.get("code") == "rate_limited":
+        result["hint"] = (
+            "Antiban paused sending (warm-up limit or account health). Nothing was sent; back off "
+            "and try again later rather than retrying immediately."
+        )
     elif status == 504:
         result["hint"] = (
             "The send timed out and may or may not have gone out. Retrying the identical call "
             "(same idempotency_key) is safe: it will not be delivered twice."
         )
     return result
+
+
+def _retry_after_header(response: Any) -> int | None:
+    """The Retry-After header as whole seconds, or None if absent or not numeric."""
+    try:
+        raw = response.headers.get("Retry-After")
+    except AttributeError:
+        return None
+    try:
+        return int(str(raw).strip()) if raw is not None else None
+    except ValueError:
+        return None
 
 
 TIMEOUT_ERROR = (
