@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
+from .changes import change_columns, change_flags, mark_content
 from .naming import sender_forms
 from .utils import MESSAGES_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
@@ -659,7 +660,7 @@ def _search(
             for r in conn.execute(
                 f"""
                 SELECT e.rowid, m.id, m.chat_jid, m.sender, m.content, m.timestamp,
-                       m.is_from_me, c.name
+                       m.is_from_me, c.name, {change_columns(conn, "m")}
                 FROM message_embeddings e
                 JOIN messages m
                     ON m.id = e.message_id AND m.chat_jid = e.chat_jid
@@ -676,7 +677,7 @@ def _search(
 
     results = []
     for i, rowid in zip(top, top_rowids, strict=True):
-        mid, cjid, snd, content, ts, from_me, chat_name = details[rowid]
+        mid, cjid, snd, content, ts, from_me, chat_name, edited, deleted_at = details[rowid]
         results.append(
             {
                 "message_id": mid,
@@ -685,8 +686,9 @@ def _search(
                 "sender": snd,
                 "is_from_me": bool(from_me),
                 "timestamp": ts,
-                "content": content,
+                "content": mark_content(content, edited, deleted_at),
                 "similarity": round(float(sims[int(i)]), 4),
+                **change_flags(edited, deleted_at),
             }
         )
 

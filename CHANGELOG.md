@@ -19,6 +19,25 @@ All notable changes to this fork are recorded here. The format follows
   are idempotent. Export names map to JIDs only on evidence; the rest are
   stored as `import:<name>`. Attachments are copied into `store/media/`. See
   `docs/IMPORT.md`. No schema change.
+- **Edit history.** Edits (live, history sync and our own `/api/edit`) replace
+  `messages.content` and are kept, with the text they replaced, in a new
+  `message_edits` table. Replays are safe: edits apply only in edited-time
+  order, and a late copy of the original never overwrites an edit. The recall
+  index re-embeds an edited message.
+- **Deleted for everyone is recorded, not erased.** A revoke sets
+  `messages.deleted_at` / `deleted_by` and keeps the text.
+- **Call log.** A new `calls` table records every call the bridge sees
+  (direction, video, group, outcome, duration when known), filled from live
+  call events, the phone's call-log messages and history "missed call" stubs,
+  and seeded from the existing `call-…` pseudo-messages. The bridge never
+  answers or rejects a call.
+- MCP tools `get_message_edits` and `list_calls` (both read-only; 39 tools,
+  21 read-only). Message output marks changed messages "(edited)" and
+  "(deleted)".
+- Webhook `event` trigger: opt in to `message_edited`, `message_deleted` and
+  `call` events (see `docs/WEBHOOK.md`). `all` does not receive them.
+- Migration `009_edits_calls.sql` (idempotent; the bridge also applies it on
+  start).
 
 ### Changed
 
@@ -38,12 +57,23 @@ All notable changes to this fork are recorded here. The format follows
   reproduces the numbers against a copy of a store.
 - SETUP.md: `MALLOC_ARENA_MAX=2` in the example MCP unit, and what the shared
   server's memory consists of.
-
 - Bridge: `/api/download` serves an imported row's media from its saved,
   hash-checked copy (such rows have no media key) and never goes to the network
   for it. Reactions, quotes, edits and deletes targeting an `import-` ID are
   refused with 422, and on-demand history requests anchor on the oldest real
   message, not an imported one.
+
+### Security
+
+- An edit is applied only when it comes from the message's author (phone JID
+  and LID compared through `identities`; own messages only from own devices;
+  newsletter posts only from the newsletter). Anything else is recorded as
+  `rejected` and changes nothing; an edit for a message not stored yet waits as
+  `pending` until the original arrives. Sender-claimed edit times are clamped
+  to the server's receive time.
+- A revoke is accepted only from the author or, in a group, an admin.
+- Call-log messages are accepted only from the user's own devices, and a call
+  event cannot attach to a call in another chat.
 
 ## [v0.6.0-pro] - 2026-10-23
 

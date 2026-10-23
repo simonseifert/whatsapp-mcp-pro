@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
-	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"whatsapp-bridge/internal/antiban"
@@ -21,62 +19,11 @@ import (
 	"whatsapp-bridge/internal/whatsapp"
 )
 
-// activeCall tracks an ongoing call for duration/status calculation.
-type activeCall struct {
-	ChatJID   string
-	Sender    string
-	Name      string
-	Timestamp time.Time
-	IsFromMe  bool
-}
-
 // exitStreamReplaced is the exit code when another client took over this
 // session. It differs from the generic 1 (watchdog, fatal startup) so a
 // systemd unit can set RestartPreventExitStatus=3: restarting here would just
 // steal the session back and the two bridges would evict each other forever.
 const exitStreamReplaced = 3
-
-var (
-	activeCalls   = make(map[string]*activeCall)
-	activeCallsMu sync.Mutex
-)
-
-// formatDuration formats a duration as "M:SS".
-func formatDuration(d time.Duration) string {
-	secs := int(d.Seconds())
-	if secs < 0 {
-		secs = 0
-	}
-	return fmt.Sprintf("%d:%02d", secs/60, secs%60)
-}
-
-// resolveCallJID converts LID (hidden user) JIDs to regular phone JIDs.
-func resolveCallJID(client *whatsapp.Client, logger waLog.Logger, jid types.JID) types.JID {
-	if jid.Server == types.HiddenUserServer {
-		resolved, err := client.Store.GetAltJID(context.Background(), jid)
-		if err == nil && !resolved.IsEmpty() {
-			logger.Debugf("[CALL] Resolved LID %s → %s", jid, resolved)
-			return resolved
-		}
-		logger.Warnf("[CALL] Could not resolve LID %s: %v", jid, err)
-	}
-	return jid
-}
-
-// isCallFromMe checks if a call originated from this device.
-func isCallFromMe(client *whatsapp.Client, from types.JID, resolvedFrom types.JID, callCreator types.JID) bool {
-	if client.Store.ID == nil {
-		return false
-	}
-	ownUser := client.Store.ID.ToNonAD().User
-	if from.User == ownUser || resolvedFrom.User == ownUser {
-		return true
-	}
-	if !callCreator.IsEmpty() && callCreator.User == ownUser {
-		return true
-	}
-	return false
-}
 
 // fireConnectionEvent broadcasts a connection state change to all configured webhooks.
 func fireConnectionEvent(wm *webhook.Manager, client *whatsapp.Client, eventType, reason string) {
@@ -309,115 +256,10 @@ func main() {
 			logger.Warnf("⚠ Disconnected from WhatsApp - attempting reconnect")
 			go fireConnectionEvent(webhookManager, client, "disconnected", "")
 
-		case *events.CallOffer:
-			resolvedJID := resolveCallJID(client, logger, v.From)
-			callFrom := resolvedJID.User
-			fromMe := isCallFromMe(client, v.From, resolvedJID, v.CallCreator)
-			var chatJID string
-			var chatResolvedJID types.JID
-			if !v.GroupJID.IsEmpty() {
-				chatJID = v.GroupJID.String()
-				chatResolvedJID = v.GroupJID
-			} else {
-				chatJID = resolvedJID.String()
-				chatResolvedJID = resolvedJID
-			}
-			logger.Infof("[CALL] CallOffer from %s (CallID: %s, isFromMe: %v)", callFrom, v.CallID, fromMe)
-			name := client.GetChatName(messageStore, chatResolvedJID, chatJID, nil, callFrom)
-			var content string
-			if fromMe {
-				content = fmt.Sprintf("📞 Outgoing call to %s", name)
-			} else {
-				content = fmt.Sprintf("📞 Incoming call from %s", name)
-			}
-			activeCallsMu.Lock()
-			activeCalls[v.CallID] = &activeCall{ChatJID: chatJID, Sender: callFrom, Name: name, Timestamp: v.Timestamp, IsFromMe: fromMe}
-			activeCallsMu.Unlock()
-			if err := messageStore.StoreChat(chatJID, name, v.Timestamp); err != nil {
-				logger.Warnf("Failed to store chat for call: %v", err)
-			}
-			if err := messageStore.StoreMessage("call-"+v.CallID, chatJID, callFrom, name, content, v.Timestamp, fromMe, "call", "", "", "", nil, nil, nil, 0); err != nil {
-				logger.Warnf("Failed to store call message: %v", err)
-			}
-
-		case *events.CallOfferNotice:
-			resolvedJID := resolveCallJID(client, logger, v.From)
-			callFrom := resolvedJID.User
-			fromMe := isCallFromMe(client, v.From, resolvedJID, v.CallCreator)
-			var chatJID string
-			var chatResolvedJID types.JID
-			if !v.GroupJID.IsEmpty() {
-				chatJID = v.GroupJID.String()
-				chatResolvedJID = v.GroupJID
-			} else {
-				chatJID = resolvedJID.String()
-				chatResolvedJID = resolvedJID
-			}
-			logger.Infof("[CALL] CallOfferNotice from %s (CallID: %s, Media: %s)", callFrom, v.CallID, v.Media)
-			name := client.GetChatName(messageStore, chatResolvedJID, chatJID, nil, callFrom)
-			var content string
-			if fromMe {
-				content = fmt.Sprintf("📞 Outgoing %s call to %s", v.Media, name)
-			} else {
-				content = fmt.Sprintf("📞 Incoming %s call from %s", v.Media, name)
-			}
-			activeCallsMu.Lock()
-			activeCalls[v.CallID] = &activeCall{ChatJID: chatJID, Sender: callFrom, Name: name, Timestamp: v.Timestamp, IsFromMe: fromMe}
-			activeCallsMu.Unlock()
-			if err := messageStore.StoreChat(chatJID, name, v.Timestamp); err != nil {
-				logger.Warnf("Failed to store chat for group call: %v", err)
-			}
-			if err := messageStore.StoreMessage("call-"+v.CallID, chatJID, callFrom, name, content, v.Timestamp, fromMe, "call", "", "", "", nil, nil, nil, 0); err != nil {
-				logger.Warnf("Failed to store group call message: %v", err)
-			}
-
-		case *events.CallAccept:
-			resolvedJID := resolveCallJID(client, logger, v.From)
-			logger.Infof("[CALL] CallAccept from %s (CallID: %s)", resolvedJID.User, v.CallID)
-			activeCallsMu.Lock()
-			if call, exists := activeCalls[v.CallID]; exists {
-				call.Timestamp = v.Timestamp
-			}
-			activeCallsMu.Unlock()
-
-		case *events.CallTerminate:
-			resolvedJID := resolveCallJID(client, logger, v.From)
-			logger.Infof("[CALL] CallTerminate from %s (CallID: %s, Reason: %s)", resolvedJID.User, v.CallID, v.Reason)
-			activeCallsMu.Lock()
-			call, exists := activeCalls[v.CallID]
-			if exists {
-				delete(activeCalls, v.CallID)
-			}
-			activeCallsMu.Unlock()
-			if exists {
-				duration := v.Timestamp.Sub(call.Timestamp)
-				var content string
-				switch v.Reason {
-				case "timeout", "busy":
-					content = fmt.Sprintf("📞 Missed call from %s", call.Name)
-				default:
-					content = fmt.Sprintf("📞 Call with %s (%s)", call.Name, formatDuration(duration))
-				}
-				if err := messageStore.StoreMessage("call-"+v.CallID, call.ChatJID, call.Sender, call.Name, content, call.Timestamp, call.IsFromMe, "call", "", "", "", nil, nil, nil, 0); err != nil {
-					logger.Warnf("Failed to update call message: %v", err)
-				}
-			}
-
-		case *events.CallReject:
-			resolvedJID := resolveCallJID(client, logger, v.From)
-			logger.Infof("[CALL] CallReject from %s (CallID: %s)", resolvedJID.User, v.CallID)
-			activeCallsMu.Lock()
-			call, exists := activeCalls[v.CallID]
-			if exists {
-				delete(activeCalls, v.CallID)
-			}
-			activeCallsMu.Unlock()
-			if exists {
-				content := fmt.Sprintf("📞 Missed call from %s", call.Name)
-				if err := messageStore.StoreMessage("call-"+v.CallID, call.ChatJID, call.Sender, call.Name, content, call.Timestamp, call.IsFromMe, "call", "", "", "", nil, nil, nil, 0); err != nil {
-					logger.Warnf("Failed to update rejected call message: %v", err)
-				}
-			}
+		case *events.CallOffer, *events.CallOfferNotice, *events.CallAccept, *events.CallTerminate, *events.CallReject:
+			// Logged to the calls table and the chat's call-<id> message. Never
+			// answered or rejected from here.
+			client.HandleCallEvent(messageStore, webhookManager, v)
 		}
 	})
 
@@ -431,23 +273,6 @@ func main() {
 				logger.Errorf("WATCHDOG: disconnected for %v, exiting to force container restart", time.Since(discAt).Round(time.Second))
 				os.Exit(1)
 			}
-		}
-	}()
-
-	// Stale call cleanup: remove calls older than 5 minutes without terminate event
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			cutoff := time.Now().Add(-5 * time.Minute)
-			activeCallsMu.Lock()
-			for id, call := range activeCalls {
-				if call.Timestamp.Before(cutoff) {
-					delete(activeCalls, id)
-					logger.Debugf("[CALL] Cleaned up stale call %s", id)
-				}
-			}
-			activeCallsMu.Unlock()
 		}
 	}()
 
