@@ -104,7 +104,15 @@ Settings for sends, the phone and media retry (bridge side, all optional):
 | `PHONE_PING_ENABLED` | `true` | `false` stops the ping. Tracking, warnings and the `/api/connection` fields stay on. |
 | `MEDIA_RETRY_ENABLED` | `false` | Ask the sender's phone to re-upload expired media. Every request shows "Finished syncing" on the phone. |
 | `MEDIA_RETRY_MAX_PER_HOUR` | `20` | Cap on retry requests per rolling hour, including those `/api/download` sends itself. |
-| `MEDIA_RETRY_MAX_ATTEMPTS` | `3` | Requests per message before the queue gives up. A "not found" answer from the phone fails it at once. |
+| `MEDIA_RETRY_MAX_ATTEMPTS` | `3` | Requests per message before the queue gives up. A "not found" answer from the phone fails it at once. Retries do not count against the antiban caps below: they go to your own phone, not into anyone's chat. |
+| `ANTIBAN_CAPS_ENABLED` | `true` | Hard send ceilings, on even when `ANTIBAN_ENABLED` (pacing) is off. A send over a cap gets HTTP 429, code `send_cap`, with `Retry-After` and `retry_after`; nothing is sent and the idempotency key stays retryable. Each cap below: `0` disables it. |
+| `ANTIBAN_RECIPIENT_MAX_PER_MINUTE` | `8` | Text, media and polls to one chat per sliding minute. Room for a reply split into several bubbles plus a file. |
+| `ANTIBAN_RECIPIENT_MAX_PER_HOUR` | `60` | The same per sliding hour. |
+| `ANTIBAN_GLOBAL_MAX_PER_HOUR` | `120` | Text, media and polls across all chats per sliding hour. |
+| `ANTIBAN_NEW_RECIPIENTS_PER_DAY` | `10` | First contacts (1:1 chat with no stored messages, the reachout gate's test) per rolling 24h. Survives restarts via `ANTIBAN_CAPS_STATE_PATH` (default `store/antiban_caps.json`). |
+| `ANTIBAN_FEEDBACK_MAX_PER_MINUTE` | `20` | Reactions, edits and deletes to one chat per sliding minute; a separate budget from messages. |
+| `ANTIBAN_FEEDBACK_MAX_PER_HOUR` | `300` | Reactions, edits and deletes across all chats per sliding hour. |
+| `GROUP_METADATA_CACHE_TTL` | `5m` | How long joined-groups and group-info answers are reused before WhatsApp is asked again. Group change events refresh early. `0` disables. |
 
 The OAuth variables (`MCP_OAUTH_*`, `MCP_PUBLIC_URL`, `MCP_TRUSTED_PROXY`) are
 covered in [step 5](#remote-connector-via-oauth-optional).

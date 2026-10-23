@@ -67,6 +67,9 @@ type Client struct {
 	// Use to fire an out-of-band alert before the process exits via watchdog.
 	circuitBreakerCallback func()
 
+	// Cooldown for group metadata queries; see groupcache.go.
+	groups *groupCache
+
 	// Persistent media retry queue; nil unless StartMediaRetryQueue ran.
 	mediaRetryQueue atomic.Pointer[MediaRetryQueue]
 }
@@ -131,10 +134,22 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 	antibanCfg := antiban.LoadConfig()
 	antibanInterceptor, antibanErr := antiban.NewSendInterceptor(antibanCfg)
 	if antibanErr != nil {
-		logger.Warnf("Failed to initialize antiban, continuing without protection: %v", antibanErr)
-		antibanInterceptor, _ = antiban.NewSendInterceptor(&antiban.Config{Enabled: false})
-	} else if antibanCfg.Enabled {
-		logger.Infof("Antiban protection enabled")
+		// This used to log and carry on with antiban disabled, so any state
+		// problem silently removed every limit. Bad state files are now handled
+		// inside antiban (fail safe); what still errors is misconfiguration,
+		// and starting without the protection the operator asked for is worse
+		// than not starting.
+		return nil, fmt.Errorf("antiban init (fix the ANTIBAN_* settings or set ANTIBAN_ENABLED=false): %w", antibanErr)
+	}
+	if antibanCfg.Enabled {
+		logger.Infof("Antiban pacing enabled")
+	}
+	if antibanCfg.CapsEnabled {
+		logger.Infof("Antiban send caps: %d/chat/min, %d/chat/h, %d/h total, %d new contacts/24h; feedback %d/chat/min, %d/h (<=0 = off)",
+			antibanCfg.RecipientMaxPerMinute, antibanCfg.RecipientMaxPerHour, antibanCfg.GlobalMaxPerHour,
+			antibanCfg.NewRecipientsPerDay, antibanCfg.FeedbackMaxPerMinute, antibanCfg.FeedbackMaxPerHour)
+	} else {
+		logger.Warnf("Antiban send caps disabled (ANTIBAN_CAPS_ENABLED=false): nothing bounds send volume")
 	}
 
 	c := &Client{
@@ -145,7 +160,9 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 		antiban:            antibanInterceptor,
 		presence:           newPresenceManager(cfg.PresenceMode, cfg.PresenceLingerMin, cfg.PresenceLingerMax),
 		pairingSuccessChan: make(chan struct{}, 1),
+		groups:             newGroupCache(groupCacheTTL()),
 	}
+	client.AddEventHandler(c.groups.handleEvent)
 
 	logger.Infof("Presence mode: %s (linger %v..%v)", cfg.PresenceMode, cfg.PresenceLingerMin, cfg.PresenceLingerMax)
 

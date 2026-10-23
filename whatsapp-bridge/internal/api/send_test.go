@@ -76,6 +76,14 @@ func (f *fakeSender) CreatePollWithOptions(ctx context.Context, _ *database.Mess
 	return f.record(ctx, o.MessageID, o.BeforeDispatch)
 }
 
+func (f *fakeSender) EditMessage(_, _, _ string) error {
+	return f.record(context.Background(), "", nil).Err
+}
+
+func (f *fakeSender) DeleteMessage(_, _, _ string) error {
+	return f.record(context.Background(), "", nil).Err
+}
+
 func (f *fakeSender) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

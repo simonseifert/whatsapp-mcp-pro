@@ -1,3 +1,6 @@
+// Package antiban paces and bounds outgoing WhatsApp traffic: randomised
+// delays, a warm-up ramp for new accounts, a health score that pauses sends,
+// and hard send caps.
 package antiban
 
 import (
@@ -6,21 +9,31 @@ import (
 	"strings"
 )
 
+// ErrWarmUpLimitReached is returned while today's warm-up allowance is spent.
 var ErrWarmUpLimitReached = errors.New("antiban: daily warm-up limit reached")
 
+// SendInterceptor wraps every outgoing message. Pacing, warm-up and health
+// only run with ANTIBAN_ENABLED; caps run whenever ANTIBAN_CAPS_ENABLED (on by
+// default), so turning pacing off does not also remove the ceiling.
 type SendInterceptor struct {
 	cfg         *Config
 	rateLimiter *RateLimiter
 	warmUp      *WarmUp
 	health      *HealthMonitor
+	caps        *SendCaps
 }
 
+// NewSendInterceptor builds the interceptor from cfg (environment if nil).
+// Bad on-disk state never makes it fail; see NewWarmUp and NewSendCaps.
 func NewSendInterceptor(cfg *Config) (*SendInterceptor, error) {
 	if cfg == nil {
 		cfg = LoadConfig()
 	}
 
 	interceptor := &SendInterceptor{cfg: cfg}
+	if cfg.CapsEnabled {
+		interceptor.caps = NewSendCaps(cfg)
+	}
 	if !cfg.Enabled {
 		return interceptor, nil
 	}
@@ -37,27 +50,43 @@ func NewSendInterceptor(cfg *Config) (*SendInterceptor, error) {
 	return interceptor, nil
 }
 
-func (s *SendInterceptor) BeforeSend(ctx context.Context, msgType MessageType, msgLen int) error {
-	if !s.hasInternals() {
+// BeforeSend blocks until req may go out, or returns why it may not:
+// ErrHealthPaused, ErrWarmUpLimitReached, a *CapError, or a context error.
+// When it returns nil, req has been counted against the caps, so call it only
+// immediately before dispatching.
+func (s *SendInterceptor) BeforeSend(ctx context.Context, req SendRequest) error {
+	if s == nil {
 		return nil
 	}
-	if s.health.IsPaused() {
-		return ErrHealthPaused
+	if s.hasPacing() {
+		if s.health.IsPaused() {
+			return ErrHealthPaused
+		}
+		canSend, err := s.warmUp.CanSend()
+		if err != nil {
+			return err
+		}
+		if !canSend {
+			return ErrWarmUpLimitReached
+		}
 	}
 
-	canSend, err := s.warmUp.CanSend()
-	if err != nil {
+	// Fail fast before the pacing delay; Reserve re-checks after it because
+	// another send may have taken the last slot while this one slept.
+	if err := s.caps.Check(req); err != nil {
 		return err
 	}
-	if !canSend {
-		return ErrWarmUpLimitReached
+	if s.hasPacing() {
+		if err := s.rateLimiter.Wait(ctx, req.Type, req.Len); err != nil {
+			return err
+		}
 	}
-
-	return s.rateLimiter.Wait(ctx, msgType, msgLen)
+	return s.caps.Reserve(req)
 }
 
+// AfterSend records a successful send.
 func (s *SendInterceptor) AfterSend(_ MessageType) {
-	if !s.hasInternals() {
+	if !s.hasPacing() {
 		return
 	}
 
@@ -65,8 +94,9 @@ func (s *SendInterceptor) AfterSend(_ MessageType) {
 	s.health.RecordEvent(EventSendSuccess)
 }
 
+// AfterSendFailed feeds a failed send into the health score.
 func (s *SendInterceptor) AfterSendFailed(_ MessageType, err error) {
-	if !s.hasInternals() {
+	if !s.hasPacing() {
 		return
 	}
 
@@ -78,16 +108,18 @@ func (s *SendInterceptor) AfterSendFailed(_ MessageType, err error) {
 	s.health.RecordEvent(EventSendFailed)
 }
 
+// RecordEvent feeds a connection or protocol event into the health score.
 func (s *SendInterceptor) RecordEvent(eventType HealthEventType) {
-	if !s.hasInternals() {
+	if !s.hasPacing() {
 		return
 	}
 
 	s.health.RecordEvent(eventType)
 }
 
+// Close flushes warm-up state and stops the health decay loop.
 func (s *SendInterceptor) Close() error {
-	if !s.hasInternals() {
+	if !s.hasPacing() {
 		return nil
 	}
 
@@ -97,11 +129,13 @@ func (s *SendInterceptor) Close() error {
 	return err
 }
 
+// Enabled reports whether pacing (ANTIBAN_ENABLED) is on. Callers use it to
+// decide on typing indicators; caps apply regardless.
 func (s *SendInterceptor) Enabled() bool {
 	return s != nil && s.cfg != nil && s.cfg.Enabled
 }
 
-func (s *SendInterceptor) hasInternals() bool {
+func (s *SendInterceptor) hasPacing() bool {
 	return s != nil &&
 		s.Enabled() &&
 		s.rateLimiter != nil &&

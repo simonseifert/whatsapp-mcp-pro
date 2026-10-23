@@ -315,8 +315,8 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.client.EditMessage(req.ChatJID, req.MessageID, req.NewContent); err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to edit message: %v", err), httpStatusForSendError(err))
+	if err := s.sender.EditMessage(req.ChatJID, req.MessageID, req.NewContent); err != nil {
+		writeSendFailure(w, "Failed to edit message: ", err)
 		return
 	}
 
@@ -357,8 +357,8 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.client.DeleteMessage(req.ChatJID, req.MessageID, req.SenderJID); err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to delete message: %v", err), httpStatusForSendError(err))
+	if err := s.sender.DeleteMessage(req.ChatJID, req.MessageID, req.SenderJID); err != nil {
+		writeSendFailure(w, "Failed to delete message: ", err)
 		return
 	}
 

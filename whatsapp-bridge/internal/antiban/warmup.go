@@ -3,9 +3,10 @@ package antiban
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"math"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -16,21 +17,31 @@ const (
 	warmUpInactivityReset = 72 * time.Hour
 )
 
+// WarmUpState is the persisted warm-up progress.
 type WarmUpState struct {
 	StartDate    time.Time      `json:"startDate"`
 	DaySent      map[string]int `json:"daySent"`
 	LastSendTime time.Time      `json:"lastSendTime"`
 }
 
+// WarmUp ramps the daily send limit for a new account.
 type WarmUp struct {
 	cfg   *Config
 	state *WarmUpState
 	mu    sync.Mutex
 }
 
+// NewWarmUp loads the warm-up state. It fails safe and never returns an error
+// for bad state: an unreadable or implausible file used to make the caller
+// drop antiban altogether, so a corrupt JSON file meant no protection at all.
+// Now the file is moved aside, logged loudly, and warm-up restarts at day 1,
+// the most restrictive limit. The only error left is an empty state path.
 func NewWarmUp(cfg *Config) (*WarmUp, error) {
 	if cfg == nil {
 		cfg = LoadConfig()
+	}
+	if cfg.WarmUpStatePath == "" {
+		return nil, errors.New("warm-up state path is empty")
 	}
 
 	now := time.Now()
@@ -41,16 +52,16 @@ func NewWarmUp(cfg *Config) (*WarmUp, error) {
 		if state.StartDate.IsZero() {
 			state.StartDate = now
 		}
-		if state.DaySent == nil {
-			state.DaySent = make(map[string]int)
-		}
 		if !state.LastSendTime.IsZero() && now.Sub(state.LastSendTime) > warmUpInactivityReset {
 			state = freshWarmUpState(now)
 		}
 	case errors.Is(err, os.ErrNotExist):
 		state = freshWarmUpState(now)
 	default:
-		return nil, err
+		moved := quarantineStateFile(cfg.WarmUpStatePath, now)
+		log.Printf("ANTIBAN ERROR warm-up state %s is unreadable (%v); moved to %q. Failing safe: warm-up restarts at day 1 (limit %d/day)",
+			cfg.WarmUpStatePath, err, moved, max(cfg.WarmUpStartLimit, 0))
+		state = freshWarmUpState(now)
 	}
 
 	return &WarmUp{
@@ -90,7 +101,11 @@ func (w *WarmUp) RecordSend() {
 	w.state.LastSendTime = now
 	w.mu.Unlock()
 
-	_ = w.saveState()
+	if err := w.saveState(); err != nil {
+		// The in-memory count still limits this process; only a restart would
+		// forget today's sends.
+		log.Printf("ANTIBAN WARN could not persist warm-up state: %v", err)
+	}
 }
 
 func (w *WarmUp) Day() int {
@@ -126,35 +141,7 @@ func (w *WarmUp) saveState() error {
 	path := w.cfg.WarmUpStatePath
 	w.mu.Unlock()
 
-	data, err := json.MarshalIndent(snapshot, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	dir := filepath.Dir(path)
-	tmpFile, err := os.CreateTemp(dir, ".antiban_warmup_*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		// Clean up temp file on any failure path.
-		_ = os.Remove(tmpPath)
-	}()
-
-	if _, err := tmpFile.Write(data); err != nil {
-		_ = tmpFile.Close()
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		return err
-	}
-
-	return os.Rename(tmpPath, path)
+	return writeJSONAtomic(path, snapshot)
 }
 
 func loadState(path string) (*WarmUpState, error) {
@@ -171,12 +158,34 @@ func loadState(path string) (*WarmUpState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
+	if err := state.validate(time.Now()); err != nil {
+		return nil, err
+	}
 
 	if state.DaySent == nil {
 		state.DaySent = make(map[string]int)
 	}
 
 	return &state, nil
+}
+
+// validate rejects state that parses but would loosen the limit: a negative
+// count adds headroom to today's cap, and a start date in the future is not
+// something this code ever writes.
+func (s *WarmUpState) validate(now time.Time) error {
+	skew := now.Add(time.Hour)
+	if s.StartDate.After(skew) {
+		return fmt.Errorf("startDate %s is in the future", s.StartDate.Format(time.RFC3339))
+	}
+	if s.LastSendTime.After(skew) {
+		return fmt.Errorf("lastSendTime %s is in the future", s.LastSendTime.Format(time.RFC3339))
+	}
+	for day, n := range s.DaySent {
+		if n < 0 {
+			return fmt.Errorf("daySent[%s] is negative (%d)", day, n)
+		}
+	}
+	return nil
 }
 
 func (w *WarmUp) dailyLimitLocked(now time.Time) int {

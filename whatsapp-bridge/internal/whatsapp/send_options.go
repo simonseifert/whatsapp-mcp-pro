@@ -8,6 +8,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 
 	"whatsapp-bridge/internal/antiban"
+	"whatsapp-bridge/internal/database"
 )
 
 // SendOptions describes a text or media send for SendMessageWithOptions.
@@ -69,6 +70,17 @@ func (c *Client) checkAllowlist(chat types.JID) *SendError {
 		}
 	}
 	return newSendError(SendErrForbidden, "recipient %s is blocked by WHATSAPP_ALLOWLIST_JIDS safety gate", chat)
+}
+
+// antibanRequest describes a send to chat for antiban. First-contact detection
+// only runs for types that open a conversation; a reaction or edit always
+// targets a message that already exists.
+func (c *Client) antibanRequest(store *database.MessageStore, msgType antiban.MessageType, chat types.JID, textLen int, aliases ...string) antiban.SendRequest {
+	req := antiban.SendRequest{Type: msgType, Len: textLen, Recipient: chat.ToNonAD().String()}
+	if msgType == antiban.Text || msgType == antiban.Poll {
+		req.NewRecipient = c.isNewContact(store, chat, aliases...)
+	}
+	return req
 }
 
 // prepareMessageID returns the ID to send with (reusing want when given) and
