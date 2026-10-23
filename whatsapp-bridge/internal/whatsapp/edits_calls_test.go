@@ -516,20 +516,60 @@ func TestHistoryChangesAuthorship(t *testing.T) {
 		MessageStubType:        waWeb.WebMessageInfo_ADMIN_REVOKE.Enum(),
 		RevokeMessageTimestamp: proto.Uint64(uint64(sent.Add(time.Minute).Unix())),
 	}
+	// A revoke stub of a message the store never saw leaves a stand-in row;
+	// its key names the author, who becomes the row's sender.
+	unseenStub := &waWeb.WebMessageInfo{
+		Key:              &waCommon.MessageKey{ID: proto.String("C"), Participant: proto.String(phoneJID.String()), RemoteJID: proto.String(groupJID.String())},
+		MessageTimestamp: proto.Uint64(uint64(sent.Unix())),
+		MessageStubType:  waWeb.WebMessageInfo_REVOKE.Enum(),
+	}
 	c.handleHistoryNonMessage(store, groupJID.String(), groupJID, forgedEdit)
 	c.handleHistoryNonMessage(store, groupJID.String(), groupJID, adminStub)
+	c.handleHistoryNonMessage(store, groupJID.String(), groupJID, unseenStub)
 
 	msgs, err := store.GetMessages(groupJID.String(), 10)
-	if err != nil || len(msgs) != 2 {
+	if err != nil || len(msgs) != 3 {
 		t.Fatalf("messages = %+v, %v", msgs, err)
 	}
 	for _, m := range msgs {
 		if m.ID == "A" && m.Content != "original A" {
 			t.Errorf("forged history edit applied: %q", m.Content)
 		}
+		if m.ID == "C" && (m.Sender != phoneJID.String() || m.IsFromMe) {
+			t.Errorf("revoke stand-in = %+v, want sender %s", m, phoneJID)
+		}
 	}
 	res, err := store.MarkDeleted(database.Revoke{MessageID: "B", ChatJIDs: []string{groupJID.String()}, At: sent, Trusted: true})
 	if err != nil || res.Newly {
 		t.Errorf("admin-revoke stub did not mark B deleted (%+v, %v)", res, err)
+	}
+}
+
+// A live revoke's key names the revoked message's author: the revoker when
+// FromMe is set, else the group participant.
+func TestRevokedAuthor(t *testing.T) {
+	revoke := func(fromMe bool, participant string) *events.Message {
+		key := &waCommon.MessageKey{ID: proto.String("ORIG"), FromMe: proto.Bool(fromMe)}
+		if participant != "" {
+			key.Participant = proto.String(participant)
+		}
+		return &events.Message{Message: &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_REVOKE.Enum(), Key: key}}}
+	}
+	revoker := database.Actor{JID: lidJID.String()}
+	c := &Client{logger: waLog.Noop}
+	tests := []struct {
+		name string
+		msg  *events.Message
+		want database.Actor
+	}{
+		{"revoker's own message", revoke(true, ""), revoker},
+		{"admin revoking a participant's", revoke(false, phoneJID.User+":3@"+phoneJID.Server), database.Actor{JID: phoneJID.String()}},
+		{"1:1 key without FromMe is unknown", revoke(false, ""), database.Actor{}},
+	}
+	for _, tc := range tests {
+		if got := c.revokedAuthor(tc.msg, revoker); got.JID != tc.want.JID || got.IsMe != tc.want.IsMe {
+			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -1062,8 +1062,11 @@ def apply_plan(conn: sqlite3.Connection, plan: Plan, export: Export) -> int:
             "content": row.content,
             "timestamp": row.timestamp,
             "is_from_me": int(row.is_from_me),
-            "media_type": row.media_type,
-            "filename": row.filename,
+            # '' rather than NULL for a text row, as the bridge writes it: the
+            # bridge's GetMessages scans these into strings and failed the
+            # whole chat on a NULL.
+            "media_type": row.media_type or "",
+            "filename": row.filename or "",
             "is_edited": int(row.is_edited),
         }
         if row.media_src and row.media_dest:

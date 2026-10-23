@@ -322,6 +322,8 @@ def test_direct_chat_dedupes_detects_me_and_imports_only_missing(store, tmp_path
     assert photo_row[1:5] == (BOB, 0, "image", "00000012-PHOTO-2025-10-23-09-43-05.jpg")
     assert photo_row[5] == hashlib.sha256(photo).digest()
     assert text_row[1:3] == (ME, 1) and text_row[6] == "2025-10-23 09:49:30+02:00"
+    # '' as the bridge writes a text row: its GetMessages failed on NULL here.
+    assert text_row[3:5] == ("", "")
     saved = ci.media_path(os.path.dirname(store), BOB, photo_row[0], "image", photo_row[4])
     assert Path(saved).read_bytes() == photo
     assert saved.endswith(os.path.join("media", "4915112345678@s_whatsapp_net", photo_row[0] + ".jpg"))

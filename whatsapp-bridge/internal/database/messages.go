@@ -108,10 +108,18 @@ func (store *MessageStore) GetMessageMedia(id, chatJID string) (mediaType, filen
 	return
 }
 
-// GetMessages gets messages from a chat
+// GetMessages gets messages from a chat, newest first.
+//
+// sender, content, media_type and filename are COALESCEd like GetMessageMedia
+// does: rows written by other paths (an edit or revoke stub, the chat-export
+// importer, an older bridge) may hold NULL there, and one NULL scanned into a
+// string used to fail the whole call, so /api/messages answered 500 for that
+// chat and the reconnect backfill skipped it.
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]types.Message, error) {
 	rows, err := store.db.Query(
-		"SELECT id, sender, sender_name, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY datetime(timestamp) DESC LIMIT ?",
+		`SELECT id, COALESCE(sender, ''), sender_name, COALESCE(content, ''), timestamp, COALESCE(is_from_me, 0),
+		        COALESCE(media_type, ''), COALESCE(filename, '')
+		   FROM messages WHERE chat_jid = ? ORDER BY datetime(timestamp) DESC LIMIT ?`,
 		chatJID, limit,
 	)
 	if err != nil {
@@ -129,7 +137,7 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]types.Messa
 			return nil, err
 		}
 		msg.Time = timestamp
-		if senderName.Valid {
+		if senderName.Valid && senderName.String != "" {
 			msg.SenderName = senderName.String
 		} else {
 			msg.SenderName = msg.Sender // fallback to JID
@@ -376,7 +384,7 @@ func (store *MessageStore) GetRecentMedia(chatJID string, limit int) ([]string, 
 // Used by SendReaction to build the correct message key.
 func (store *MessageStore) GetMessageSender(messageID, chatJID string) (sender string, isFromMe bool, err error) {
 	err = store.db.QueryRow(
-		"SELECT sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT COALESCE(sender, ''), COALESCE(is_from_me, 0) FROM messages WHERE id = ? AND chat_jid = ?",
 		messageID, chatJID,
 	).Scan(&sender, &isFromMe)
 	return
@@ -385,7 +393,7 @@ func (store *MessageStore) GetMessageSender(messageID, chatJID string) (sender s
 // GetMessageContentAndSender returns content, sender JID, and is_from_me for a message ID.
 func (store *MessageStore) GetMessageContentAndSender(messageID string) (content string, sender string, isFromMe bool, err error) {
 	err = store.db.QueryRow(
-		"SELECT content, sender, is_from_me FROM messages WHERE id = ? ORDER BY datetime(timestamp) DESC LIMIT 1",
+		"SELECT COALESCE(content, ''), COALESCE(sender, ''), COALESCE(is_from_me, 0) FROM messages WHERE id = ? ORDER BY datetime(timestamp) DESC LIMIT 1",
 		messageID,
 	).Scan(&content, &sender, &isFromMe)
 	return
