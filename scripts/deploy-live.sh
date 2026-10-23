@@ -36,6 +36,20 @@ log "python deps + checks"
   && uv run ruff check --quiet . \
   && uv run pytest -q --ignore=tests/test_recall.py >/dev/null) || die "Python checks failed — not deploying"
 
+# ── Other bridges on this binary ─────────────────────────────────────────────
+# Other numbers can run the same binary from their own data dirs (one process
+# per number, each a systemd *user* unit). They must be restarted onto the new
+# build and checked too, or a bad build only shows up at their next unrelated
+# restart. One per line, `name|user-unit|rest-port|path/to/.env`, set either in
+# the environment or as one `OTHER_BRIDGES=...` line per bridge in
+# "$DATA/deploy.env" (kept out of the repo because it names machines and paths).
+# The file is parsed, not sourced: an unquoted `a|b|c` would run as a pipeline.
+# Empty means this box runs a single bridge.
+if [ -z "${OTHER_BRIDGES:-}" ] && [ -f "$DATA/deploy.env" ]; then
+  OTHER_BRIDGES="$(sed -nE "s/^[[:space:]]*OTHER_BRIDGES=[\"']?([^\"']*)[\"']?[[:space:]]*\$/\1/p" "$DATA/deploy.env")"
+fi
+OTHER_BRIDGES="${OTHER_BRIDGES:-}"
+
 # ── 2. Back up the live store (online, no downtime) ─────────────────────────
 # whatsapp.db holds the device keys: a copy of it is a copy of the account, so
 # backups are private whatever the caller's umask is.
@@ -52,6 +66,14 @@ if [ -f "$BIN" ]; then
   cp -p "$BIN" "$BACKUP_DIR/whatsapp-bridge"
   cp -p "$DATA/deployed-commit" "$BACKUP_DIR/" 2>/dev/null || true
 fi
+# The new binary migrates every bridge's messages.db on start, not just this one.
+while IFS='|' read -r name unit port envf; do
+  [ -n "$name" ] || continue
+  other_db="$(dirname "$envf")/store/messages.db"
+  if [ -f "$other_db" ]; then
+    (umask 077 && sqlite3 "$other_db" ".backup '$BACKUP_DIR/$name-messages.db'")
+  fi
+done <<< "$OTHER_BRIDGES"
 ls -dt "$DATA/backups"/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf   # keep 5
 
 # ── 3. Swap in the new binary, keeping the old one for rollback ─────────────
@@ -76,18 +98,6 @@ sudo systemctl restart whatsapp-bridge.service || rollback "whatsapp-bridge fail
 sudo systemctl restart whatsapp-mcp.service || rollback "whatsapp-mcp failed to restart"
 
 # ── 5. Verify every bridge on this binary comes back connected ──────────────
-# Other numbers can run the same binary from their own data dirs (one process
-# per number, each a systemd *user* unit). They must be restarted onto the new
-# build and checked too, or a bad build only shows up at their next unrelated
-# restart. One per line, `name|user-unit|rest-port|path/to/.env`, set either in
-# the environment or as one `OTHER_BRIDGES=...` line per bridge in
-# "$DATA/deploy.env" (kept out of the repo because it names machines and paths).
-# The file is parsed, not sourced: an unquoted `a|b|c` would run as a pipeline.
-# Empty means this box runs a single bridge.
-if [ -z "${OTHER_BRIDGES:-}" ] && [ -f "$DATA/deploy.env" ]; then
-  OTHER_BRIDGES="$(sed -nE "s/^[[:space:]]*OTHER_BRIDGES=[\"']?([^\"']*)[\"']?[[:space:]]*\$/\1/p" "$DATA/deploy.env")"
-fi
-OTHER_BRIDGES="${OTHER_BRIDGES:-}"
 
 wait_connected() {  # wait_connected <port> <env file>
   local key state
@@ -115,7 +125,7 @@ wait_connected 8080 "$DATA/.env" \
 log "✓ bridge connected"
 sudo journalctl -u whatsapp-bridge --since "1 min ago" --no-pager 2>/dev/null | grep -i "\[IDENTITY\]" | tail -2 || true
 
-restart_others
+restart_others || rollback "could not restart the other bridges (systemctl --user)"
 while IFS='|' read -r name unit port envf; do
   [ -n "$name" ] || continue
   log "waiting for the $name bridge"
