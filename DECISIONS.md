@@ -153,3 +153,27 @@ fresh-context review (no blockers) whose should-fixes were applied before deploy
 
 Ops (outside this repo): ig-saves config files made 600; `~/Code/personal/infra`
 pushed to a private GitHub repo.
+
+## D11 — 2026-10-23 — Edits, calls, chat import, recall matrix; v0.7.0/v0.7.1-pro (Simon: "continue on the nect batch pls")
+Three parallel agents, merged with the upstream media fix (#99), then a
+fresh-context review whose findings were fixed before deploy:
+- **Edit history, revokes, call log** (migration 009; 170 old call messages
+  became `calls` rows). The store treats an edit or revoke as a claim, not a
+  fact: edits only from the stored author, revokes from the author or a group
+  admin, call-log messages only from own devices, LID↔phone only through
+  `identities`/the LID map, never equal digits. Our own `/api/edit` and
+  `/api/delete` refuse other people's messages up front (WhatsApp relays such
+  an edit and recipients silently ignore it, so it was only rewriting our store).
+- **Chat-export import** (`lib/chat_import.py`), dry run by default, no schema
+  change. Imported rows carry `import-<hash>` IDs that never go to WhatsApp, and
+  incoming messages with that prefix are dropped (IDs are sender-chosen).
+- **recall** keeps vectors in one in-memory matrix: identical top-10 on 20 live
+  queries, ~5x faster, ~50 MB resident at 32k messages.
+- **Call stanzas:** only `From` is the server's; creator, alt JID and group are
+  believed only when From backs them, otherwise an event may only update a call
+  already recorded. Cost: an outgoing call placed on the phone that this device
+  only sees through the callee's events is not logged live (the phone's
+  call-log message still records it).
+- **DST:** item 5 of the 2026-10-21 review was already live in v0.6.0-pro; the
+  webhook's previous-message lookup was the last text compare and is fixed.
+  Storing UTC stays a later migration.
