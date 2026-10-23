@@ -117,6 +117,19 @@ func runMigrations(db *sql.DB) error {
 			sql:  `ALTER TABLE chats ADD COLUMN merged_into TEXT`,
 		},
 		{
+			// Edit history and revokes (migrations/009_edits_calls.sql).
+			name: "edited_at",
+			sql:  `ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP`,
+		},
+		{
+			name: "deleted_at",
+			sql:  `ALTER TABLE messages ADD COLUMN deleted_at TIMESTAMP`,
+		},
+		{
+			name: "deleted_by",
+			sql:  `ALTER TABLE messages ADD COLUMN deleted_by TEXT`,
+		},
+		{
 			// Phone-offline tracking; see PhoneStatus. CREATE IF NOT EXISTS is
 			// idempotent, so it never hits the duplicate-column check below.
 			name: "phone_status",
@@ -130,6 +143,11 @@ func runMigrations(db *sql.DB) error {
 			// Unexpected migration error - log but don't fail
 			fmt.Printf("Warning: migration error (%s column): %v\n", m.name, err)
 		}
+	}
+	// Edit history and the call log (migrations/009_edits_calls.sql). After
+	// the ALTERs above, which add the messages columns it relies on.
+	if err := createEditsCallsTables(db); err != nil {
+		return err
 	}
 	// Persistent media retry queue (migrations/006_media_requests.sql).
 	return createMediaRequestTable(db)

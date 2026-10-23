@@ -152,6 +152,13 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	// needs the full JID.
 	senderUser := msg.Info.Sender.User
 
+	// Edits and revokes change an earlier message instead of adding one. Handled
+	// before StoreChat so they don't count as new activity in the chat.
+	if ch := classifyChange(msg); ch.Kind != changeNone {
+		c.handleChange(messageStore, webhookManager, msg, ch, sender)
+		return
+	}
+
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := c.GetChatName(messageStore, msg.Info.Chat, chatJID, nil, senderUser)
 
@@ -163,6 +170,12 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 
 	// Extract text content
 	content := ExtractTextContent(msg.Message)
+
+	// The phone tells its companions about each call with a call-log message.
+	// It has no text, so it would be dropped below; it belongs in the call log.
+	if logMsg := msg.Message.GetCallLogMesssage(); logMsg != nil {
+		c.recordCallLog(messageStore, callLogEvent(logMsg, msg.Info.ID, chatJID, msg.Info.Timestamp, msg.Info.IsFromMe, database.SourceLive))
+	}
 
 	// A poll creation message needs its option list persisted locally, independent of anything
 	// whatsmeow itself stores: a later vote only ever carries SHA-256 hashes of the selected
@@ -281,6 +294,12 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 			// Store messages
 			for _, msg := range messages {
 				if msg == nil || msg.Message == nil {
+					continue
+				}
+
+				// Edits, revokes and calls change or describe other things rather
+				// than being messages themselves; see historyChange.
+				if c.handleHistoryNonMessage(messageStore, chatJID, jid, msg.Message) {
 					continue
 				}
 

@@ -44,8 +44,13 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content
 	// history sync and the reconnect backfill, and REPLACE deletes the row first,
 	// wiping columns written after the original insert (voice-note transcripts,
 	// a direct_path refreshed by media retry, quote/edit/system metadata) and
-	// changing its rowid, which the recall index keys on. New non-empty text still
-	// wins so edits land; media fields keep the stored value once set.
+	// changing its rowid, which the recall index keys on. Media fields keep the
+	// stored value once set.
+	//
+	// Content: new non-empty text wins, except on a message with a recorded edit.
+	// Edits are applied by ApplyEdit, and a history-sync or backfill replay of
+	// the original arriving after one would otherwise put the pre-edit text back.
+	// deleted_at/deleted_by are not touched: a replay must not un-delete.
 	_, err := store.db.Exec(
 		`INSERT INTO messages
 		(id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
@@ -53,7 +58,9 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content
 		ON CONFLICT(id, chat_jid) DO UPDATE SET
 			sender          = COALESCE(NULLIF(excluded.sender, ''), messages.sender),
 			sender_name     = COALESCE(NULLIF(excluded.sender_name, ''), messages.sender_name),
-			content         = COALESCE(NULLIF(excluded.content, ''), messages.content),
+			content         = CASE WHEN COALESCE(messages.is_edited, 0) = 1 AND COALESCE(messages.content, '') <> ''
+			                           THEN messages.content
+			                           ELSE COALESCE(NULLIF(excluded.content, ''), messages.content) END,
 			timestamp       = excluded.timestamp,
 			is_from_me      = excluded.is_from_me,
 			media_type      = COALESCE(NULLIF(messages.media_type, ''), excluded.media_type),
