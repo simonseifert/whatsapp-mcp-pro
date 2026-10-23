@@ -277,6 +277,17 @@ func TestApplyEditAuthorship(t *testing.T) {
 		{"own message, editor claims own JID but is not from me", testPhoneChat, testOwnJID, true, Actor{JID: testOwnJID}, false},
 		{"own message, other side of the chat", testPhoneChat, testOwnJID, true, Actor{JID: testPhoneChat}, false},
 		{"message with no stored sender", testGroup, "", false, Actor{JID: testPhoneChat}, false},
+		// Bare digits carry no namespace, and a LID's digits can equal someone
+		// else's phone number. A bare sender is a phone JID unless the
+		// directory knows the digits as a LID.
+		{"bare sender in a group is a phone JID", testGroup, "4915112345678", false, Actor{JID: testPhoneChat}, true},
+		{"LID with the bare phone sender's digits is someone else", testGroup, "4915112345678", false, Actor{JID: "4915112345678@lid"}, false},
+		{"bare sender the directory knows as a LID", testGroup, "987654321098765", false, Actor{JID: testMappedLID}, true},
+		{"known-LID bare sender, linked phone JID", testGroup, "987654321098765", false, Actor{JID: testPhoneChat}, true},
+		{"known-LID bare sender, phone JID with the same digits", testGroup, "987654321098765", false, Actor{JID: "987654321098765@s.whatsapp.net"}, false},
+		{"LID sender, phone JID with the same digits", testGroup, testLIDChat, false, Actor{JID: "123456789012345@s.whatsapp.net"}, false},
+		{"phone sender, LID with the same digits", testGroup, testPhoneChat, false, Actor{JID: "4915112345678@lid"}, false},
+		{"editor given as bare digits is never matched", testGroup, testPhoneChat, false, Actor{JID: "4915112345678"}, false},
 		{"newsletter edited by itself", testNewsletter, testNewsletter, false, Actor{JID: testNewsletter}, true},
 		{"newsletter edited by a follower", testNewsletter, testNewsletter, false, Actor{JID: testStranger}, false},
 	}
