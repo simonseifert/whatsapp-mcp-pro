@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
+from .changes import change_columns, change_flags, mark_content
 from .naming import sender_forms
 from .utils import MESSAGES_DB_PATH, canonical_chat_jid, logger, to_sql_utc
 
@@ -349,9 +350,9 @@ def recall(
     _ensure_table(conn)
 
     sql_parts = [
-        """
+        f"""
         SELECT m.id, m.chat_jid, m.sender, m.content, m.timestamp, m.is_from_me,
-               c.name AS chat_name, e.embedding
+               c.name AS chat_name, e.embedding, {change_columns(conn, "m")}
         FROM message_embeddings e
         JOIN messages m
             ON m.id = e.message_id AND m.chat_jid = e.chat_jid
@@ -419,8 +420,9 @@ def recall(
                 "sender": r[2],
                 "is_from_me": bool(r[5]),
                 "timestamp": r[4],
-                "content": r[3],
+                "content": mark_content(r[3], r[8], r[9]),
                 "similarity": round(float(sims[int(i)]), 4),
+                **change_flags(r[8], r[9]),
             }
         )
 
