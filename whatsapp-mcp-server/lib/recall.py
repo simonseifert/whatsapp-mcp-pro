@@ -16,7 +16,10 @@ Design choices:
 - The model is unloaded after 15 min without embeddings, so the long-running
   shared server doesn't hold ~1 GB of RAM between recall sessions.
 - A daemon thread incrementally indexes pending messages in the background.
-- Brute-force cosine search at query time — fine up to ~100k messages.
+- Brute-force cosine search at query time, over a float32 matrix kept in
+  memory and extended as the backfill adds rows (_EmbeddingMatrix). It costs
+  1.5 KB per embedded message (~50 MB at 32k, ~250 MB at 160k) for as long as
+  the process lives; filters stay in SQL, so only the vectors are cached.
 - Embeddings stored normalized, so dot product == cosine similarity.
 
 Pro tier — added in whatsapp-mcp-extended-pro fork.
@@ -28,6 +31,7 @@ import os
 import sqlite3
 import threading
 import time
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -128,6 +132,9 @@ def _unloader_loop() -> None:
                 continue
             logger.info("[recall] unloading embedding model after %.0fs idle", idle)
             _model = None
+        # Whoever opted into unloading wants the memory back; the matrix is the
+        # other big resident and is rebuilt (~0.2 s at 32k rows, ~1 s at 160k) by the next call.
+        _drop_matrix()
         import gc
 
         gc.collect()
@@ -183,6 +190,208 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msgemb_chat ON message_embeddings(chat_jid)")
+    # Covers recall's per-call candidate query. Without it that query walks the
+    # table itself, i.e. every 1.5 KB embedding page, just to read the keys:
+    # ~45 ms vs ~22 ms at 32k rows.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_msgemb_model_key ON message_embeddings(model, message_id, chat_jid, embedded_at)"
+    )
+
+
+# ---------- in-memory embedding matrix ----------
+
+
+class _EmbeddingMatrix:
+    """Every embedding of one model in one store, as a float32 matrix keyed by rowid.
+
+    recall() used to SELECT every embedding blob and np.stack them on every call:
+    ~70-90 MB transient and ~200 ms at 32k messages, linear in history. This keeps
+    the matrix resident (384 float32 = 1.5 KB per message, ~50 MB at 32k, ~250 MB
+    at 160k) and extends it with rows above the highest rowid seen, which is
+    where the backfill's INSERTs land.
+
+    Only vectors are cached. Which rows match, and their text, chat and sender,
+    still come from SQL on every call, so merges (UPDATE chat_jid in place),
+    deleted messages and edits are seen without any invalidation. What the
+    cache cannot see on its own is a rowid that now holds a different row: SQLite
+    hands the max rowid out again after it is deleted (INSERT OR REPLACE of the
+    newest row does exactly that), and VACUUM renumbers tables without an
+    INTEGER PRIMARY KEY. Each candidate is therefore checked against the
+    (message_id, embedded_at) cached for its rowid, and any mismatch rebuilds.
+
+    Readers get views of [:n]. Appends write past n, and a grow or rebuild
+    allocates fresh arrays, so a view handed out earlier is never written to and
+    scoring can run outside the lock.
+    """
+
+    def __init__(self, db_path: str, model: str) -> None:
+        import numpy as np
+
+        self.db_path = db_path
+        self.model = model
+        self.lock = threading.Lock()
+        self._n = 0
+        self._dim = 0
+        self._rowids = np.empty(0, dtype=np.int64)
+        self._stamps = np.empty(0, dtype=np.int64)
+        self._mids = np.empty(0, dtype=object)
+        self._vecs = np.empty((0, 0), dtype=np.float32)
+        self.rebuilds = 0
+
+    @property
+    def rows(self) -> int:
+        """Number of cached embeddings."""
+        return self._n
+
+    def _reserve(self, needed: int) -> None:
+        import numpy as np
+
+        if needed <= len(self._rowids):
+            return
+        # 1/8 headroom: the backfill adds a few hundred rows a day, so a regrow
+        # (a full copy) is rare, and the slack stays a few MB rather than the
+        # 2x a doubling strategy would leave idle.
+        cap = needed + needed // 8 + 1024
+        n = self._n
+        rowids = np.empty(cap, dtype=np.int64)
+        stamps = np.empty(cap, dtype=np.int64)
+        mids = np.empty(cap, dtype=object)
+        vecs = np.empty((cap, self._dim), dtype=np.float32)
+        rowids[:n] = self._rowids[:n]
+        stamps[:n] = self._stamps[:n]
+        mids[:n] = self._mids[:n]
+        if n:
+            vecs[:n] = self._vecs[:n]
+        self._rowids, self._stamps, self._mids, self._vecs = rowids, stamps, mids, vecs
+
+    def _append(self, rows: list[tuple[int, str, int, bytes]]) -> None:
+        import numpy as np
+
+        if not rows:
+            return
+        if not self._dim:
+            self._dim = len(rows[0][3]) // 4
+        self._reserve(self._n + len(rows))
+        n = self._n
+        for i, (rowid, mid, stamp, blob) in enumerate(rows):
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if vec.shape[0] != self._dim:
+                # The old np.stack raised here too: same model, two widths means
+                # the store is corrupt or MODEL_NAME was reused for a new model.
+                raise ValueError(
+                    f"embedding width {vec.shape[0]} != {self._dim} under model {self.model}; re-index needed"
+                )
+            self._rowids[n + i] = rowid
+            self._mids[n + i] = mid
+            self._stamps[n + i] = stamp
+            self._vecs[n + i] = vec
+        self._n = n + len(rows)
+
+    def _load(self, conn: sqlite3.Connection, after_rowid: int) -> int:
+        cur = conn.execute(
+            """
+            SELECT rowid, message_id, embedded_at, embedding FROM message_embeddings
+            WHERE model = ? AND rowid > ? ORDER BY rowid
+            """,
+            (self.model, after_rowid),
+        )
+        added = 0
+        # Chunked so a cold build never holds every blob as Python bytes at once.
+        while chunk := cur.fetchmany(4096):
+            self._append(chunk)
+            added += len(chunk)
+        return added
+
+    def _rebuild(self, conn: sqlite3.Connection) -> None:
+        import numpy as np
+
+        count = conn.execute("SELECT COUNT(*) FROM message_embeddings WHERE model = ?", (self.model,)).fetchone()[0]
+        self._n = 0
+        self._dim = 0
+        self._rowids = np.empty(0, dtype=np.int64)
+        self._stamps = np.empty(0, dtype=np.int64)
+        self._mids = np.empty(0, dtype=object)
+        self._vecs = np.empty((0, 0), dtype=np.float32)
+        t0 = time.monotonic()
+        first = conn.execute(
+            "SELECT embedding FROM message_embeddings WHERE model = ? LIMIT 1", (self.model,)
+        ).fetchone()
+        if first is not None:
+            self._dim = len(first[0]) // 4
+            self._reserve(count)
+        self._load(conn, -(2**63))
+        self.rebuilds += 1
+        logger.info("[recall] loaded %d embeddings into memory in %.2fs", self._n, time.monotonic() - t0)
+
+    def _positions(self, cand_rowids: np.ndarray, cand_mids: np.ndarray, cand_stamps: np.ndarray) -> np.ndarray | None:
+        import numpy as np
+
+        n = self._n
+        if n == 0:
+            return None if len(cand_rowids) else np.empty(0, dtype=np.intp)
+        pos = np.searchsorted(self._rowids[:n], cand_rowids)
+        safe = np.minimum(pos, n - 1)
+        ok = (
+            (pos < n)
+            & (self._rowids[safe] == cand_rowids)
+            & (self._stamps[safe] == cand_stamps)
+            & (self._mids[safe] == cand_mids)
+        )
+        return safe if bool(ok.all()) else None
+
+    def lookup(
+        self,
+        conn: sqlite3.Connection,
+        cand_rowids: np.ndarray,
+        cand_mids: np.ndarray,
+        cand_stamps: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Bring the cache up to ``conn``'s snapshot and locate the candidates.
+
+        ``conn`` must be inside the read transaction the candidates came from,
+        so every candidate is loadable from it.
+
+        Returns:
+            (matrix view of every cached row, row index of each candidate in it).
+
+        Raises:
+            RuntimeError: when a candidate is still missing after a full reload,
+                which would mean the store changed under an open transaction.
+        """
+        with self.lock:
+            if self._n == 0:
+                self._rebuild(conn)
+            else:
+                self._load(conn, int(self._rowids[self._n - 1]))
+            pos = self._positions(cand_rowids, cand_mids, cand_stamps)
+            if pos is None:
+                logger.info("[recall] embedding rowids were reused or renumbered, reloading")
+                self._rebuild(conn)
+                pos = self._positions(cand_rowids, cand_mids, cand_stamps)
+                if pos is None:
+                    raise RuntimeError("recall candidates missing from a freshly loaded embedding matrix")
+            return self._vecs[: self._n], pos
+
+
+_matrix: _EmbeddingMatrix | None = None
+_matrix_lock = threading.Lock()
+
+
+def _get_matrix() -> _EmbeddingMatrix:
+    """The cache for the current store and model; a new one if either changed."""
+    global _matrix
+    with _matrix_lock:
+        if _matrix is None or _matrix.db_path != MESSAGES_DB_PATH or _matrix.model != MODEL_NAME:
+            # Dropping the old one is the whole invalidation for a model change:
+            # its rows can never be candidates under the new model anyway.
+            _matrix = _EmbeddingMatrix(MESSAGES_DB_PATH, MODEL_NAME)
+        return _matrix
+
+
+def _drop_matrix() -> None:
+    global _matrix
+    with _matrix_lock:
+        _matrix = None
 
 
 # ---------- background indexer ----------
@@ -332,7 +541,6 @@ def recall(
     if limit is None or limit < 1:
         return {"error": "limit must be a positive integer"}
     limit = min(limit, MAX_RECALL_LIMIT)
-    import numpy as np
 
     _ensure_indexer_running()
     # recall is an opt-in extra. Without sentence-transformers installed this
@@ -346,21 +554,39 @@ def recall(
         return {"error": f"could not embed the query: {exc}"}
 
     conn = _connect()
+    try:
+        return _search(conn, qvec, chat_jid, sender, after, before, is_from_me, limit)
+    finally:
+        conn.close()
+
+
+def _search(
+    conn: sqlite3.Connection,
+    qvec: np.ndarray,
+    chat_jid: str | None,
+    sender: str | None,
+    after: str | None,
+    before: str | None,
+    is_from_me: bool | None,
+    limit: int,
+) -> dict[str, Any]:
+    import numpy as np
+
     _ensure_table(conn)
 
+    # Keys only: the vectors come from the in-memory matrix, the text is fetched
+    # for the top hits alone.
     sql_parts = [
         """
-        SELECT m.id, m.chat_jid, m.sender, m.content, m.timestamp, m.is_from_me,
-               c.name AS chat_name, e.embedding
+        SELECT e.rowid, e.message_id, e.embedded_at
         FROM message_embeddings e
         JOIN messages m
             ON m.id = e.message_id AND m.chat_jid = e.chat_jid
-        LEFT JOIN chats c ON c.jid = m.chat_jid
         WHERE e.model = ?
         """
     ]
     # Seeded with the model: embeddings from a different model have a different
-    # dimensionality, and np.stack over a mixed set raises rather than degrades.
+    # dimensionality, and a matrix over a mixed set cannot exist.
     params: list[Any] = [MODEL_NAME]
     if chat_jid:
         # A merged LID's messages and embeddings were moved to its twin.
@@ -391,35 +617,75 @@ def recall(
         sql_parts.append(" AND m.is_from_me = ?")
         params.append(1 if is_from_me else 0)
 
-    rows = conn.execute("".join(sql_parts), params).fetchall()
-    conn.close()
+    # One read transaction for candidates, matrix catch-up and the final fetch:
+    # the backfill and the bridge's chat merge write concurrently, and without a
+    # shared snapshot a candidate could be missing from the matrix, or a top hit
+    # gone by the time its text is read.
+    conn.execute("BEGIN")
+    try:
+        rows = conn.execute("".join(sql_parts), params).fetchall()
+        if not rows:
+            conn.execute("COMMIT")
+            return {
+                "results": [],
+                "index_status": index_status(),
+                "warning": (
+                    "No embedded messages match your filters yet. The indexer may still"
+                    " be warming up — call `recall_index_status` to check progress."
+                ),
+            }
+        # fromiter over itemgetter: a third of the cost of zip(*rows) + np.array,
+        # which mattered at 160k candidates.
+        n = len(rows)
+        cand_rowids = np.fromiter(map(itemgetter(0), rows), np.int64, n)
+        cand_mids = np.fromiter(map(itemgetter(1), rows), object, n)
+        cand_stamps = np.fromiter(map(itemgetter(2), rows), np.int64, n)
+        vecs, pos = _get_matrix().lookup(conn, cand_rowids, cand_mids, cand_stamps)
 
-    if not rows:
-        return {
-            "results": [],
-            "index_status": index_status(),
-            "warning": (
-                "No embedded messages match your filters yet. The indexer may still"
-                " be warming up — call `recall_index_status` to check progress."
-            ),
+        # Embeddings are stored normalized and the query is encoded normalized,
+        # so dot == cosine. Past a quarter of the matrix one matvec over all of it
+        # beats gathering the rows first (a gather of every row is a full copy).
+        if len(pos) * 4 >= vecs.shape[0]:
+            sims = (vecs @ qvec)[pos]
+        else:
+            sims = vecs[pos] @ qvec
+        k = min(limit, len(sims))
+        top = np.argpartition(-sims, k - 1)[:k] if k < len(sims) else np.arange(len(sims))
+        top = top[np.argsort(-sims[top], kind="stable")]
+        top_rowids = [int(cand_rowids[i]) for i in top]
+
+        details = {
+            r[0]: r[1:]
+            for r in conn.execute(
+                f"""
+                SELECT e.rowid, m.id, m.chat_jid, m.sender, m.content, m.timestamp,
+                       m.is_from_me, c.name
+                FROM message_embeddings e
+                JOIN messages m
+                    ON m.id = e.message_id AND m.chat_jid = e.chat_jid
+                LEFT JOIN chats c ON c.jid = m.chat_jid
+                WHERE e.rowid IN ({",".join("?" * len(top_rowids))})
+                """,
+                top_rowids,
+            )
         }
-
-    embeddings = np.stack([np.frombuffer(r[7], dtype=np.float32) for r in rows])
-    sims = embeddings @ qvec  # both normalized -> dot == cosine
-    top = np.argsort(-sims)[:limit]
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
     results = []
-    for i in top:
-        r = rows[int(i)]
+    for i, rowid in zip(top, top_rowids, strict=True):
+        mid, cjid, snd, content, ts, from_me, chat_name = details[rowid]
         results.append(
             {
-                "message_id": r[0],
-                "chat_jid": r[1],
-                "chat_name": r[6],
-                "sender": r[2],
-                "is_from_me": bool(r[5]),
-                "timestamp": r[4],
-                "content": r[3],
+                "message_id": mid,
+                "chat_jid": cjid,
+                "chat_name": chat_name,
+                "sender": snd,
+                "is_from_me": bool(from_me),
+                "timestamp": ts,
+                "content": content,
                 "similarity": round(float(sims[int(i)]), 4),
             }
         )
