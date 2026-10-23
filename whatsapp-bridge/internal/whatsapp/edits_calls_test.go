@@ -613,3 +613,77 @@ func TestRevokedAuthor(t *testing.T) {
 		}
 	}
 }
+
+// Message IDs are the sender's choice. A live message whose ID is an imported
+// row's would otherwise overwrite that row through StoreMessage's upsert.
+func TestHandleMessageDropsIDsThatMimicImports(t *testing.T) {
+	store := openTestStore(t)
+	c := &Client{logger: waLog.Noop}
+	sent := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(groupJID.String(), "Group", sent); err != nil {
+		t.Fatal(err)
+	}
+	const id = "import-0123456789abcdef"
+	if err := store.StoreMessage(id, groupJID.String(), phoneJID.String(), "Max", "archived", sent, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	info := types.MessageInfo{MessageSource: types.MessageSource{Chat: groupJID, Sender: phoneJID, IsGroup: true},
+		ID: id, Timestamp: sent.Add(time.Hour)}
+	c.HandleMessage(store, &fakeSink{}, &events.Message{Info: info, Message: &waE2E.Message{Conversation: proto.String("overwritten")}})
+
+	msgs, err := store.GetMessages(groupJID.String(), 10)
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "archived" {
+		t.Fatalf("messages = %+v, %v; want the imported row untouched", msgs, err)
+	}
+}
+
+// CallCreator, CallCreatorAlt and GroupJID are written by the sending client;
+// only From is the server's. A forged offer must not plant a call in a third
+// party's chat or in a group the sender is not in.
+func TestCallEventFromDistrustsClaimedCreatorAndGroup(t *testing.T) {
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	stranger := types.JID{User: "4915187654321", Server: types.DefaultUserServer}
+	member := phoneJID
+	ids := callJIDs{
+		isOwn:     func(j types.JID) bool { return j.User == ownJID.User },
+		normalize: func(j types.JID) types.JID { return j },
+		inGroup:   func(g, m types.JID) bool { return g == groupJID && m == member },
+	}
+	meta := func(from, creator, group types.JID) types.BasicCallMeta {
+		return types.BasicCallMeta{From: from, Timestamp: at, CallCreator: creator, CallID: "CALL1", GroupJID: group}
+	}
+	tests := []struct {
+		name         string
+		evt          any
+		chat, caller string
+		updateOnly   bool
+	}{
+		{"offer claiming a third party as creator is filed as the sender's",
+			&events.CallOffer{BasicCallMeta: meta(stranger, member, types.EmptyJID), Data: &binary.Node{Tag: "offer"}},
+			stranger.String(), stranger.String(), false},
+		{"terminate naming someone else may only update",
+			&events.CallTerminate{BasicCallMeta: meta(stranger, member, types.EmptyJID)},
+			member.String(), member.String(), true},
+		{"group offer from a non-member may only update",
+			&events.CallOffer{BasicCallMeta: meta(stranger, stranger, groupJID), Data: &binary.Node{Tag: "offer"}},
+			groupJID.String(), stranger.String(), true},
+		{"group offer from a member is filed in the group",
+			&events.CallOffer{BasicCallMeta: meta(member, member, groupJID), Data: &binary.Node{Tag: "offer"}},
+			groupJID.String(), member.String(), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ev, ok := callEventFrom(tc.evt, ids)
+			if !ok || ev.ChatJID != tc.chat || ev.CallerJID != tc.caller || ev.UpdateOnly != tc.updateOnly {
+				t.Fatalf("got chat=%q caller=%q updateOnly=%v ok=%v; want %q %q %v",
+					ev.ChatJID, ev.CallerJID, ev.UpdateOnly, ok, tc.chat, tc.caller, tc.updateOnly)
+			}
+		})
+	}
+
+	store := openTestStore(t)
+	forged, _ := callEventFrom(tests[1].evt, ids)
+	if _, err := store.RecordCallEvent(forged); !errors.Is(err, database.ErrCallUnknown) {
+		t.Fatalf("update-only event for an unknown call: err = %v, want ErrCallUnknown", err)
+	}
+}

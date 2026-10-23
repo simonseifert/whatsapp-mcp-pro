@@ -145,6 +145,13 @@ func (c *Client) NormalizeChatJID(chat types.JID) types.JID {
 
 // HandleMessage processes regular incoming messages with media support and webhook processing
 func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManager interface{}, msg *events.Message) {
+	// Message IDs are chosen by the sending client. Real ones are uppercase
+	// hex; one carrying the importer's prefix can only be an attempt to land
+	// on an imported row (the upsert would overwrite it) or to pass as one.
+	if database.IsImportedMessageID(msg.Info.ID) {
+		c.logger.Warnf("Dropping message %s in %s from %s: its ID mimics an imported row", msg.Info.ID, msg.Info.Chat, msg.Info.Sender)
+		return
+	}
 	// Save message to database
 	chatJID := c.NormalizeChatJID(msg.Info.Chat).String()
 	sender := StoredSender(msg.Info.Sender)
@@ -302,6 +309,10 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 			// Store messages
 			for _, msg := range messages {
 				if msg == nil || msg.Message == nil {
+					continue
+				}
+				// See HandleMessage: a sender-chosen ID must not reach an imported row.
+				if database.IsImportedMessageID(msg.Message.GetKey().GetID()) {
 					continue
 				}
 
