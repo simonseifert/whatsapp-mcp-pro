@@ -127,3 +127,29 @@ operator approves each client on the consent page and approves read-only by defa
 Static tokens are unchanged. The README demo GIF was recorded on fictional data, and
 the M1 standby was brought to v0.5.0-pro after its Xcode licence was accepted. How
 to connect, revoke and turn it off is in Simon's private ops doc.
+
+## D10 — 2026-10-23 — Send caps, JID normalisation, v0.6.0-pro (Simon: "lets do that")
+Shipped from the review's "Then" list, built by two parallel agents, then a
+fresh-context review (no blockers) whose should-fixes were applied before deploy:
+- **Send caps on by default**, separate from pacing: 15/chat/min, 60/chat/h,
+  120/h, 10 new contacts per 24h; looser budget for reactions/edits/deletes.
+  Capped sends are refused before any presence/upload/typing. The per-chat
+  default went 8 → 15/min so "send these 12 photos" works. Friday's bridge got
+  30/min, 300/h in its own `.env`: it may only message Simon, so the per-chat
+  cap there only guards against drowning one chat.
+- **Senders stored as full JIDs**; migration 008 runs on every start (23,113 rows
+  on main, 22 on Friday; 26 unclassifiable rows stay bare). LIDs stay `@lid`
+  rather than being converted, so no information is lost.
+- **Webhook `chat_jid` = the store's JID**, plus `chat_jid_alt`. The only live
+  `chat_jid` triggers (FIDIT → n8n) are groups, which have no LID form.
+- Also: corrupt state fails safe; clock steps don't; group cache never holds its
+  lock across a fetch (it used to stall whatsmeow's event loop); panicking
+  handlers are recovered; ORDER BY instant (DST night 25 Oct); deploy keeps a
+  binary + every bridge's store per backup.
+- **Not done, on purpose:** media retry stays enabled. The docs refresh found
+  WhatsApp broke re-uploaded media keys for linked devices around 2026-09-29, so
+  retries likely can't succeed; the queue has never run here (table empty), so
+  leaving it costs nothing until it does.
+
+Ops (outside this repo): ig-saves config files made 600; `~/Code/personal/infra`
+pushed to a private GitHub repo.
