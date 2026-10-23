@@ -54,9 +54,10 @@ type Config struct {
 // handful of chats, plus automations sending tens of messages a day. Any of
 // them firing in that pattern would be a sign something is looping.
 const (
-	// An agent often splits one answer into several bubbles plus a file; 8 a
-	// minute leaves room for that while stopping a tight loop within seconds.
-	DefaultRecipientMaxPerMinute = 8
+	// An agent often splits one answer into several bubbles, or is asked to
+	// send a dozen photos at once; 15 a minute leaves room for that, and the
+	// hourly cap below still stops a loop within minutes.
+	DefaultRecipientMaxPerMinute = 15
 	// A long back-and-forth with one person stays well under one a minute on
 	// average.
 	DefaultRecipientMaxPerHour = 60

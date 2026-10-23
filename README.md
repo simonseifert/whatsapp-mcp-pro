@@ -59,7 +59,7 @@ Read this before you pair a number you care about.
   - Opt-in pacing (`ANTIBAN_ENABLED=true`): randomised delays, typing
     simulation, a warm-up cap for new numbers, a risk score that pauses sending.
     A corrupt warm-up file restarts warm-up at day 1 instead of switching it off.
-  - Send caps, on by default: per chat (8/min, 60/h), overall (120/h), and 10
+  - Send caps, on by default: per chat (15/min, 60/h), overall (120/h), and 10
     first contacts per 24h, with a separate looser budget for reactions, edits
     and deletes. Over a cap the bridge answers 429 with a retry time instead of
     sending. All `ANTIBAN_*` knobs are in [SETUP.md](SETUP.md) and `.env.example`.
