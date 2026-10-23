@@ -165,7 +165,7 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 		pairingSuccessChan: make(chan struct{}, 1),
 		groups:             newGroupCache(groupCacheTTL()),
 	}
-	client.AddEventHandler(c.groups.handleEvent)
+	c.AddEventHandler(c.groups.handleEvent)
 
 	logger.Infof("Presence mode: %s (linger %v..%v)", cfg.PresenceMode, cfg.PresenceLingerMin, cfg.PresenceLingerMax)
 
