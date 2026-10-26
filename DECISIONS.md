@@ -82,8 +82,8 @@ code, tests and comments with obvious fakes (`4915112345678`, `123456789012345@l
 `.coverage` were untracked; `docs/reviews/` and `docs/handoff-*.md` are gitignored.
 Checked again 2026-10-23: no tracked file holds a number from the live contact
 store; the deploy.env example below still named a real home path and now uses
-`/home/alice`. History keeps 8 real numbers (Simon's own among them) in 24 old
-commits, on GitHub too; removing them needs a history rewrite and force push.
+`/home/alice`. History kept 8 real numbers (Simon's own among them) in old
+commits; D12 rewrote it.
 
 **Action for Simon before the next deploy:** `deploy-live.sh` no longer hard-codes the
 Friday bridge. It reads other bridges from `$OTHER_BRIDGES` or, if unset, from
@@ -181,3 +181,16 @@ fresh-context review whose findings were fixed before deploy:
 - **DST:** item 5 of the 2026-10-21 review was already live in v0.6.0-pro; the
   webhook's previous-message lookup was the last text compare and is fixed.
   Storing UTC stays a later migration.
+
+## D12 — 2026-10-23 — History rewritten to finish the D7 scrub (Simon: "rewrite the history")
+`git filter-repo` replaced the 8 real numbers and group IDs, a tailnet IP, home
+paths and the host name with fakes across our commits and messages, and dropped
+files that were only ever ours: the handoff note, two committed macOS bridge
+binaries and a `.bak` file. Only commits not on upstream were rewritten
+(`--refs ... ^upstream/main`): filter-repo drops commit signatures, so touching
+upstream's signed commits would have changed their IDs and cut the fork off
+from upstream (a first attempt did exactly that). The final tree is unchanged.
+`main` and the six `-pro` tags were force-pushed (annotated tags re-signed);
+releases follow their tags. Old commits can still be fetched by SHA from GitHub
+(merged PR #4's ref and the fork network keep them) until GitHub Support purges
+them. Any other clone of this repo must be re-cloned, not pulled.
