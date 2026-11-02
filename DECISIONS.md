@@ -194,3 +194,30 @@ from upstream (a first attempt did exactly that). The final tree is unchanged.
 releases follow their tags. Old commits can still be fetched by SHA from GitHub
 (merged PR #4's ref and the fork network keep them) until GitHub Support purges
 them. Any other clone of this repo must be re-cloned, not pulled.
+
+## D13 — 2026-11-02 — /api/download obeys the media retry budget (Claude)
+D3 assumed nothing retries in bulk. A nightly archive job did: 345 receipts in 15 minutes
+through the synchronous path, which skipped the hourly cap, with 344 ending in "the phone
+doesn't have it", and it would have re-asked weekly. Now that path shares the budget, sends
+nothing for media the phone already said is gone (`NOT_FOUND`, "no longer available") and
+nothing while a receipt is unanswered. A request that failed only by running out of
+attempts may still be asked again by an explicit download, under budget, because the phone
+may just have been offline. Trade-off: a download can fail immediately when an interactive
+caller used to wait. Refusals are 502, not 429, so callers don't sleep on them.
+This also corrects D10's note that retries likely can't succeed: 46 of 402 did.
+
+## D14 — 2026-11-02 — Media retry is for people, not jobs (Simon: "yes pls")
+Only 46 of 402 asks ever brought a file back, and every ask notifies the phone. So the
+default cap drops from 20 to 5 an hour, the queue keeps quiet from 23:00 to 08:00 and waits
+6 hours between asks about a file, and bulk callers opt out with `no_phone_retry`. The cap
+now counts receipts, not files: 12 files once sent 24 receipts in 8 minutes unnoticed.
+Quiet hours cover the background queue only, because a download someone is waiting for
+should still work at night. Cost: a bulk job no longer recovers purged media by itself; a
+person can still ask for a single file.
+
+## D15 — 2026-11-02 — Save media while it exists (Simon: "yes")
+About 3,900 of 5,800 media messages had no copy on the live box. Auto-download only ever
+covered live incoming messages, so everything the bridge sent or got through history sync
+was a row with keys, and it became unrecoverable when the servers purged it. A daily sweep
+now fetches recent media with no copy, without asking the phone. Files older than the
+window are not chased, because almost none of them were still on the servers.

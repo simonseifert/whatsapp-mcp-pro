@@ -38,6 +38,9 @@ var hkdfInfo = map[string][]byte{
 type downloadRequest struct {
 	MessageID string `json:"message_id"`
 	ChatJID   string `json:"chat_jid"`
+	// NoPhoneRetry leaves purged media alone instead of asking the sender's
+	// phone to re-upload it, for bulk jobs. See FetchMessageMedia.
+	NoPhoneRetry bool `json:"no_phone_retry"`
 }
 
 // handleDownload handles POST /api/download — fetches and decrypts WhatsApp media
@@ -46,6 +49,7 @@ type downloadRequest struct {
 // Request body:
 //   - message_id: WhatsApp message ID (required)
 //   - chat_jid:   chat JID containing the message (required)
+//   - no_phone_retry: never ask the sender's phone to re-upload (optional)
 //
 // Response: { success: bool, path: string, size: int, via: string, message?: string }
 //
@@ -236,7 +240,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 // 403s. whatsmeow re-resolves the message's direct_path against fresh media
 // hosts, which works for as long as WhatsApp still holds the file.
 func (s *Server) downloadViaWhatsmeow(w http.ResponseWriter, r *http.Request, req downloadRequest, cdnErr string) {
-	data, mediaType, filename, err := s.client.FetchMessageMedia(r.Context(), s.messageStore, req.MessageID, req.ChatJID)
+	data, mediaType, filename, err := s.client.FetchMessageMedia(r.Context(), s.messageStore, req.MessageID, req.ChatJID, !req.NoPhoneRetry)
 	if err != nil {
 		SendJSONError(w, cdnErr+"; whatsmeow fallback: "+err.Error(), http.StatusBadGateway)
 		return

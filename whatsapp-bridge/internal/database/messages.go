@@ -2,7 +2,9 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -106,6 +108,51 @@ func (store *MessageStore) GetMessageMedia(id, chatJID string) (mediaType, filen
 	)
 	err = row.Scan(&mediaType, &filename, &url, &directPath, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength)
 	return
+}
+
+// MediaMessage identifies a stored message whose media can be downloaded.
+type MediaMessage struct {
+	ID, ChatJID, MediaType, Filename string
+	FileSHA256                       []byte
+}
+
+// RecentMediaMessages lists downloadable media newer than since, newest first.
+// Imported rows and rows without a media key have nothing to fetch.
+func (store *MessageStore) RecentMediaMessages(since time.Time) ([]MediaMessage, error) {
+	rows, err := store.db.Query(
+		`SELECT id, chat_jid, media_type, COALESCE(filename,''), file_sha256, timestamp
+		   FROM messages
+		  WHERE media_type IN ('image','video','audio','document')
+		    AND media_key IS NOT NULL AND length(media_key) > 0`)
+	if err != nil {
+		return nil, fmt.Errorf("recent media messages: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type dated struct {
+		MediaMessage
+		at time.Time
+	}
+	var found []dated
+	for rows.Next() {
+		var d dated
+		if err := rows.Scan(&d.ID, &d.ChatJID, &d.MediaType, &d.Filename, &d.FileSHA256, &d.at); err != nil {
+			return nil, fmt.Errorf("recent media messages: %w", err)
+		}
+		// Compared here, not in SQL: stored timestamps carry mixed zone offsets
+		// and SQLite would compare them as text.
+		if d.at.After(since) && !IsImportedMessageID(d.ID) {
+			found = append(found, d)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("recent media messages: %w", err)
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].at.After(found[j].at) })
+	out := make([]MediaMessage, len(found))
+	for i, d := range found {
+		out[i] = d.MediaMessage
+	}
+	return out, nil
 }
 
 // GetMessages gets messages from a chat, newest first.

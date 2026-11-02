@@ -6,8 +6,34 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `/api/download` takes `no_phone_retry: true`, for bulk jobs that should take
+  what's available and never notify the phone.
+- A daily media sweep saves recent media with no copy on disk: media the bridge
+  sent, media from history sync and failed auto-downloads, which used to be lost
+  once WhatsApp purged them. It never asks the phone. `MEDIA_SWEEP_DAYS`
+  (default 14, `0` to disable).
+- `MEDIA_RETRY_QUIET_HOURS` (default `23-8`, local time, `off` to disable): the
+  background queue sends nothing in those hours.
+
+### Changed
+
+- `MEDIA_RETRY_MAX_PER_HOUR` now defaults to 5 instead of 20.
+- The background queue waits 6 hours before asking about the same file again.
+
 ### Fixed
 
+- `MEDIA_RETRY_MAX_PER_HOUR` counted files rather than requests, so a file asked
+  about several times in an hour counted once. Requests are now logged in
+  `media_retry_receipts` (migration 010).
+
+- Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
+  used to bypass, so a bulk download can no longer flood the phone with
+  "Finished syncing" notices. Over the limit it sends nothing, leaves the
+  request to the paced queue and fails the download with a 502. It also no
+  longer re-asks about media the phone already said it doesn't have, or sends a
+  second request while one is still unanswered.
 - Web UI lint is clean (it had 8 errors and 5 warnings, inherited from
   upstream) and now runs in CI. Data loading sets state from promise
   callbacks, dialogs reset their fields during render instead of in an

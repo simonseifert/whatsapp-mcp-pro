@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -52,16 +54,27 @@ type MediaRetryConfig struct {
 	// AnswerTimeout is how long a sent receipt may go unanswered before it is
 	// treated as lost (phone offline) and the request goes back to pending.
 	AnswerTimeout time.Duration
+	// RetryDelay is how long the loop waits before asking about a file again.
+	// Without it three attempts burn within minutes of each other, against a
+	// phone that will give the same answer.
+	RetryDelay time.Duration
+	// QuietStartHour and QuietEndHour bound the local hours the loop sends
+	// nothing; equal values mean no quiet hours. A download someone asks for
+	// still goes through, and a backlog resumes when the window ends.
+	QuietStartHour, QuietEndHour int
 }
 
 // DefaultMediaRetryConfig returns the conservative defaults.
 func DefaultMediaRetryConfig() MediaRetryConfig {
 	return MediaRetryConfig{
-		MaxPerHour:    20,
-		MaxAttempts:   3,
-		BatchSize:     3,
-		Interval:      time.Minute,
-		AnswerTimeout: time.Hour,
+		MaxPerHour:     5,
+		MaxAttempts:    3,
+		BatchSize:      3,
+		Interval:       time.Minute,
+		AnswerTimeout:  time.Hour,
+		RetryDelay:     6 * time.Hour,
+		QuietStartHour: 23,
+		QuietEndHour:   8,
 	}
 }
 
@@ -71,9 +84,9 @@ func MediaRetryEnabled() bool {
 	return os.Getenv("MEDIA_RETRY_ENABLED") == "true"
 }
 
-// MediaRetryConfigFromEnv reads MEDIA_RETRY_MAX_PER_HOUR and
-// MEDIA_RETRY_MAX_ATTEMPTS over the defaults. Unset, non-numeric or
-// non-positive values keep the default rather than disabling the cap.
+// MediaRetryConfigFromEnv reads MEDIA_RETRY_MAX_PER_HOUR,
+// MEDIA_RETRY_MAX_ATTEMPTS and MEDIA_RETRY_QUIET_HOURS over the defaults. Unset
+// or invalid values keep the default rather than disabling the limit.
 func MediaRetryConfigFromEnv() MediaRetryConfig {
 	cfg := DefaultMediaRetryConfig()
 	if n := positiveEnvInt("MEDIA_RETRY_MAX_PER_HOUR"); n > 0 {
@@ -82,7 +95,41 @@ func MediaRetryConfigFromEnv() MediaRetryConfig {
 	if n := positiveEnvInt("MEDIA_RETRY_MAX_ATTEMPTS"); n > 0 {
 		cfg.MaxAttempts = n
 	}
+	if start, end, ok := parseQuietHours(os.Getenv("MEDIA_RETRY_QUIET_HOURS")); ok {
+		cfg.QuietStartHour, cfg.QuietEndHour = start, end
+	}
 	return cfg
+}
+
+// parseQuietHours reads "23-8" (local hours, may wrap past midnight) or "off".
+func parseQuietHours(s string) (start, end int, ok bool) {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "off") {
+		return 0, 0, true
+	}
+	from, to, found := strings.Cut(s, "-")
+	if !found {
+		return 0, 0, false
+	}
+	start, errStart := strconv.Atoi(strings.TrimSpace(from))
+	end, errEnd := strconv.Atoi(strings.TrimSpace(to))
+	if errStart != nil || errEnd != nil || start < 0 || start > 23 || end < 0 || end > 23 {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// inQuietHours reports whether hour falls in the quiet window, which may wrap
+// past midnight.
+func (cfg MediaRetryConfig) inQuietHours(hour int) bool {
+	switch {
+	case cfg.QuietStartHour == cfg.QuietEndHour:
+		return false
+	case cfg.QuietStartHour < cfg.QuietEndHour:
+		return hour >= cfg.QuietStartHour && hour < cfg.QuietEndHour
+	default:
+		return hour >= cfg.QuietStartHour || hour < cfg.QuietEndHour
+	}
 }
 
 func positiveEnvInt(name string) int {
@@ -144,16 +191,73 @@ func (c *Client) StartMediaRetryQueue(ctx context.Context, store *database.Messa
 	q.ctx = ctx
 	c.mediaRetryQueue.Store(q)
 	go q.run(ctx)
-	c.logger.Infof("[MEDIA] retry queue started: max %d/hour, %d attempts each", cfg.MaxPerHour, cfg.MaxAttempts)
+	c.logger.Infof("[MEDIA] retry queue started: max %d/hour, %d attempts each, %s apart, quiet hours %d-%d",
+		cfg.MaxPerHour, cfg.MaxAttempts, cfg.RetryDelay, cfg.QuietStartHour, cfg.QuietEndHour)
 	return q
 }
 
-// mediaRetryMaxAttempts is the attempt cap the synchronous path records with.
-func (c *Client) mediaRetryMaxAttempts() int {
+// mediaRetryConfig is the configuration the synchronous path works under.
+func (c *Client) mediaRetryConfig() MediaRetryConfig {
 	if q := c.mediaRetryQueue.Load(); q != nil {
-		return q.cfg.MaxAttempts
+		return q.cfg
 	}
-	return DefaultMediaRetryConfig().MaxAttempts
+	return MediaRetryConfigFromEnv()
+}
+
+// Why askPhoneForMedia sent no receipt. /api/download answers these as a
+// failed download (502), deliberately not 429: a bulk caller that sleeps and
+// retries on 429 would stall for minutes on media it can't get anyway.
+var (
+	errMediaRetryOverBudget = errors.New("the hourly limit of requests to the phone is used up; the retry stays queued")
+	errMediaRetryInFlight   = errors.New("the sender's phone was already asked and has not answered yet; a re-uploaded file is saved when it does")
+	errMediaGoneFromPhone   = errors.New("the sender's phone no longer has this file")
+)
+
+// mediaRetrySendMu makes "is there budget left", the send and recording it one
+// step, for both the queue and /api/download. Otherwise concurrent downloads
+// all read the same count and overshoot the cap together, or send a second
+// receipt for a request the queue is sending right now.
+var mediaRetrySendMu sync.Mutex
+
+// askPhoneForMedia sends the receipt for a synchronous download if it may.
+//
+// Each receipt is a "Finished syncing" notice on the user's phone, and this
+// path once ignored both limits below: a nightly archive job asked about 345
+// files in 15 minutes, 344 of which the phone could not produce, and would have
+// asked again a week later. A caller now gets a prompt failure instead. Any
+// doubt about the budget counts as no budget, since a failed download can be
+// repeated but a notification can't be taken back.
+func (c *Client) askPhoneForMedia(ctx context.Context, store *database.MessageStore, messageID, chatJID string, cfg MediaRetryConfig, send func(context.Context) error) error {
+	mediaRetrySendMu.Lock()
+	defer mediaRetrySendMu.Unlock()
+
+	req, err := store.GetMediaRequest(messageID, chatJID)
+	if err != nil {
+		return fmt.Errorf("media retry: %w", err)
+	}
+	if req != nil {
+		switch {
+		case req.State == database.MediaRequestFailed && isFinalMediaRetryReason(req.LastError):
+			return fmt.Errorf("media retry: %w (%s)", errMediaGoneFromPhone, req.LastError)
+		case req.State == database.MediaRequestSent:
+			return fmt.Errorf("media retry: %w", errMediaRetryInFlight)
+		}
+	}
+
+	sentLastHour, err := store.CountMediaRetryReceiptsSince(time.Now().Add(-time.Hour))
+	if err != nil {
+		return fmt.Errorf("media retry: %w", err)
+	}
+	if mediaRetryBudget(sentLastHour, cfg.MaxPerHour, 1) == 0 {
+		return fmt.Errorf("media retry: %w", errMediaRetryOverBudget)
+	}
+
+	if err := send(ctx); err != nil {
+		c.markMediaRequest(store.MarkMediaRequestSendError(messageID, chatJID, err.Error(), cfg.MaxAttempts, time.Now()))
+		return fmt.Errorf("media retry: send receipt: %w", err)
+	}
+	c.markMediaRequest(store.MarkMediaRequestSent(messageID, chatJID, time.Now()))
+	return nil
 }
 
 func (q *MediaRetryQueue) run(ctx context.Context) {
@@ -174,8 +278,8 @@ func (q *MediaRetryQueue) run(ctx context.Context) {
 	}
 }
 
-// Tick runs one pass: expire unanswered receipts, then send up to the paced
-// budget of pending ones. It does nothing while disconnected, so an outage
+// Tick runs one pass: expire unanswered receipts, then, outside quiet hours,
+// send up to the paced budget of pending ones. It does nothing while disconnected, so an outage
 // neither burns attempts nor bunches sends. Returns the number of receipts sent.
 func (q *MediaRetryQueue) Tick(ctx context.Context) (int, error) {
 	if !q.connected() {
@@ -190,7 +294,13 @@ func (q *MediaRetryQueue) Tick(ctx context.Context) (int, error) {
 		q.logger.Infof("[MEDIA] %d media retries went unanswered for %s", expired, q.cfg.AnswerTimeout)
 	}
 
-	sentLastHour, err := q.store.CountMediaRequestsSentSince(now.Add(-time.Hour))
+	if q.cfg.inQuietHours(now.Hour()) {
+		return 0, nil
+	}
+
+	mediaRetrySendMu.Lock()
+	defer mediaRetrySendMu.Unlock()
+	sentLastHour, err := q.store.CountMediaRetryReceiptsSince(now.Add(-time.Hour))
 	if err != nil {
 		return 0, err
 	}
@@ -198,7 +308,7 @@ func (q *MediaRetryQueue) Tick(ctx context.Context) (int, error) {
 	if budget == 0 {
 		return 0, nil
 	}
-	due, err := q.store.DueMediaRequests(budget)
+	due, err := q.store.DueMediaRequests(budget, now.Add(-q.cfg.RetryDelay))
 	if err != nil {
 		return 0, err
 	}
@@ -235,13 +345,23 @@ const (
 	mediaRetryFailed                    // final: the phone no longer has the file
 )
 
+// mediaRetryReasonNotFound is the recorded reason for a NOT_FOUND answer.
+const mediaRetryReasonNotFound = "phone answered NOT_FOUND"
+
+// isFinalMediaRetryReason reports whether a failed request's last_error means
+// the phone itself said the file is gone, as opposed to attempts running out
+// while it was offline, which a later explicit download may still try.
+func isFinalMediaRetryReason(reason string) bool {
+	return reason == mediaRetryReasonNotFound || reason == whatsmeow.ErrMediaNotAvailableOnPhone.Error()
+}
+
 // classifyMediaRetryAnswer interprets a decrypted media retry notification.
 // NOT_FOUND and "not available on phone" are final: asking again only pings
 // the phone. Anything else unexpected is retried within the attempt budget.
 func classifyMediaRetryAnswer(notif *waMmsRetry.MediaRetryNotification, err error) (mediaRetryOutcome, string) {
 	switch {
 	case errors.Is(err, whatsmeow.ErrMediaNotAvailableOnPhone):
-		return mediaRetryFailed, err.Error()
+		return mediaRetryFailed, whatsmeow.ErrMediaNotAvailableOnPhone.Error()
 	case err != nil:
 		return mediaRetryAgain, err.Error()
 	}
@@ -252,7 +372,7 @@ func classifyMediaRetryAnswer(notif *waMmsRetry.MediaRetryNotification, err erro
 		}
 		return mediaRetrySuccess, ""
 	case waMmsRetry.MediaRetryNotification_NOT_FOUND:
-		return mediaRetryFailed, "phone answered NOT_FOUND"
+		return mediaRetryFailed, mediaRetryReasonNotFound
 	default:
 		return mediaRetryAgain, "phone answered " + notif.GetResult().String()
 	}

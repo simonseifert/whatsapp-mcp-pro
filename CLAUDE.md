@@ -155,11 +155,15 @@ when code/data were split as above.)
   directly, so don't move it. `/api/download` serves that copy first, then writes
   `store/media/<jid>/<msgid><ext>` from the CDN URL, then whatsmeow's direct_path,
   then (only with `MEDIA_RETRY_ENABLED=true`) a media retry to the sender's
-  phone. Each retry pings the user's phone with "Finished syncing", so keep it off
-  for bulk jobs. Retries are also persisted in `media_requests` and worked by a
+  phone. Each retry pings the user's phone with "Finished syncing". Bulk jobs must
+  pass `no_phone_retry: true`. Other callers share the hourly budget: `/api/download`
+  answers 502 (never 429, bulk callers sleep on that) once it is spent, and won't
+  re-ask for media the phone said is gone. Retries are also persisted in `media_requests` and worked by a
   paced loop (`internal/whatsapp/mediaretry_queue.go`, `MEDIA_RETRY_MAX_PER_HOUR`);
   a late answer is saved into `store/media/` (layout in `internal/mediastore`),
-  which `/api/download` then serves as `via: "saved"`.
+  which `/api/download` then serves as `via: "saved"`. Auto-download only covers
+  live incoming messages; a daily sweep (`internal/whatsapp/media_sweep.go`) saves the
+  rest while the servers still hold it.
 - **Idempotency keys are random per call, never derived from content.** A key
   built from (tool, recipient, text) once swallowed a deliberate second "ok" as
   a duplicate. `lib/idempotency.py` makes a fresh key per tool call; the only
@@ -181,7 +185,7 @@ when code/data were split as above.)
   `user` provenance without `confirmed_by_user`, and never treat a stranger's
   self-claim as confirmation.
 - **Migration numbering.** `007_send_idempotency`, `008_normalise_senders`,
-  `009_edits_calls`; the next one is `010`. The older numbers have
+  `009_edits_calls`, `010_media_retry_receipts`; the next one is `011`. The older numbers have
   duplicates (two 002s, two 003s) from merging upstream, so check
   `ls whatsapp-bridge/migrations` rather than counting, and renumber a branch's
   migration when merging if another branch took the number first.

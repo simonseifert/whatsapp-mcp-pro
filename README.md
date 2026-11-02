@@ -194,11 +194,15 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
 - **Media retry** (`MEDIA_RETRY_ENABLED=true`, off by default). When media has
   expired from WhatsApp's CDN (403/404), the bridge asks the sender's phone to
   re-upload it. Requests are queued in the database and worked by a paced
-  background loop (`MEDIA_RETRY_MAX_PER_HOUR`, default 20), so they survive a
+  background loop (`MEDIA_RETRY_MAX_PER_HOUR`, default 5, and quiet from 23:00 to
+  08:00, `MEDIA_RETRY_QUIET_HOURS`), so they survive a
   restart or an offline phone; a recovered file is saved and served from
   `store/media/`. `GET /api/media-requests` shows the queue. Each retry shows
-  "Finished syncing" on your phone, which is why it is paced and opt-in. It
-  only recovers media the phone still has.
+  "Finished syncing" on your phone, which is why it is paced and opt-in. A
+  download over the hourly limit fails at once and stays queued, and media the
+  phone said it no longer has is never requested again. Bulk jobs should pass
+  `no_phone_retry: true` to `/api/download`. It only recovers media the phone
+  still has.
 - **One bridge per number.** To run a second number, run a second bridge process
   with its own data directory (its own `store/`), its own `API_PORT`, and its own
   service unit. The MCP server talks to one bridge (`BRIDGE_HOST`); run a second

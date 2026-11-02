@@ -29,14 +29,18 @@ var ErrMessageNotFound = errors.New("message not found")
 // whatsmeow, which re-resolves direct_path against current media hosts. Unlike
 // the URL stored with the message, that keeps working after the signed CDN
 // link has expired, for as long as WhatsApp still holds the file.
-func (c *Client) FetchMessageMedia(ctx context.Context, store *database.MessageStore, messageID, chatJID string) (data []byte, mediaType, filename string, err error) {
+//
+// askPhone says whether purged media may be requested from the sender's phone
+// when media retry is on. Bulk jobs pass false: each ask notifies the user, and
+// only about one in nine has brought a file back.
+func (c *Client) FetchMessageMedia(ctx context.Context, store *database.MessageStore, messageID, chatJID string, askPhone bool) (data []byte, mediaType, filename string, err error) {
 	media, err := loadStoredMedia(store, messageID, chatJID)
 	if err != nil {
 		return nil, "", "", err
 	}
 
 	data, err = c.Client.Download(ctx, media.msg)
-	if isMediaGone(err) && MediaRetryEnabled() {
+	if askPhone && isMediaGone(err) && MediaRetryEnabled() {
 		// Persist the ask before trying it here, so a timeout, an offline
 		// phone or a restart leaves it to the background queue.
 		if _, qerr := store.EnqueueMediaRequest(messageID, chatJID, time.Now()); qerr != nil {
@@ -192,16 +196,17 @@ func (c *Client) sendMediaRetryReceipt(ctx context.Context, store *database.Mess
 // remembers it. This only works while the sender still has the file, and
 // their phone has to be online to answer.
 //
-// Every step is also recorded in media_requests. This path does not wait for
-// the queue's hourly budget, so a caller is never worse off than before, but
-// its receipt counts against that budget. If the wait times out the request
-// stays "sent" and a late answer is still saved by the background queue.
+// Every step is also recorded in media_requests. It shares the queue's hourly
+// budget and refuses when the phone has already said the file is gone, see
+// askPhoneForMedia. If the wait times out the request stays "sent" and a late
+// answer is still saved by the background queue.
 func (c *Client) retryMediaDownload(ctx context.Context, store *database.MessageStore, messageID, chatJID string, msg whatsmeow.DownloadableMessage, mediaKey []byte) ([]byte, error) {
 	info, err := c.mediaRetryInfo(store, messageID, chatJID)
 	if err != nil {
 		return nil, err
 	}
-	maxAttempts := c.mediaRetryMaxAttempts()
+	cfg := c.mediaRetryConfig()
+	maxAttempts := cfg.MaxAttempts
 
 	ch := make(chan *events.MediaRetry, 1)
 	mediaRetryMu.Lock()
@@ -222,11 +227,11 @@ func (c *Client) retryMediaDownload(ctx context.Context, store *database.Message
 		}
 	}()
 
-	if err := c.Client.SendMediaRetryReceipt(ctx, info, mediaKey); err != nil {
-		c.markMediaRequest(store.MarkMediaRequestSendError(messageID, chatJID, err.Error(), maxAttempts, time.Now()))
-		return nil, fmt.Errorf("media retry: send receipt: %w", err)
+	if err := c.askPhoneForMedia(ctx, store, messageID, chatJID, cfg, func(ctx context.Context) error {
+		return c.Client.SendMediaRetryReceipt(ctx, info, mediaKey)
+	}); err != nil {
+		return nil, err
 	}
-	c.markMediaRequest(store.MarkMediaRequestSent(messageID, chatJID, time.Now()))
 	c.logger.Infof("[MEDIA] asked the sender's phone to re-upload %s in %s", messageID, chatJID)
 
 	var evt *events.MediaRetry
@@ -283,7 +288,7 @@ func setDirectPath(msg whatsmeow.DownloadableMessage, path string) bool {
 
 // DownloadMessageMedia decrypts and saves media for a stored message.
 func (c *Client) DownloadMessageMedia(ctx context.Context, store *database.MessageStore, mediaDir, messageID, chatJID string) (string, string, error) {
-	data, mediaType, filename, err := c.FetchMessageMedia(ctx, store, messageID, chatJID)
+	data, mediaType, filename, err := c.FetchMessageMedia(ctx, store, messageID, chatJID, true)
 	if err != nil {
 		return "", "", err
 	}

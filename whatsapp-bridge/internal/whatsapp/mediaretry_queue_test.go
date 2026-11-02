@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waMmsRetry"
+	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
 	"whatsapp-bridge/internal/database"
@@ -244,15 +247,258 @@ func TestClassifyMediaRetryAnswer(t *testing.T) {
 	}
 }
 
+func TestFinalReasonsMatchWhatClassifyRecords(t *testing.T) {
+	notFound := &waMmsRetry.MediaRetryNotification{Result: waMmsRetry.MediaRetryNotification_NOT_FOUND.Enum()}
+	retryable := &waMmsRetry.MediaRetryNotification{Result: waMmsRetry.MediaRetryNotification_GENERAL_ERROR.Enum()}
+	tests := []struct {
+		name  string
+		notif *waMmsRetry.MediaRetryNotification
+		err   error
+		want  bool
+	}{
+		{"not found", notFound, nil, true},
+		{"not on phone", nil, whatsmeow.ErrMediaNotAvailableOnPhone, true},
+		{"not on phone, wrapped", nil, fmt.Errorf("x: %w", whatsmeow.ErrMediaNotAvailableOnPhone), true},
+		{"general error", retryable, nil, false},
+		{"unknown error", nil, whatsmeow.ErrUnknownMediaRetryError, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, reason := classifyMediaRetryAnswer(tt.notif, tt.err)
+			if got := isFinalMediaRetryReason(reason); got != tt.want {
+				t.Errorf("isFinalMediaRetryReason(%q) = %v, want %v", reason, got, tt.want)
+			}
+		})
+	}
+	if isFinalMediaRetryReason("no answer from the phone") {
+		t.Error("running out of attempts must not count as the phone saying the file is gone")
+	}
+}
+
+func TestAskPhoneForMedia(t *testing.T) {
+	const chat = "123@s.whatsapp.net"
+	cfg := MediaRetryConfig{MaxPerHour: 2, MaxAttempts: 3}
+	sendBoom := errors.New("boom")
+
+	// Each setup leaves message "A" as a download would find it after
+	// EnqueueMediaRequest; sentOthers fills the budget with other messages.
+	enqueue := func(t *testing.T, s *database.MessageStore) {
+		t.Helper()
+		if _, err := s.EnqueueMediaRequest("A", chat, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sendA := func(t *testing.T, s *database.MessageStore) {
+		t.Helper()
+		enqueue(t, s)
+		if err := s.MarkMediaRequestSent("A", chat, time.Now().Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failA := func(reason string) func(*testing.T, *database.MessageStore) {
+		return func(t *testing.T, s *database.MessageStore) {
+			t.Helper()
+			sendA(t, s)
+			if err := s.MarkMediaRequestFailed("A", chat, reason, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	tests := []struct {
+		name       string
+		setup      func(*testing.T, *database.MessageStore)
+		sentOthers int
+		sendErr    error
+		wantErr    error
+		wantSends  int
+		wantState  database.MediaRequestState
+		wantTries  int
+	}{
+		{"budget left sends", enqueue, 1, nil, nil, 1, database.MediaRequestSent, 1},
+		{"over budget stays queued", enqueue, 2, nil, errMediaRetryOverBudget, 0, database.MediaRequestPending, 0},
+		{"NOT_FOUND is not asked again", failA(mediaRetryReasonNotFound), 0, nil, errMediaGoneFromPhone, 0, database.MediaRequestFailed, 1},
+		{"not on phone is not asked again", failA(whatsmeow.ErrMediaNotAvailableOnPhone.Error()), 0, nil, errMediaGoneFromPhone, 0, database.MediaRequestFailed, 1},
+		{"attempts run out may ask again", failA("no answer from the phone"), 0, nil, nil, 1, database.MediaRequestSent, 2},
+		{"attempts run out still needs budget", failA("no answer from the phone"), 2, nil, errMediaRetryOverBudget, 0, database.MediaRequestFailed, 1},
+		{"unanswered receipt is not repeated", sendA, 0, nil, errMediaRetryInFlight, 0, database.MediaRequestSent, 1},
+		{"send error stays pending", enqueue, 0, sendBoom, sendBoom, 1, database.MediaRequestPending, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newQueueTestStore(t)
+			tt.setup(t, store)
+			for i := 0; i < tt.sentOthers; i++ {
+				if err := store.MarkMediaRequestSent(fmt.Sprintf("OTHER%d", i), chat, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sends := 0
+			err := (&Client{logger: waLog.Noop}).askPhoneForMedia(context.Background(), store, "A", chat, cfg, func(context.Context) error {
+				sends++
+				return tt.sendErr
+			})
+			if !errors.Is(err, tt.wantErr) || (tt.wantErr == nil && err != nil) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+			if sends != tt.wantSends {
+				t.Errorf("sent %d receipts, want %d", sends, tt.wantSends)
+			}
+			r, err := store.GetMediaRequest("A", chat)
+			if err != nil || r == nil {
+				t.Fatalf("get: %v %v", r, err)
+			}
+			if r.State != tt.wantState || r.Attempts != tt.wantTries {
+				t.Errorf("got %s/%d, want %s/%d", r.State, r.Attempts, tt.wantState, tt.wantTries)
+			}
+		})
+	}
+}
+
+// The bug this guards against: a bulk job of hundreds of purged files all got a
+// receipt. Sequential and concurrent callers alike must stop at the cap, and
+// the rest must be left for the paced queue.
+func TestAskPhoneForMediaHoldsTheCapUnderLoad(t *testing.T) {
+	const chat = "123@s.whatsapp.net"
+	store := newQueueTestStore(t)
+	cfg := MediaRetryConfig{MaxPerHour: 3, MaxAttempts: 3}
+	var sends atomic.Int32
+	for _, id := range ids(12) {
+		if _, err := store.EnqueueMediaRequest(id, chat, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for _, id := range ids(12) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = (&Client{logger: waLog.Noop}).askPhoneForMedia(context.Background(), store, id, chat, cfg, func(context.Context) error {
+				sends.Add(1)
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+	if got := sends.Load(); got != 3 {
+		t.Errorf("sent %d receipts, want the cap of 3", got)
+	}
+	pending, err := store.ListMediaRequests(database.MediaRequestPending, 100)
+	if err != nil || len(pending) != 9 {
+		t.Errorf("%d left pending (%v), want 9", len(pending), err)
+	}
+}
+
+func TestTickWaitsBeforeAskingAgain(t *testing.T) {
+	f := newFakeQueue(t, MediaRetryConfig{MaxPerHour: 20, MaxAttempts: 3, BatchSize: 3, AnswerTimeout: time.Hour, RetryDelay: 6 * time.Hour})
+	f.enqueue(t, "A")
+	if got := f.tick(t); got != 1 {
+		t.Fatalf("first ask sent %d, want 1", got)
+	}
+	// The phone answers with a retryable error straight away.
+	if err := f.store.MarkMediaRequestRetry("A", "123@s.whatsapp.net", "phone answered GENERAL_ERROR", 3, f.clock); err != nil {
+		t.Fatal(err)
+	}
+	f.clock = f.clock.Add(time.Minute)
+	if got := f.tick(t); got != 0 {
+		t.Errorf("a minute later sent %d, want 0", got)
+	}
+	f.clock = f.clock.Add(6 * time.Hour)
+	if got := f.tick(t); got != 1 {
+		t.Errorf("after the delay sent %d, want 1", got)
+	}
+}
+
+// Bursts of retries at one file can't get past the cap by reusing its row.
+func TestTickCountsEveryAskOfOneFile(t *testing.T) {
+	f := newFakeQueue(t, MediaRetryConfig{MaxPerHour: 2, MaxAttempts: 9, BatchSize: 3, AnswerTimeout: time.Hour})
+	f.enqueue(t, "A", "B")
+	for range 2 {
+		f.clock = f.clock.Add(time.Minute)
+		if err := f.store.MarkMediaRequestSent("A", "123@s.whatsapp.net", f.clock); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.MarkMediaRequestRetry("A", "123@s.whatsapp.net", "phone answered GENERAL_ERROR", 9, f.clock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.clock = f.clock.Add(time.Minute)
+	if got := f.tick(t); got != 0 {
+		t.Errorf("sent %d with the cap already used by one file, want 0", got)
+	}
+}
+
+func TestTickSendsNothingInQuietHours(t *testing.T) {
+	cfg := MediaRetryConfig{MaxPerHour: 20, MaxAttempts: 3, BatchSize: 3, AnswerTimeout: time.Hour, QuietStartHour: 23, QuietEndHour: 8}
+	f := newFakeQueue(t, cfg)
+	f.enqueue(t, "A")
+	tests := []struct {
+		hour, want int
+	}{{23, 0}, {3, 0}, {7, 0}, {8, 1}}
+	for _, tt := range tests {
+		f.clock = time.Date(2026, 10, 22, tt.hour, 30, 0, 0, time.UTC)
+		if got := f.tick(t); got != tt.want {
+			t.Errorf("%02d:30 sent %d, want %d", tt.hour, got, tt.want)
+		}
+	}
+}
+
+func TestInQuietHours(t *testing.T) {
+	tests := []struct {
+		name             string
+		start, end, hour int
+		want             bool
+	}{
+		{"wrap, late", 23, 8, 23, true},
+		{"wrap, early", 23, 8, 7, true},
+		{"wrap, end is exclusive", 23, 8, 8, false},
+		{"wrap, daytime", 23, 8, 12, false},
+		{"same day, inside", 1, 5, 3, true},
+		{"same day, after", 1, 5, 5, false},
+		{"equal means off", 0, 0, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := MediaRetryConfig{QuietStartHour: tt.start, QuietEndHour: tt.end}
+			if got := cfg.inQuietHours(tt.hour); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQuietHoursFromEnv(t *testing.T) {
+	tests := []struct {
+		name, env  string
+		start, end int
+	}{
+		{"default", "", 23, 8},
+		{"custom", "22-7", 22, 7},
+		{"spaces", " 1 - 5 ", 1, 5},
+		{"off", "off", 0, 0},
+		{"out of range keeps default", "23-25", 23, 8},
+		{"garbage keeps default", "night", 23, 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("MEDIA_RETRY_QUIET_HOURS", tt.env)
+			cfg := MediaRetryConfigFromEnv()
+			if cfg.QuietStartHour != tt.start || cfg.QuietEndHour != tt.end {
+				t.Errorf("got %d-%d, want %d-%d", cfg.QuietStartHour, cfg.QuietEndHour, tt.start, tt.end)
+			}
+		})
+	}
+}
+
 func TestMediaRetryConfigFromEnv(t *testing.T) {
 	tests := []struct {
 		name, perHour, attempts string
 		wantPerHour, wantTries  int
 	}{
-		{"defaults", "", "", 20, 3},
+		{"defaults", "", "", 5, 3},
 		{"overrides", "5", "2", 5, 2},
-		{"garbage keeps defaults", "lots", "-1", 20, 3},
-		{"zero keeps the cap", "0", "0", 20, 3},
+		{"garbage keeps defaults", "lots", "-1", 5, 3},
+		{"zero keeps the cap", "0", "0", 5, 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
