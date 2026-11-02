@@ -161,7 +161,9 @@ when code/data were split as above.)
   re-ask for media the phone said is gone. Retries are also persisted in `media_requests` and worked by a
   paced loop (`internal/whatsapp/mediaretry_queue.go`, `MEDIA_RETRY_MAX_PER_HOUR`);
   a late answer is saved into `store/media/` (layout in `internal/mediastore`),
-  which `/api/download` then serves as `via: "saved"`.
+  which `/api/download` then serves as `via: "saved"`. Auto-download only covers
+  live incoming messages; a daily sweep (`internal/whatsapp/media_sweep.go`) saves the
+  rest while the servers still hold it.
 - **Idempotency keys are random per call, never derived from content.** A key
   built from (tool, recipient, text) once swallowed a deliberate second "ok" as
   a duplicate. `lib/idempotency.py` makes a fresh key per tool call; the only

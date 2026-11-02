@@ -214,3 +214,10 @@ now counts receipts, not files: 12 files once sent 24 receipts in 8 minutes unno
 Quiet hours cover the background queue only, because a download someone is waiting for
 should still work at night. Cost: a bulk job no longer recovers purged media by itself; a
 person can still ask for a single file.
+
+## D15 — 2026-11-02 — Save media while it exists (Simon: "yes")
+About 3,900 of 5,800 media messages had no copy on the live box. Auto-download only ever
+covered live incoming messages, so everything the bridge sent or got through history sync
+was a row with keys, and it became unrecoverable when the servers purged it. A daily sweep
+now fetches recent media with no copy, without asking the phone. Files older than the
+window are not chased, because almost none of them were still on the servers.

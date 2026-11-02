@@ -104,6 +104,7 @@ Settings for sends, the phone and media retry (bridge side, all optional):
 | `PHONE_PING_ENABLED` | `true` | `false` stops the ping. Tracking, warnings and the `/api/connection` fields stay on. |
 | `MEDIA_RETRY_ENABLED` | `false` | Ask the sender's phone to re-upload expired media. Every request shows "Finished syncing" on the phone. |
 | `MEDIA_RETRY_MAX_PER_HOUR` | `5` | Cap on retry requests per rolling hour, including those `/api/download` sends itself. Over the cap a download fails at once and its request stays queued. Bulk jobs should pass `no_phone_retry: true` to `/api/download` so they never ask. |
+| `MEDIA_SWEEP_DAYS` | `14` | Once a day, save media up to this old that has no copy on disk: what the bridge sent, what history sync delivered, failed auto-downloads. Never asks the phone. `0` turns it off. |
 | `MEDIA_RETRY_QUIET_HOURS` | `23-8` | Local hours the background queue sends nothing, `off` to disable. A download someone asks for still goes through. |
 | `MEDIA_RETRY_MAX_ATTEMPTS` | `3` | Requests per message before the queue gives up. A "not found" answer from the phone fails it at once and for good: later downloads don't ask again. Retries do not count against the antiban caps below: they go to your own phone, not into anyone's chat. |
 | `ANTIBAN_CAPS_ENABLED` | `true` | Hard send ceilings, on even when `ANTIBAN_ENABLED` (pacing) is off. A send over a cap gets HTTP 429, code `send_cap`, with `Retry-After` and `retry_after`; nothing is sent and the idempotency key stays retryable. Each cap below: `0` disables it. |

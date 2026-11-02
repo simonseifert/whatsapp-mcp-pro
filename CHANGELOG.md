@@ -10,6 +10,10 @@ All notable changes to this fork are recorded here. The format follows
 
 - `/api/download` takes `no_phone_retry: true`, for bulk jobs that should take
   what's available and never notify the phone.
+- A daily media sweep saves recent media with no copy on disk: media the bridge
+  sent, media from history sync and failed auto-downloads, which used to be lost
+  once WhatsApp purged them. It never asks the phone. `MEDIA_SWEEP_DAYS`
+  (default 14, `0` to disable).
 - `MEDIA_RETRY_QUIET_HOURS` (default `23-8`, local time, `off` to disable): the
   background queue sends nothing in those hours.
 

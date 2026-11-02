@@ -119,6 +119,13 @@ func main() {
 		client.StartMediaRetryQueue(mediaRetryCtx, messageStore, whatsapp.MediaRetryConfigFromEnv())
 	}
 
+	// Saves recent media with no copy on disk, while the servers still hold it.
+	if cfg, on := whatsapp.MediaSweepConfigFromEnv(); on {
+		mediaSweepCtx, stopMediaSweep := context.WithCancel(context.Background())
+		defer stopMediaSweep()
+		client.StartMediaSweep(mediaSweepCtx, messageStore, cfg)
+	}
+
 	// Reachout timelock (WhatsApp error 463): restore persisted state, watch notifications.
 	client.EnableReachoutTracking(messageStore)
 
