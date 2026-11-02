@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,16 +54,27 @@ type MediaRetryConfig struct {
 	// AnswerTimeout is how long a sent receipt may go unanswered before it is
 	// treated as lost (phone offline) and the request goes back to pending.
 	AnswerTimeout time.Duration
+	// RetryDelay is how long the loop waits before asking about a file again.
+	// Without it three attempts burn within minutes of each other, against a
+	// phone that will give the same answer.
+	RetryDelay time.Duration
+	// QuietStartHour and QuietEndHour bound the local hours the loop sends
+	// nothing; equal values mean no quiet hours. A download someone asks for
+	// still goes through, and a backlog resumes when the window ends.
+	QuietStartHour, QuietEndHour int
 }
 
 // DefaultMediaRetryConfig returns the conservative defaults.
 func DefaultMediaRetryConfig() MediaRetryConfig {
 	return MediaRetryConfig{
-		MaxPerHour:    20,
-		MaxAttempts:   3,
-		BatchSize:     3,
-		Interval:      time.Minute,
-		AnswerTimeout: time.Hour,
+		MaxPerHour:     5,
+		MaxAttempts:    3,
+		BatchSize:      3,
+		Interval:       time.Minute,
+		AnswerTimeout:  time.Hour,
+		RetryDelay:     6 * time.Hour,
+		QuietStartHour: 23,
+		QuietEndHour:   8,
 	}
 }
 
@@ -72,9 +84,9 @@ func MediaRetryEnabled() bool {
 	return os.Getenv("MEDIA_RETRY_ENABLED") == "true"
 }
 
-// MediaRetryConfigFromEnv reads MEDIA_RETRY_MAX_PER_HOUR and
-// MEDIA_RETRY_MAX_ATTEMPTS over the defaults. Unset, non-numeric or
-// non-positive values keep the default rather than disabling the cap.
+// MediaRetryConfigFromEnv reads MEDIA_RETRY_MAX_PER_HOUR,
+// MEDIA_RETRY_MAX_ATTEMPTS and MEDIA_RETRY_QUIET_HOURS over the defaults. Unset
+// or invalid values keep the default rather than disabling the limit.
 func MediaRetryConfigFromEnv() MediaRetryConfig {
 	cfg := DefaultMediaRetryConfig()
 	if n := positiveEnvInt("MEDIA_RETRY_MAX_PER_HOUR"); n > 0 {
@@ -83,7 +95,41 @@ func MediaRetryConfigFromEnv() MediaRetryConfig {
 	if n := positiveEnvInt("MEDIA_RETRY_MAX_ATTEMPTS"); n > 0 {
 		cfg.MaxAttempts = n
 	}
+	if start, end, ok := parseQuietHours(os.Getenv("MEDIA_RETRY_QUIET_HOURS")); ok {
+		cfg.QuietStartHour, cfg.QuietEndHour = start, end
+	}
 	return cfg
+}
+
+// parseQuietHours reads "23-8" (local hours, may wrap past midnight) or "off".
+func parseQuietHours(s string) (start, end int, ok bool) {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "off") {
+		return 0, 0, true
+	}
+	from, to, found := strings.Cut(s, "-")
+	if !found {
+		return 0, 0, false
+	}
+	start, errStart := strconv.Atoi(strings.TrimSpace(from))
+	end, errEnd := strconv.Atoi(strings.TrimSpace(to))
+	if errStart != nil || errEnd != nil || start < 0 || start > 23 || end < 0 || end > 23 {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// inQuietHours reports whether hour falls in the quiet window, which may wrap
+// past midnight.
+func (cfg MediaRetryConfig) inQuietHours(hour int) bool {
+	switch {
+	case cfg.QuietStartHour == cfg.QuietEndHour:
+		return false
+	case cfg.QuietStartHour < cfg.QuietEndHour:
+		return hour >= cfg.QuietStartHour && hour < cfg.QuietEndHour
+	default:
+		return hour >= cfg.QuietStartHour || hour < cfg.QuietEndHour
+	}
 }
 
 func positiveEnvInt(name string) int {
@@ -145,7 +191,8 @@ func (c *Client) StartMediaRetryQueue(ctx context.Context, store *database.Messa
 	q.ctx = ctx
 	c.mediaRetryQueue.Store(q)
 	go q.run(ctx)
-	c.logger.Infof("[MEDIA] retry queue started: max %d/hour, %d attempts each", cfg.MaxPerHour, cfg.MaxAttempts)
+	c.logger.Infof("[MEDIA] retry queue started: max %d/hour, %d attempts each, %s apart, quiet hours %d-%d",
+		cfg.MaxPerHour, cfg.MaxAttempts, cfg.RetryDelay, cfg.QuietStartHour, cfg.QuietEndHour)
 	return q
 }
 
@@ -197,7 +244,7 @@ func (c *Client) askPhoneForMedia(ctx context.Context, store *database.MessageSt
 		}
 	}
 
-	sentLastHour, err := store.CountMediaRequestsSentSince(time.Now().Add(-time.Hour))
+	sentLastHour, err := store.CountMediaRetryReceiptsSince(time.Now().Add(-time.Hour))
 	if err != nil {
 		return fmt.Errorf("media retry: %w", err)
 	}
@@ -231,8 +278,8 @@ func (q *MediaRetryQueue) run(ctx context.Context) {
 	}
 }
 
-// Tick runs one pass: expire unanswered receipts, then send up to the paced
-// budget of pending ones. It does nothing while disconnected, so an outage
+// Tick runs one pass: expire unanswered receipts, then, outside quiet hours,
+// send up to the paced budget of pending ones. It does nothing while disconnected, so an outage
 // neither burns attempts nor bunches sends. Returns the number of receipts sent.
 func (q *MediaRetryQueue) Tick(ctx context.Context) (int, error) {
 	if !q.connected() {
@@ -247,9 +294,13 @@ func (q *MediaRetryQueue) Tick(ctx context.Context) (int, error) {
 		q.logger.Infof("[MEDIA] %d media retries went unanswered for %s", expired, q.cfg.AnswerTimeout)
 	}
 
+	if q.cfg.inQuietHours(now.Hour()) {
+		return 0, nil
+	}
+
 	mediaRetrySendMu.Lock()
 	defer mediaRetrySendMu.Unlock()
-	sentLastHour, err := q.store.CountMediaRequestsSentSince(now.Add(-time.Hour))
+	sentLastHour, err := q.store.CountMediaRetryReceiptsSince(now.Add(-time.Hour))
 	if err != nil {
 		return 0, err
 	}
@@ -257,7 +308,7 @@ func (q *MediaRetryQueue) Tick(ctx context.Context) (int, error) {
 	if budget == 0 {
 		return 0, nil
 	}
-	due, err := q.store.DueMediaRequests(budget)
+	due, err := q.store.DueMediaRequests(budget, now.Add(-q.cfg.RetryDelay))
 	if err != nil {
 		return 0, err
 	}

@@ -202,7 +202,15 @@ doesn't have it", and it would have re-asked weekly. Now that path shares the bu
 nothing for media the phone already said is gone (`NOT_FOUND`, "no longer available") and
 nothing while a receipt is unanswered. A request that failed only by running out of
 attempts may still be asked again by an explicit download, under budget, because the phone
-may just have been offline. Trade-off: a first-time bulk download now drains at up to 20
-notices an hour instead of all at once, and a download can fail immediately when an
-interactive caller used to wait. Refusals are 502, not 429, so callers don't sleep on them.
+may just have been offline. Trade-off: a download can fail immediately when an interactive
+caller used to wait. Refusals are 502, not 429, so callers don't sleep on them.
 This also corrects D10's note that retries likely can't succeed: 46 of 402 did.
+
+## D14 — 2026-11-02 — Media retry is for people, not jobs (Simon: "yes pls")
+Only 46 of 402 asks ever brought a file back, and every ask notifies the phone. So the
+default cap drops from 20 to 5 an hour, the queue keeps quiet from 23:00 to 08:00 and waits
+6 hours between asks about a file, and bulk callers opt out with `no_phone_retry`. The cap
+now counts receipts, not files: 12 files once sent 24 receipts in 8 minutes unnoticed.
+Quiet hours cover the background queue only, because a download someone is waiting for
+should still work at night. Cost: a bulk job no longer recovers purged media by itself; a
+person can still ask for a single file.

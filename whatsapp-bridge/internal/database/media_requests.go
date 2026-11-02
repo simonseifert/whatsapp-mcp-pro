@@ -50,7 +50,7 @@ type MediaRequest struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
-// createMediaRequestTable mirrors migrations/006_media_requests.sql so tests
+// createMediaRequestTable mirrors migrations/006 and 010 so tests
 // and fresh stores get the table without running the SQL file by hand.
 func createMediaRequestTable(db *sql.DB) error {
 	_, err := db.Exec(`
@@ -67,6 +67,11 @@ func createMediaRequestTable(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_media_requests_state ON media_requests(state, created_at);
 		CREATE INDEX IF NOT EXISTS idx_media_requests_last_attempt ON media_requests(last_attempt_at);
+		CREATE TABLE IF NOT EXISTS media_retry_receipts (
+			id      INTEGER PRIMARY KEY,
+			sent_at TIMESTAMP NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_media_retry_receipts_sent ON media_retry_receipts(sent_at);
 	`)
 	if err != nil {
 		return fmt.Errorf("create media_requests: %w", err)
@@ -178,10 +183,14 @@ func (store *MessageStore) ListMediaRequests(state MediaRequestState, limit int)
 }
 
 // DueMediaRequests returns up to limit pending requests, oldest first, so a
-// backlog drains in the order the media was asked for.
-func (store *MessageStore) DueMediaRequests(limit int) ([]MediaRequest, error) {
+// backlog drains in the order the media was asked for. A request already asked
+// about is due only if that was before retryBefore: a phone that just answered
+// with an error gives the same answer a minute later, and each ask notifies.
+func (store *MessageStore) DueMediaRequests(limit int, retryBefore time.Time) ([]MediaRequest, error) {
 	out, err := store.queryMediaRequests(
-		`SELECT `+mediaRequestColumns+` FROM media_requests WHERE state = 'pending' ORDER BY created_at, message_id LIMIT ?`, limit)
+		`SELECT `+mediaRequestColumns+` FROM media_requests
+		  WHERE state = 'pending' AND (last_attempt_at IS NULL OR last_attempt_at < ?)
+		  ORDER BY created_at, message_id LIMIT ?`, dbTime(retryBefore), limit)
 	if err != nil {
 		return nil, fmt.Errorf("due media requests: %w", err)
 	}
@@ -200,32 +209,52 @@ func (store *MessageStore) OpenMediaRequestsForMessage(messageID string) ([]Medi
 	return out, nil
 }
 
-// CountMediaRequestsSentSince counts requests whose receipt went out at or
-// after since. Pacing reads this from the database rather than memory so a
-// restart cannot reset the hourly budget and burst notifications at the phone.
-func (store *MessageStore) CountMediaRequestsSentSince(since time.Time) (int, error) {
+// CountMediaRetryReceiptsSince counts receipts sent at or after since. Pacing
+// reads this from the database rather than memory so a restart cannot reset
+// the hourly budget and burst notifications at the phone. It counts receipts
+// rather than requests: media_requests keeps only the latest attempt per
+// message, which once let 12 files send 24 receipts in 8 minutes under a cap
+// that saw 12.
+func (store *MessageStore) CountMediaRetryReceiptsSince(since time.Time) (int, error) {
 	var n int
 	if err := store.db.QueryRow(
-		`SELECT COUNT(*) FROM media_requests WHERE last_attempt_at >= ?`, dbTime(since),
+		`SELECT COUNT(*) FROM media_retry_receipts WHERE sent_at >= ?`, dbTime(since),
 	).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count media requests: %w", err)
+		return 0, fmt.Errorf("count media retry receipts: %w", err)
 	}
 	return n, nil
 }
+
+// mediaRetryReceiptRetention is well past the hour pacing looks at, so the log
+// stays a handful of rows.
+const mediaRetryReceiptRetention = 24 * time.Hour
 
 // MarkMediaRequestSent records a retry receipt delivered to the phone. It
 // creates the row if needed, because the synchronous /api/download path may
 // send a receipt for media it has only just enqueued.
 func (store *MessageStore) MarkMediaRequestSent(messageID, chatJID string, now time.Time) error {
 	now = dbTime(now)
-	_, err := store.db.Exec(`
+	tx, err := store.db.Begin()
+	if err != nil {
+		return fmt.Errorf("mark media request sent: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`
 		INSERT INTO media_requests (message_id, chat_jid, state, attempts, last_error, last_attempt_at, created_at, updated_at)
 		VALUES (?, ?, 'sent', 1, '', ?, ?, ?)
 		ON CONFLICT(message_id, chat_jid) DO UPDATE
 		   SET state = 'sent', attempts = media_requests.attempts + 1, last_error = '',
 		       last_attempt_at = excluded.last_attempt_at, updated_at = excluded.updated_at`,
-		messageID, chatJID, now, now, now)
-	if err != nil {
+		messageID, chatJID, now, now, now); err != nil {
+		return fmt.Errorf("mark media request sent: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO media_retry_receipts (sent_at) VALUES (?)`, now); err != nil {
+		return fmt.Errorf("mark media request sent: log receipt: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM media_retry_receipts WHERE sent_at < ?`, now.Add(-mediaRetryReceiptRetention)); err != nil {
+		return fmt.Errorf("mark media request sent: prune receipts: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("mark media request sent: %w", err)
 	}
 	return nil

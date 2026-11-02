@@ -6,7 +6,23 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `/api/download` takes `no_phone_retry: true`, for bulk jobs that should take
+  what's available and never notify the phone.
+- `MEDIA_RETRY_QUIET_HOURS` (default `23-8`, local time, `off` to disable): the
+  background queue sends nothing in those hours.
+
+### Changed
+
+- `MEDIA_RETRY_MAX_PER_HOUR` now defaults to 5 instead of 20.
+- The background queue waits 6 hours before asking about the same file again.
+
 ### Fixed
+
+- `MEDIA_RETRY_MAX_PER_HOUR` counted files rather than requests, so a file asked
+  about several times in an hour counted once. Requests are now logged in
+  `media_retry_receipts` (migration 010).
 
 - Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
   used to bypass, so a bulk download can no longer flood the phone with

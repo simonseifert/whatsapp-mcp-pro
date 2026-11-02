@@ -389,15 +389,116 @@ func TestAskPhoneForMediaHoldsTheCapUnderLoad(t *testing.T) {
 	}
 }
 
+func TestTickWaitsBeforeAskingAgain(t *testing.T) {
+	f := newFakeQueue(t, MediaRetryConfig{MaxPerHour: 20, MaxAttempts: 3, BatchSize: 3, AnswerTimeout: time.Hour, RetryDelay: 6 * time.Hour})
+	f.enqueue(t, "A")
+	if got := f.tick(t); got != 1 {
+		t.Fatalf("first ask sent %d, want 1", got)
+	}
+	// The phone answers with a retryable error straight away.
+	if err := f.store.MarkMediaRequestRetry("A", "123@s.whatsapp.net", "phone answered GENERAL_ERROR", 3, f.clock); err != nil {
+		t.Fatal(err)
+	}
+	f.clock = f.clock.Add(time.Minute)
+	if got := f.tick(t); got != 0 {
+		t.Errorf("a minute later sent %d, want 0", got)
+	}
+	f.clock = f.clock.Add(6 * time.Hour)
+	if got := f.tick(t); got != 1 {
+		t.Errorf("after the delay sent %d, want 1", got)
+	}
+}
+
+// Bursts of retries at one file can't get past the cap by reusing its row.
+func TestTickCountsEveryAskOfOneFile(t *testing.T) {
+	f := newFakeQueue(t, MediaRetryConfig{MaxPerHour: 2, MaxAttempts: 9, BatchSize: 3, AnswerTimeout: time.Hour})
+	f.enqueue(t, "A", "B")
+	for range 2 {
+		f.clock = f.clock.Add(time.Minute)
+		if err := f.store.MarkMediaRequestSent("A", "123@s.whatsapp.net", f.clock); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.MarkMediaRequestRetry("A", "123@s.whatsapp.net", "phone answered GENERAL_ERROR", 9, f.clock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.clock = f.clock.Add(time.Minute)
+	if got := f.tick(t); got != 0 {
+		t.Errorf("sent %d with the cap already used by one file, want 0", got)
+	}
+}
+
+func TestTickSendsNothingInQuietHours(t *testing.T) {
+	cfg := MediaRetryConfig{MaxPerHour: 20, MaxAttempts: 3, BatchSize: 3, AnswerTimeout: time.Hour, QuietStartHour: 23, QuietEndHour: 8}
+	f := newFakeQueue(t, cfg)
+	f.enqueue(t, "A")
+	tests := []struct {
+		hour, want int
+	}{{23, 0}, {3, 0}, {7, 0}, {8, 1}}
+	for _, tt := range tests {
+		f.clock = time.Date(2026, 10, 22, tt.hour, 30, 0, 0, time.UTC)
+		if got := f.tick(t); got != tt.want {
+			t.Errorf("%02d:30 sent %d, want %d", tt.hour, got, tt.want)
+		}
+	}
+}
+
+func TestInQuietHours(t *testing.T) {
+	tests := []struct {
+		name             string
+		start, end, hour int
+		want             bool
+	}{
+		{"wrap, late", 23, 8, 23, true},
+		{"wrap, early", 23, 8, 7, true},
+		{"wrap, end is exclusive", 23, 8, 8, false},
+		{"wrap, daytime", 23, 8, 12, false},
+		{"same day, inside", 1, 5, 3, true},
+		{"same day, after", 1, 5, 5, false},
+		{"equal means off", 0, 0, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := MediaRetryConfig{QuietStartHour: tt.start, QuietEndHour: tt.end}
+			if got := cfg.inQuietHours(tt.hour); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQuietHoursFromEnv(t *testing.T) {
+	tests := []struct {
+		name, env  string
+		start, end int
+	}{
+		{"default", "", 23, 8},
+		{"custom", "22-7", 22, 7},
+		{"spaces", " 1 - 5 ", 1, 5},
+		{"off", "off", 0, 0},
+		{"out of range keeps default", "23-25", 23, 8},
+		{"garbage keeps default", "night", 23, 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("MEDIA_RETRY_QUIET_HOURS", tt.env)
+			cfg := MediaRetryConfigFromEnv()
+			if cfg.QuietStartHour != tt.start || cfg.QuietEndHour != tt.end {
+				t.Errorf("got %d-%d, want %d-%d", cfg.QuietStartHour, cfg.QuietEndHour, tt.start, tt.end)
+			}
+		})
+	}
+}
+
 func TestMediaRetryConfigFromEnv(t *testing.T) {
 	tests := []struct {
 		name, perHour, attempts string
 		wantPerHour, wantTries  int
 	}{
-		{"defaults", "", "", 20, 3},
+		{"defaults", "", "", 5, 3},
 		{"overrides", "5", "2", 5, 2},
-		{"garbage keeps defaults", "lots", "-1", 20, 3},
-		{"zero keeps the cap", "0", "0", 20, 3},
+		{"garbage keeps defaults", "lots", "-1", 5, 3},
+		{"zero keeps the cap", "0", "0", 5, 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

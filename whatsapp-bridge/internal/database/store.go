@@ -149,7 +149,7 @@ func runMigrations(db *sql.DB) error {
 	if err := createEditsCallsTables(db); err != nil {
 		return err
 	}
-	// Persistent media retry queue (migrations/006_media_requests.sql).
+	// Persistent media retry queue (migrations/006 and 010).
 	return createMediaRequestTable(db)
 }
 

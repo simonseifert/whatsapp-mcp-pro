@@ -29,14 +29,18 @@ var ErrMessageNotFound = errors.New("message not found")
 // whatsmeow, which re-resolves direct_path against current media hosts. Unlike
 // the URL stored with the message, that keeps working after the signed CDN
 // link has expired, for as long as WhatsApp still holds the file.
-func (c *Client) FetchMessageMedia(ctx context.Context, store *database.MessageStore, messageID, chatJID string) (data []byte, mediaType, filename string, err error) {
+//
+// askPhone says whether purged media may be requested from the sender's phone
+// when media retry is on. Bulk jobs pass false: each ask notifies the user, and
+// only about one in nine has brought a file back.
+func (c *Client) FetchMessageMedia(ctx context.Context, store *database.MessageStore, messageID, chatJID string, askPhone bool) (data []byte, mediaType, filename string, err error) {
 	media, err := loadStoredMedia(store, messageID, chatJID)
 	if err != nil {
 		return nil, "", "", err
 	}
 
 	data, err = c.Client.Download(ctx, media.msg)
-	if isMediaGone(err) && MediaRetryEnabled() {
+	if askPhone && isMediaGone(err) && MediaRetryEnabled() {
 		// Persist the ask before trying it here, so a timeout, an offline
 		// phone or a restart leaves it to the background queue.
 		if _, qerr := store.EnqueueMediaRequest(messageID, chatJID, time.Now()); qerr != nil {
@@ -284,7 +288,7 @@ func setDirectPath(msg whatsmeow.DownloadableMessage, path string) bool {
 
 // DownloadMessageMedia decrypts and saves media for a stored message.
 func (c *Client) DownloadMessageMedia(ctx context.Context, store *database.MessageStore, mediaDir, messageID, chatJID string) (string, string, error) {
-	data, mediaType, filename, err := c.FetchMessageMedia(ctx, store, messageID, chatJID)
+	data, mediaType, filename, err := c.FetchMessageMedia(ctx, store, messageID, chatJID, true)
 	if err != nil {
 		return "", "", err
 	}

@@ -136,7 +136,7 @@ func TestExpireOnlyTouchesStaleSentRequests(t *testing.T) {
 	}
 }
 
-func TestCountMediaRequestsSentSince(t *testing.T) {
+func TestCountMediaRetryReceiptsSince(t *testing.T) {
 	store := newTestMessageStore(t)
 	for i, at := range []time.Duration{-90 * time.Minute, -59 * time.Minute, -10 * time.Minute, 0} {
 		if err := store.MarkMediaRequestSent(string(rune('a'+i)), mrChat, mrT0.Add(at)); err != nil {
@@ -157,13 +157,71 @@ func TestCountMediaRequestsSentSince(t *testing.T) {
 		{time.Minute, 0},
 	}
 	for _, tt := range tests {
-		got, err := store.CountMediaRequestsSentSince(mrT0.Add(tt.since))
+		got, err := store.CountMediaRetryReceiptsSince(mrT0.Add(tt.since))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got != tt.want {
 			t.Errorf("since %v: got %d, want %d", tt.since, got, tt.want)
 		}
+	}
+}
+
+// The cap limits notifications, so a file asked about three times is three.
+func TestReceiptCountSeesEveryAskOfOneMessage(t *testing.T) {
+	store := newTestMessageStore(t)
+	for i := range 3 {
+		if err := store.MarkMediaRequestSent(mrMsg, mrChat, mrT0.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := store.CountMediaRetryReceiptsSince(mrT0.Add(-time.Minute)); err != nil || got != 3 {
+		t.Errorf("counted %d (%v), want 3", got, err)
+	}
+}
+
+func TestReceiptLogIsPruned(t *testing.T) {
+	store := newTestMessageStore(t)
+	for _, at := range []time.Duration{0, 25 * time.Hour} {
+		if err := store.MarkMediaRequestSent(mrMsg, mrChat, mrT0.Add(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM media_retry_receipts`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("%d rows left, want 1", rows)
+	}
+}
+
+func TestDueHoldsBackRecentlyAskedRequests(t *testing.T) {
+	store := newTestMessageStore(t)
+	if _, err := store.EnqueueMediaRequest("fresh", mrChat, mrT0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkMediaRequestSent(mrMsg, mrChat, mrT0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkMediaRequestRetry(mrMsg, mrChat, "GENERAL_ERROR", 3, mrT0); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		before time.Time
+		want   int
+	}{
+		{"asked after the cutoff waits", mrT0, 1},
+		{"asked before the cutoff is due", mrT0.Add(time.Minute), 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			due, err := store.DueMediaRequests(10, tt.before)
+			if err != nil || len(due) != tt.want {
+				t.Errorf("due = %+v (%v), want %d", due, err, tt.want)
+			}
+		})
 	}
 }
 
@@ -179,14 +237,14 @@ func TestDueAndOpenMediaRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	due, err := store.DueMediaRequests(10)
+	due, err := store.DueMediaRequests(10, mrT0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(due) != 2 || due[0].MessageID != "first" || due[1].MessageID != "second" {
 		t.Fatalf("due = %+v, want first, second", due)
 	}
-	if due, _ := store.DueMediaRequests(1); len(due) != 1 {
+	if due, _ := store.DueMediaRequests(1, mrT0); len(due) != 1 {
 		t.Errorf("limit ignored: %d rows", len(due))
 	}
 
