@@ -16,7 +16,8 @@ import (
 //	succeeded -> pending     the media expired again and was re-enqueued
 //
 // failed is terminal for the background loop: re-asking a phone that said
-// NOT_FOUND only produces another "Finished syncing" notification.
+// NOT_FOUND only produces another "Finished syncing" notification. The
+// synchronous download path also refuses to re-ask when that is why it failed.
 type MediaRequestState string
 
 // Media request states; see MediaRequestState for the transitions.

@@ -103,8 +103,8 @@ Settings for sends, the phone and media retry (bridge side, all optional):
 | `PHONE_OFFLINE_PING_AFTER` | `7d` | After this much silence from the phone, send it one invisible request a day to wake it. `7d` or any Go duration. |
 | `PHONE_PING_ENABLED` | `true` | `false` stops the ping. Tracking, warnings and the `/api/connection` fields stay on. |
 | `MEDIA_RETRY_ENABLED` | `false` | Ask the sender's phone to re-upload expired media. Every request shows "Finished syncing" on the phone. |
-| `MEDIA_RETRY_MAX_PER_HOUR` | `20` | Cap on retry requests per rolling hour, including those `/api/download` sends itself. |
-| `MEDIA_RETRY_MAX_ATTEMPTS` | `3` | Requests per message before the queue gives up. A "not found" answer from the phone fails it at once. Retries do not count against the antiban caps below: they go to your own phone, not into anyone's chat. |
+| `MEDIA_RETRY_MAX_PER_HOUR` | `20` | Cap on retry requests per rolling hour, including those `/api/download` sends itself. Over the cap a download fails at once and its request stays queued. |
+| `MEDIA_RETRY_MAX_ATTEMPTS` | `3` | Requests per message before the queue gives up. A "not found" answer from the phone fails it at once and for good: later downloads don't ask again. Retries do not count against the antiban caps below: they go to your own phone, not into anyone's chat. |
 | `ANTIBAN_CAPS_ENABLED` | `true` | Hard send ceilings, on even when `ANTIBAN_ENABLED` (pacing) is off. A send over a cap gets HTTP 429, code `send_cap`, with `Retry-After` and `retry_after`; nothing is sent and the idempotency key stays retryable. Each cap below: `0` disables it. |
 | `ANTIBAN_RECIPIENT_MAX_PER_MINUTE` | `15` | Text, media and polls to one chat per sliding minute. Room for a reply split into several bubbles, or a dozen photos at once. |
 | `ANTIBAN_RECIPIENT_MAX_PER_HOUR` | `60` | The same per sliding hour. |

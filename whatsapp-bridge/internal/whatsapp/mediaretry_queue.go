@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -148,12 +149,68 @@ func (c *Client) StartMediaRetryQueue(ctx context.Context, store *database.Messa
 	return q
 }
 
-// mediaRetryMaxAttempts is the attempt cap the synchronous path records with.
-func (c *Client) mediaRetryMaxAttempts() int {
+// mediaRetryConfig is the configuration the synchronous path works under.
+func (c *Client) mediaRetryConfig() MediaRetryConfig {
 	if q := c.mediaRetryQueue.Load(); q != nil {
-		return q.cfg.MaxAttempts
+		return q.cfg
 	}
-	return DefaultMediaRetryConfig().MaxAttempts
+	return MediaRetryConfigFromEnv()
+}
+
+// Why askPhoneForMedia sent no receipt. /api/download answers these as a
+// failed download (502), deliberately not 429: a bulk caller that sleeps and
+// retries on 429 would stall for minutes on media it can't get anyway.
+var (
+	errMediaRetryOverBudget = errors.New("the hourly limit of requests to the phone is used up; the retry stays queued")
+	errMediaRetryInFlight   = errors.New("the sender's phone was already asked and has not answered yet; a re-uploaded file is saved when it does")
+	errMediaGoneFromPhone   = errors.New("the sender's phone no longer has this file")
+)
+
+// mediaRetrySendMu makes "is there budget left", the send and recording it one
+// step, for both the queue and /api/download. Otherwise concurrent downloads
+// all read the same count and overshoot the cap together, or send a second
+// receipt for a request the queue is sending right now.
+var mediaRetrySendMu sync.Mutex
+
+// askPhoneForMedia sends the receipt for a synchronous download if it may.
+//
+// Each receipt is a "Finished syncing" notice on the user's phone, and this
+// path once ignored both limits below: a nightly archive job asked about 345
+// files in 15 minutes, 344 of which the phone could not produce, and would have
+// asked again a week later. A caller now gets a prompt failure instead. Any
+// doubt about the budget counts as no budget, since a failed download can be
+// repeated but a notification can't be taken back.
+func (c *Client) askPhoneForMedia(ctx context.Context, store *database.MessageStore, messageID, chatJID string, cfg MediaRetryConfig, send func(context.Context) error) error {
+	mediaRetrySendMu.Lock()
+	defer mediaRetrySendMu.Unlock()
+
+	req, err := store.GetMediaRequest(messageID, chatJID)
+	if err != nil {
+		return fmt.Errorf("media retry: %w", err)
+	}
+	if req != nil {
+		switch {
+		case req.State == database.MediaRequestFailed && isFinalMediaRetryReason(req.LastError):
+			return fmt.Errorf("media retry: %w (%s)", errMediaGoneFromPhone, req.LastError)
+		case req.State == database.MediaRequestSent:
+			return fmt.Errorf("media retry: %w", errMediaRetryInFlight)
+		}
+	}
+
+	sentLastHour, err := store.CountMediaRequestsSentSince(time.Now().Add(-time.Hour))
+	if err != nil {
+		return fmt.Errorf("media retry: %w", err)
+	}
+	if mediaRetryBudget(sentLastHour, cfg.MaxPerHour, 1) == 0 {
+		return fmt.Errorf("media retry: %w", errMediaRetryOverBudget)
+	}
+
+	if err := send(ctx); err != nil {
+		c.markMediaRequest(store.MarkMediaRequestSendError(messageID, chatJID, err.Error(), cfg.MaxAttempts, time.Now()))
+		return fmt.Errorf("media retry: send receipt: %w", err)
+	}
+	c.markMediaRequest(store.MarkMediaRequestSent(messageID, chatJID, time.Now()))
+	return nil
 }
 
 func (q *MediaRetryQueue) run(ctx context.Context) {
@@ -190,6 +247,8 @@ func (q *MediaRetryQueue) Tick(ctx context.Context) (int, error) {
 		q.logger.Infof("[MEDIA] %d media retries went unanswered for %s", expired, q.cfg.AnswerTimeout)
 	}
 
+	mediaRetrySendMu.Lock()
+	defer mediaRetrySendMu.Unlock()
 	sentLastHour, err := q.store.CountMediaRequestsSentSince(now.Add(-time.Hour))
 	if err != nil {
 		return 0, err
@@ -235,13 +294,23 @@ const (
 	mediaRetryFailed                    // final: the phone no longer has the file
 )
 
+// mediaRetryReasonNotFound is the recorded reason for a NOT_FOUND answer.
+const mediaRetryReasonNotFound = "phone answered NOT_FOUND"
+
+// isFinalMediaRetryReason reports whether a failed request's last_error means
+// the phone itself said the file is gone, as opposed to attempts running out
+// while it was offline, which a later explicit download may still try.
+func isFinalMediaRetryReason(reason string) bool {
+	return reason == mediaRetryReasonNotFound || reason == whatsmeow.ErrMediaNotAvailableOnPhone.Error()
+}
+
 // classifyMediaRetryAnswer interprets a decrypted media retry notification.
 // NOT_FOUND and "not available on phone" are final: asking again only pings
 // the phone. Anything else unexpected is retried within the attempt budget.
 func classifyMediaRetryAnswer(notif *waMmsRetry.MediaRetryNotification, err error) (mediaRetryOutcome, string) {
 	switch {
 	case errors.Is(err, whatsmeow.ErrMediaNotAvailableOnPhone):
-		return mediaRetryFailed, err.Error()
+		return mediaRetryFailed, whatsmeow.ErrMediaNotAvailableOnPhone.Error()
 	case err != nil:
 		return mediaRetryAgain, err.Error()
 	}
@@ -252,7 +321,7 @@ func classifyMediaRetryAnswer(notif *waMmsRetry.MediaRetryNotification, err erro
 		}
 		return mediaRetrySuccess, ""
 	case waMmsRetry.MediaRetryNotification_NOT_FOUND:
-		return mediaRetryFailed, "phone answered NOT_FOUND"
+		return mediaRetryFailed, mediaRetryReasonNotFound
 	default:
 		return mediaRetryAgain, "phone answered " + notif.GetResult().String()
 	}

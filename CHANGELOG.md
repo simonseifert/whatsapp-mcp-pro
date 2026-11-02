@@ -8,6 +8,12 @@ All notable changes to this fork are recorded here. The format follows
 
 ### Fixed
 
+- Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
+  used to bypass, so a bulk download can no longer flood the phone with
+  "Finished syncing" notices. Over the limit it sends nothing, leaves the
+  request to the paced queue and fails the download with a 502. It also no
+  longer re-asks about media the phone already said it doesn't have, or sends a
+  second request while one is still unanswered.
 - Web UI lint is clean (it had 8 errors and 5 warnings, inherited from
   upstream) and now runs in CI. Data loading sets state from promise
   callbacks, dialogs reset their fields during render instead of in an
