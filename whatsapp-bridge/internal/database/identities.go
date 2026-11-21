@@ -35,6 +35,11 @@ type Identity struct {
 	HasChat       bool // has a row in chats
 	MessageCount  int
 
+	// GroupMetaFresh is set when the group fields below were read from live
+	// server metadata in this sync. It is not stored: UpsertIdentities uses it
+	// to keep the stored values when the sync ran offline and could not fill them.
+	GroupMetaFresh bool
+
 	// Groups only, filled from live server metadata when connected.
 	ParticipantCount int
 	IsAnnounce       bool   // admins-only posting
@@ -125,7 +130,10 @@ func createIdentityTable(db *sql.DB) error {
 
 // UpsertIdentities writes the whole directory in one transaction. Rows are
 // computed in full by the caller before they get here, so a plain overwrite of
-// every field is correct — created_at is the only thing carried forward.
+// every field is correct — created_at is the only thing carried forward. The
+// exception is the group metadata only a live connection can fill
+// (participant_count, is_announce, owner_jid and the community columns): a row
+// without GroupMetaFresh keeps what is stored, so an offline sync does not wipe it.
 func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 	if len(rows) == 0 {
 		return nil
@@ -163,13 +171,13 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			is_contact     = excluded.is_contact,
 			has_chat       = excluded.has_chat,
 			message_count  = excluded.message_count,
-			participant_count = excluded.participant_count,
-			is_announce    = excluded.is_announce,
-			owner_jid      = excluded.owner_jid,
-			is_community   = excluded.is_community,
-			community_jid  = excluded.community_jid,
-			is_default_subgroup = excluded.is_default_subgroup,
-			i_am_admin     = excluded.i_am_admin,
+			participant_count = CASE WHEN ?28 THEN excluded.participant_count ELSE identities.participant_count END,
+			is_announce    = CASE WHEN ?28 THEN excluded.is_announce ELSE identities.is_announce END,
+			owner_jid      = CASE WHEN ?28 THEN excluded.owner_jid ELSE identities.owner_jid END,
+			is_community   = CASE WHEN ?28 THEN excluded.is_community ELSE identities.is_community END,
+			community_jid  = CASE WHEN ?28 THEN excluded.community_jid ELSE identities.community_jid END,
+			is_default_subgroup = CASE WHEN ?28 THEN excluded.is_default_subgroup ELSE identities.is_default_subgroup END,
+			i_am_admin     = CASE WHEN ?28 THEN excluded.i_am_admin ELSE identities.i_am_admin END,
 			first_seen     = excluded.first_seen,
 			last_seen      = excluded.last_seen,
 			sources        = excluded.sources,
@@ -193,6 +201,7 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			nullIfZero(row.ParticipantCount), row.IsAnnounce, nullIfEmpty(row.OwnerJID),
 			row.IsCommunity, nullIfEmpty(row.CommunityJID), row.IsDefaultSubgroup, row.IAmAdmin,
 			row.FirstSeen, row.LastSeen, strings.Join(row.Sources, ","),
+			row.GroupMetaFresh,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert identity %s: %w", row.JID, err)

@@ -285,6 +285,7 @@ func (c *Client) enrichGroups(ctx context.Context, byJID map[string]*database.Id
 			row.OwnerJID = group.OwnerJID.ToNonAD().String()
 		}
 		row.IsCommunity, row.CommunityJID, row.IsDefaultSubgroup, row.IAmAdmin = communityFields(group, own...)
+		row.GroupMetaFresh = true
 		addSource(row, "groups")
 		enriched++
 	}

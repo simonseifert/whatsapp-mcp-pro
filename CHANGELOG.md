@@ -49,6 +49,9 @@ All notable changes to this fork are recorded here. The format follows
   `chat_state.last_read_at`; our own receipts are not echoed back as events.
 - A `message_reactions` table from a hand-applied migration 001 is renamed to
   `message_reactions_legacy` (data kept) so migration 011's table can be created.
+- An identity sync that runs while disconnected no longer erases stored group
+  metadata (participant count, announce flag, owner, community links, own admin
+  status); those columns update only when live group data was read.
 - Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
   used to bypass, so a bulk download can no longer flood the phone with
   "Finished syncing" notices. Over the limit it sends nothing, leaves the

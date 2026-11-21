@@ -206,3 +206,46 @@ func TestReactionsLegacyTableNameTakenFails(t *testing.T) {
 		t.Fatalf("err = %v, want a clear refusal", err)
 	}
 }
+
+// A sync that runs while disconnected cannot refill the group metadata; its
+// rows must not overwrite what an earlier online sync stored.
+func TestUpsertIdentitiesKeepsGroupMetaWhenOffline(t *testing.T) {
+	store := newTestMessageStore(t)
+	read := func() (count int, announce bool, owner string, isCommunity bool, parent string, isDefault, admin bool) {
+		t.Helper()
+		var o, p sql.NullString
+		var c sql.NullInt64
+		err := store.db.QueryRow(`SELECT participant_count, is_announce, owner_jid, is_community, community_jid, is_default_subgroup, i_am_admin FROM identities WHERE jid = 'G1@g.us'`).
+			Scan(&c, &announce, &o, &isCommunity, &p, &isDefault, &admin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return int(c.Int64), announce, o.String, isCommunity, p.String, isDefault, admin
+	}
+	up := func(r Identity) {
+		t.Helper()
+		if err := store.UpsertIdentities([]Identity{r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	up(Identity{JID: "G1@g.us", Kind: "group", GroupMetaFresh: true, ParticipantCount: 7, IsAnnounce: true,
+		OwnerJID: "4915112345678@s.whatsapp.net", IsCommunity: true, CommunityJID: "P@g.us", IsDefaultSubgroup: true, IAmAdmin: true})
+	// Offline: zero values, not fresh. The name may change; group meta may not.
+	up(Identity{JID: "G1@g.us", Kind: "group", FullName: "Renamed"})
+	count, announce, owner, isCommunity, parent, isDefault, admin := read()
+	if count != 7 || !announce || owner != "4915112345678@s.whatsapp.net" || !isCommunity || parent != "P@g.us" || !isDefault || !admin {
+		t.Fatalf("offline sync erased group meta: %d %v %q %v %q %v %v", count, announce, owner, isCommunity, parent, isDefault, admin)
+	}
+	var name string
+	if err := store.db.QueryRow(`SELECT full_name FROM identities WHERE jid = 'G1@g.us'`).Scan(&name); err != nil || name != "Renamed" {
+		t.Errorf("full_name = %q (err %v), want the offline sync to still update other columns", name, err)
+	}
+
+	// Online again: fresh values replace, including going back to false/empty.
+	up(Identity{JID: "G1@g.us", Kind: "group", GroupMetaFresh: true, ParticipantCount: 9, CommunityJID: "Q@g.us"})
+	count, announce, owner, isCommunity, parent, isDefault, admin = read()
+	if count != 9 || announce || owner != "" || isCommunity || parent != "Q@g.us" || isDefault || admin {
+		t.Fatalf("fresh sync did not update: %d %v %q %v %q %v %v", count, announce, owner, isCommunity, parent, isDefault, admin)
+	}
+}
