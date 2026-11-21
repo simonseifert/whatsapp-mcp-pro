@@ -45,6 +45,8 @@ All notable changes to this fork are recorded here. The format follows
   backfills no longer mark chats read or reset pinned, archived and muted state.
 - A removed reaction is kept as a tombstone (empty emoji) rather than deleted,
   so a stale add replayed later by history sync cannot bring it back.
+- Reads made through `/api/read` (receipt type `read`) now update
+  `chat_state.last_read_at`; our own receipts are not echoed back as events.
 - Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
   used to bypass, so a bulk download can no longer flood the phone with
   "Finished syncing" notices. Over the limit it sends nothing, leaves the

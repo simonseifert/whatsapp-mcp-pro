@@ -826,6 +826,16 @@ func (c *Client) MarkMessagesPlayed(chatJID string, messageIDs []string, senderJ
 	return c.markMessages(chatJID, messageIDs, senderJID, types.ReceiptTypePlayed)
 }
 
+// NormalizeChat is NormalizeChatJID on a string: the chat key the store files
+// chatJID under. An unparsable JID is returned unchanged.
+func (c *Client) NormalizeChat(chatJID string) string {
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return chatJID
+	}
+	return c.NormalizeChatJID(jid).String()
+}
+
 // markMessages sends a receipt of the given type for the given message IDs.
 func (c *Client) markMessages(chatJID string, messageIDs []string, senderJID string, receiptType types.ReceiptType) error {
 	if !c.IsConnected() {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -561,9 +562,15 @@ func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 	receiptType := strings.ToLower(strings.TrimSpace(req.ReceiptType))
 	switch receiptType {
 	case "", "read":
-		if err := s.client.MarkMessagesRead(req.ChatJID, req.MessageIDs, req.SenderJID); err != nil {
+		if err := s.sender.MarkMessagesRead(req.ChatJID, req.MessageIDs, req.SenderJID); err != nil {
 			SendJSONError(w, fmt.Sprintf("Failed to mark messages as read: %v", err), http.StatusInternalServerError)
 			return
+		}
+		// Our own receipts are not echoed back as events, so record the read
+		// here; otherwise chat_state.last_read_at ignores reads made through
+		// the bridge. A played receipt alone is not a chat read.
+		if err := s.messageStore.MarkChatReadAt(s.sender.NormalizeChat(req.ChatJID), time.Now()); err != nil {
+			log.Printf("record chat read for %s: %v", req.ChatJID, err)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
@@ -571,7 +578,7 @@ func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 			"skipped": skipped,
 		})
 	case "played":
-		if err := s.client.MarkMessagesPlayed(req.ChatJID, req.MessageIDs, req.SenderJID); err != nil {
+		if err := s.sender.MarkMessagesPlayed(req.ChatJID, req.MessageIDs, req.SenderJID); err != nil {
 			SendJSONError(w, fmt.Sprintf("Failed to mark messages as played: %v", err), http.StatusInternalServerError)
 			return
 		}

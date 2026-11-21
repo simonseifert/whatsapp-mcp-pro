@@ -23,15 +23,19 @@ import (
 
 // fakeSender records calls and returns whatever result() says.
 type fakeSender struct {
-	mu        sync.Mutex
-	calls     int
-	priorIDs  []string
-	deadlines []bool
-	result    func(n int) types.SendResult
-	block     chan struct{} // if set, sends wait on it
-	entered   chan struct{} // if set, signalled when a send starts
-	admin     bool          // what OwnGroupAdmin answers
-	deletes   []string      // sender_jid of each DeleteMessage call
+	mu         sync.Mutex
+	calls      int
+	priorIDs   []string
+	deadlines  []bool
+	result     func(n int) types.SendResult
+	block      chan struct{}     // if set, sends wait on it
+	entered    chan struct{}     // if set, signalled when a send starts
+	admin      bool              // what OwnGroupAdmin answers
+	deletes    []string          // sender_jid of each DeleteMessage call
+	reads      []string          // chat_jid of each MarkMessagesRead call
+	played     []string          // chat_jid of each MarkMessagesPlayed call
+	readErr    error             // what MarkMessagesRead answers
+	normalized map[string]string // NormalizeChat mappings
 }
 
 func (f *fakeSender) record(ctx context.Context, priorID string, beforeDispatch func(string)) types.SendResult {
@@ -91,6 +95,27 @@ func (f *fakeSender) DeleteMessage(_, _, senderJID string) error {
 }
 
 func (f *fakeSender) OwnGroupAdmin(string) bool { return f.admin }
+
+func (f *fakeSender) MarkMessagesRead(chatJID string, _ []string, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads = append(f.reads, chatJID)
+	return f.readErr
+}
+
+func (f *fakeSender) MarkMessagesPlayed(chatJID string, _ []string, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.played = append(f.played, chatJID)
+	return nil
+}
+
+func (f *fakeSender) NormalizeChat(chatJID string) string {
+	if to, ok := f.normalized[chatJID]; ok {
+		return to
+	}
+	return chatJID
+}
 
 func (f *fakeSender) callCount() int {
 	f.mu.Lock()
