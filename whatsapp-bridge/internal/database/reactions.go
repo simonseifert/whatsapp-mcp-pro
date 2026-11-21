@@ -86,3 +86,21 @@ func (store *MessageStore) GetMessageReactionSummary(chatJID, msgID string) (map
 	}
 	return out, nil
 }
+
+// mergeReactionsTx moves reactions from one chat key to another inside a
+// merge. Where the same reactor has a row under both, the newer reacted_at
+// wins (the target on a tie); the source rows are then deleted.
+func mergeReactionsTx(tx *sql.Tx, from, to string) error {
+	if _, err := tx.Exec(`
+		INSERT INTO message_reactions (chat_jid, message_id, sender, emoji, reacted_at)
+		SELECT ?, message_id, sender, emoji, reacted_at FROM message_reactions WHERE chat_jid = ?
+		ON CONFLICT(chat_jid, message_id, sender) DO UPDATE
+		SET emoji = excluded.emoji, reacted_at = excluded.reacted_at
+		WHERE excluded.reacted_at > message_reactions.reacted_at`, to, from); err != nil {
+		return fmt.Errorf("move reactions %s -> %s: %w", from, to, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM message_reactions WHERE chat_jid = ?`, from); err != nil {
+		return fmt.Errorf("drop source reactions in %s: %w", from, err)
+	}
+	return nil
+}

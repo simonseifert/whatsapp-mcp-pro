@@ -170,3 +170,102 @@ func (store *MessageStore) GetChatState(chatJID string) (ChatState, error) {
 	}
 	return st, nil
 }
+
+// chatStateRow is one chat_state row with its change times, as the merge sees it.
+type chatStateRow struct {
+	pinned, archived, markedUnread bool
+	muted                          int64
+	pinnedAt, mutedAt              sql.NullTime
+	archivedAt, markedUnreadAt     sql.NullTime
+	lastRead                       sql.NullTime
+	unread                         sql.NullInt64
+}
+
+// mergeField picks the surviving value of one field. A change time beats a
+// seed (no change time); of two change times the newer wins, the target on a
+// tie. Two seeds: the target's value if set (non-zero), else the source's.
+func mergeField[T comparable](tv T, tAt sql.NullTime, sv T, sAt sql.NullTime) (T, sql.NullTime) {
+	var zero T
+	switch {
+	case tAt.Valid && sAt.Valid:
+		if sAt.Time.After(tAt.Time) {
+			return sv, sAt
+		}
+		return tv, tAt
+	case sAt.Valid:
+		return sv, sAt
+	case tAt.Valid:
+		return tv, tAt
+	case tv != zero:
+		return tv, tAt
+	default:
+		return sv, sAt
+	}
+}
+
+// mergeChatStateTx folds chat_state under chat key from into key to inside a
+// merge: per field by change time (see mergeField), last_read_at the later of
+// the two, history_unread_count from the target if set, and the source row is
+// deleted.
+func mergeChatStateTx(tx *sql.Tx, from, to string) error {
+	read := func(jid string) (*chatStateRow, error) {
+		var r chatStateRow
+		err := tx.QueryRow(`
+			SELECT pinned, pinned_changed_at, muted_until, muted_until_changed_at, archived, archived_changed_at,
+			       marked_unread, marked_unread_changed_at, last_read_at, history_unread_count
+			FROM chat_state WHERE chat_jid = ?`, jid).
+			Scan(&r.pinned, &r.pinnedAt, &r.muted, &r.mutedAt, &r.archived, &r.archivedAt,
+				&r.markedUnread, &r.markedUnreadAt, &r.lastRead, &r.unread)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read chat state %s: %w", jid, err)
+		}
+		return &r, nil
+	}
+	src, err := read(from)
+	if err != nil || src == nil {
+		return err
+	}
+	dst, err := read(to)
+	if err != nil {
+		return err
+	}
+	if dst == nil {
+		dst = &chatStateRow{}
+	}
+
+	var m chatStateRow
+	m.pinned, m.pinnedAt = mergeField(dst.pinned, dst.pinnedAt, src.pinned, src.pinnedAt)
+	m.muted, m.mutedAt = mergeField(dst.muted, dst.mutedAt, src.muted, src.mutedAt)
+	m.archived, m.archivedAt = mergeField(dst.archived, dst.archivedAt, src.archived, src.archivedAt)
+	m.markedUnread, m.markedUnreadAt = mergeField(dst.markedUnread, dst.markedUnreadAt, src.markedUnread, src.markedUnreadAt)
+	m.lastRead = dst.lastRead
+	if src.lastRead.Valid && (!dst.lastRead.Valid || src.lastRead.Time.After(dst.lastRead.Time)) {
+		m.lastRead = src.lastRead
+	}
+	m.unread = dst.unread
+	if !m.unread.Valid {
+		m.unread = src.unread
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO chat_state (chat_jid, pinned, pinned_changed_at, muted_until, muted_until_changed_at,
+			archived, archived_changed_at, marked_unread, marked_unread_changed_at, last_read_at, history_unread_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_jid) DO UPDATE SET
+			pinned = excluded.pinned, pinned_changed_at = excluded.pinned_changed_at,
+			muted_until = excluded.muted_until, muted_until_changed_at = excluded.muted_until_changed_at,
+			archived = excluded.archived, archived_changed_at = excluded.archived_changed_at,
+			marked_unread = excluded.marked_unread, marked_unread_changed_at = excluded.marked_unread_changed_at,
+			last_read_at = excluded.last_read_at, history_unread_count = excluded.history_unread_count`,
+		to, m.pinned, m.pinnedAt, m.muted, m.mutedAt, m.archived, m.archivedAt,
+		m.markedUnread, m.markedUnreadAt, m.lastRead, m.unread); err != nil {
+		return fmt.Errorf("write merged chat state %s: %w", to, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM chat_state WHERE chat_jid = ?`, from); err != nil {
+		return fmt.Errorf("drop source chat state %s: %w", from, err)
+	}
+	return nil
+}

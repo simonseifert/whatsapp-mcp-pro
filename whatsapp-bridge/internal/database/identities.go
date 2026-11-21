@@ -389,7 +389,7 @@ type MergeResult struct {
 // (a revoke filed under the LID, the original under the phone JID), and losing
 // deleted_at would show a revoked message as live again.
 //
-// The edit history and call log are keyed on chat_jid too and move with the
+// The edit history, call log, reactions and chat state are keyed on chat_jid too and move with the
 // messages, in the same transaction, so a merge never leaves a message's edits
 // behind under a chat nothing lists any more.
 func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
@@ -491,6 +491,21 @@ func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
 		}
 		movedCalls, _ := res.RowsAffected()
 		result.CallsMoved = int(movedCalls)
+	}
+
+	// Reactions and chat state are keyed on chat_jid too; history files them
+	// under the raw (LID) chat JID and live events can land there before a
+	// mapping is known. Already-merged chats are skipped by MergeLIDChats, so
+	// whatever stays behind would never move.
+	if store.tableExists(tx, "message_reactions") {
+		if err = mergeReactionsTx(tx, from, to); err != nil {
+			return result, err
+		}
+	}
+	if store.tableExists(tx, "chat_state") {
+		if err = mergeChatStateTx(tx, from, to); err != nil {
+			return result, err
+		}
 	}
 
 	// Keep the newer of the two last-activity timestamps on the target.

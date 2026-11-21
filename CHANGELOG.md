@@ -37,6 +37,9 @@ All notable changes to this fork are recorded here. The format follows
   about several times in an hour counted once. Requests are now logged in
   `media_retry_receipts` (migration 010).
 
+- Chat merges (`MergeLIDChats`) now move `message_reactions` and `chat_state`
+  from the LID chat to the phone-JID chat, newer change winning, instead of
+  leaving them stranded under the LID.
 - Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
   used to bypass, so a bulk download can no longer flood the phone with
   "Finished syncing" notices. Over the limit it sends nothing, leaves the
