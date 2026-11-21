@@ -82,6 +82,23 @@ func TestChatStateNewerWins(t *testing.T) {
 				t.Error("MarkedUnread = false, want true")
 			}
 		}},
+		{"stale marked-unread after a read on a fresh chat is ignored", func(t *testing.T, s *MessageStore) {
+			must(t, s.MarkChatReadAt(chat, t7))
+			must(t, s.SetChatMarkedUnread(chat, true, t6))
+		}, func(t *testing.T, st ChatState) {
+			if st.MarkedUnread {
+				t.Error("MarkedUnread = true, want false")
+			}
+		}},
+		{"seed last read only moves forward", func(t *testing.T, s *MessageStore) {
+			must(t, s.SeedChatStateFromHistory(chat, false, false, false, 0, 0, t3))
+			must(t, s.SeedChatStateFromHistory(chat, false, false, false, 0, 0, t5))
+			must(t, s.SeedChatStateFromHistory(chat, false, false, false, 0, 0, t4))
+		}, func(t *testing.T, st ChatState) {
+			if st.LastReadAt == nil || !st.LastReadAt.Equal(t5) {
+				t.Errorf("LastReadAt = %v, want %v", st.LastReadAt, t5)
+			}
+		}},
 		{"seed with zero unread sets last read", func(t *testing.T, s *MessageStore) {
 			must(t, s.SeedChatStateFromHistory(chat, false, false, false, 0, 0, t3))
 		}, func(t *testing.T, st ChatState) {

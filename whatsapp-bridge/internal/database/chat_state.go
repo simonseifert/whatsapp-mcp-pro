@@ -101,7 +101,7 @@ func (store *MessageStore) SetChatMarkedUnread(chatJID string, unread bool, at t
 func (store *MessageStore) MarkChatReadAt(chatJID string, at time.Time) error {
 	at = changeTime(at)
 	_, err := store.db.Exec(`
-		INSERT INTO chat_state (chat_jid, last_read_at) VALUES (?, ?)
+		INSERT INTO chat_state (chat_jid, last_read_at, marked_unread_changed_at) VALUES (?, ?, ?)
 		ON CONFLICT(chat_jid) DO UPDATE SET
 			marked_unread = CASE WHEN marked_unread_changed_at IS NULL OR excluded.last_read_at > marked_unread_changed_at
 				THEN 0 ELSE marked_unread END,
@@ -109,7 +109,7 @@ func (store *MessageStore) MarkChatReadAt(chatJID string, at time.Time) error {
 				THEN excluded.last_read_at ELSE marked_unread_changed_at END,
 			last_read_at = CASE WHEN last_read_at IS NULL OR excluded.last_read_at > last_read_at
 				THEN excluded.last_read_at ELSE last_read_at END`,
-		chatJID, at)
+		chatJID, at, at)
 	if err != nil {
 		return fmt.Errorf("mark chat read: %w", err)
 	}
@@ -119,11 +119,12 @@ func (store *MessageStore) MarkChatReadAt(chatJID string, at time.Time) error {
 // SeedChatStateFromHistory fills fields that have never been set by a real
 // event from a history-sync conversation. Seeded values carry no change time,
 // so any later event replaces them, and existing event-driven values are never
-// touched. With unreadCount 0 the chat counts as read up to latestMsg.
+// touched. With unreadCount 0 the chat counts as read up to latestMsg, and
+// last_read_at only moves forward; the unread count takes the latest seed.
 func (store *MessageStore) SeedChatStateFromHistory(chatJID string, pinned, archived, markedUnread bool, mutedUntil int64, unreadCount int, latestMsg time.Time) error {
 	var lastRead any
 	if unreadCount == 0 && !latestMsg.IsZero() {
-		lastRead = latestMsg.UTC()
+		lastRead = changeTime(latestMsg)
 	}
 	_, err := store.db.Exec(`
 		INSERT INTO chat_state (chat_jid, pinned, muted_until, archived, marked_unread, last_read_at, history_unread_count)
@@ -133,8 +134,9 @@ func (store *MessageStore) SeedChatStateFromHistory(chatJID string, pinned, arch
 			muted_until = CASE WHEN muted_until_changed_at IS NULL THEN excluded.muted_until ELSE muted_until END,
 			archived = CASE WHEN archived_changed_at IS NULL THEN excluded.archived ELSE archived END,
 			marked_unread = CASE WHEN marked_unread_changed_at IS NULL THEN excluded.marked_unread ELSE marked_unread END,
-			last_read_at = COALESCE(last_read_at, excluded.last_read_at),
-			history_unread_count = COALESCE(history_unread_count, excluded.history_unread_count)`,
+			last_read_at = CASE WHEN excluded.last_read_at IS NOT NULL AND (last_read_at IS NULL OR excluded.last_read_at > last_read_at)
+				THEN excluded.last_read_at ELSE last_read_at END,
+			history_unread_count = excluded.history_unread_count`,
 		chatJID, pinned, mutedUntil, archived, markedUnread, lastRead, unreadCount)
 	if err != nil {
 		return fmt.Errorf("seed chat state: %w", err)
