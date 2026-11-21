@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waSyncAction"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -107,5 +108,41 @@ func TestHandleChatStateEvent(t *testing.T) {
 	st, _ = store.GetChatState(chat.String())
 	if !st.LastReadAt.Equal(t2) {
 		t.Errorf("foreign receipt moved LastReadAt to %v", st.LastReadAt)
+	}
+}
+
+func TestSeedsChatState(t *testing.T) {
+	for _, tt := range []struct {
+		typ  waHistorySync.HistorySync_HistorySyncType
+		want bool
+	}{
+		{waHistorySync.HistorySync_INITIAL_BOOTSTRAP, true},
+		{waHistorySync.HistorySync_RECENT, true},
+		{waHistorySync.HistorySync_FULL, true},
+		{waHistorySync.HistorySync_ON_DEMAND, false},
+		{waHistorySync.HistorySync_PUSH_NAME, false},
+		{waHistorySync.HistorySync_NON_BLOCKING_DATA, false},
+		{waHistorySync.HistorySync_INITIAL_STATUS_V3, false},
+	} {
+		if got := seedsChatState(tt.typ); got != tt.want {
+			t.Errorf("seedsChatState(%v) = %v, want %v", tt.typ, got, tt.want)
+		}
+	}
+}
+
+func TestChatSeedFromConversationOnlyPresentFields(t *testing.T) {
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	empty := chatSeedFromConversation(&waHistorySync.Conversation{}, at)
+	if empty.Pinned != nil || empty.Archived != nil || empty.MarkedUnread != nil || empty.MutedUntil != nil || empty.UnreadCount != nil {
+		t.Errorf("empty conversation produced a seed: %+v", empty)
+	}
+	full := chatSeedFromConversation(&waHistorySync.Conversation{
+		Pinned: proto.Uint32(0), Archived: proto.Bool(true), MarkedAsUnread: proto.Bool(false),
+		MuteEndTime: proto.Uint64(1900000000), UnreadCount: proto.Uint32(0),
+	}, at)
+	if full.Pinned == nil || *full.Pinned || full.Archived == nil || !*full.Archived ||
+		full.MarkedUnread == nil || *full.MarkedUnread || full.MutedUntil == nil || *full.MutedUntil != 1900000000 ||
+		full.UnreadCount == nil || *full.UnreadCount != 0 {
+		t.Errorf("full conversation seed = %+v", full)
 	}
 }

@@ -116,28 +116,57 @@ func (store *MessageStore) MarkChatReadAt(chatJID string, at time.Time) error {
 	return nil
 }
 
+// ChatSeed is what a history-sync conversation says about a chat. A nil field
+// was absent from the conversation and is left alone: the proto getters turn a
+// missing value into 0 or false, which would mark an unseen chat read or
+// unpin a pinned one, so callers must pass nil rather than a default.
+type ChatSeed struct {
+	Pinned       *bool
+	Archived     *bool
+	MarkedUnread *bool
+	// MutedUntil is unix seconds; -1 means muted forever, 0 means not muted.
+	MutedUntil  *int64
+	UnreadCount *int
+	// LatestMsg is the newest message in the conversation; with UnreadCount 0
+	// the chat counts as read up to then.
+	LatestMsg time.Time
+}
+
+// anyOrNil turns an optional value into a SQL parameter (NULL when absent).
+func anyOrNil[T any](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
 // SeedChatStateFromHistory fills fields that have never been set by a real
 // event from a history-sync conversation. Seeded values carry no change time,
 // so any later event replaces them, and existing event-driven values are never
-// touched. With unreadCount 0 the chat counts as read up to latestMsg, and
-// last_read_at only moves forward; the unread count takes the latest seed.
-func (store *MessageStore) SeedChatStateFromHistory(chatJID string, pinned, archived, markedUnread bool, mutedUntil int64, unreadCount int, latestMsg time.Time) error {
+// touched. Only the fields present in seed are written. With an unread count
+// of 0 the chat counts as read up to LatestMsg, and last_read_at only moves
+// forward; a present unread count takes the latest seed.
+func (store *MessageStore) SeedChatStateFromHistory(chatJID string, seed ChatSeed) error {
 	var lastRead any
-	if unreadCount == 0 && !latestMsg.IsZero() {
-		lastRead = changeTime(latestMsg)
+	if seed.UnreadCount != nil && *seed.UnreadCount == 0 && !seed.LatestMsg.IsZero() {
+		lastRead = changeTime(seed.LatestMsg)
 	}
+	pinned, archived := anyOrNil(seed.Pinned), anyOrNil(seed.Archived)
+	markedUnread, muted := anyOrNil(seed.MarkedUnread), anyOrNil(seed.MutedUntil)
+	unread := anyOrNil(seed.UnreadCount)
 	_, err := store.db.Exec(`
 		INSERT INTO chat_state (chat_jid, pinned, muted_until, archived, marked_unread, last_read_at, history_unread_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 0), ?, ?)
 		ON CONFLICT(chat_jid) DO UPDATE SET
-			pinned = CASE WHEN pinned_changed_at IS NULL THEN excluded.pinned ELSE pinned END,
-			muted_until = CASE WHEN muted_until_changed_at IS NULL THEN excluded.muted_until ELSE muted_until END,
-			archived = CASE WHEN archived_changed_at IS NULL THEN excluded.archived ELSE archived END,
-			marked_unread = CASE WHEN marked_unread_changed_at IS NULL THEN excluded.marked_unread ELSE marked_unread END,
+			pinned = CASE WHEN pinned_changed_at IS NULL AND ? IS NOT NULL THEN excluded.pinned ELSE pinned END,
+			muted_until = CASE WHEN muted_until_changed_at IS NULL AND ? IS NOT NULL THEN excluded.muted_until ELSE muted_until END,
+			archived = CASE WHEN archived_changed_at IS NULL AND ? IS NOT NULL THEN excluded.archived ELSE archived END,
+			marked_unread = CASE WHEN marked_unread_changed_at IS NULL AND ? IS NOT NULL THEN excluded.marked_unread ELSE marked_unread END,
 			last_read_at = CASE WHEN excluded.last_read_at IS NOT NULL AND (last_read_at IS NULL OR excluded.last_read_at > last_read_at)
 				THEN excluded.last_read_at ELSE last_read_at END,
-			history_unread_count = excluded.history_unread_count`,
-		chatJID, pinned, mutedUntil, archived, markedUnread, lastRead, unreadCount)
+			history_unread_count = COALESCE(excluded.history_unread_count, history_unread_count)`,
+		chatJID, pinned, muted, archived, markedUnread, lastRead, unread,
+		pinned, muted, archived, markedUnread)
 	if err != nil {
 		return fmt.Errorf("seed chat state: %w", err)
 	}

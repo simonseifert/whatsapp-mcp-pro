@@ -40,6 +40,9 @@ All notable changes to this fork are recorded here. The format follows
 - Chat merges (`MergeLIDChats`) now move `message_reactions` and `chat_state`
   from the LID chat to the phone-JID chat, newer change winning, instead of
   leaving them stranded under the LID.
+- History sync seeds `chat_state` only from full sync types (initial bootstrap,
+  recent, full) and only the fields a conversation actually carries; on-demand
+  backfills no longer mark chats read or reset pinned, archived and muted state.
 - Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
   used to bypass, so a bulk download can no longer flood the phone with
   "Finished syncing" notices. Over the limit it sends nothing, leaves the

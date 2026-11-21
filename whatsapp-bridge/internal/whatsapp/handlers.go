@@ -318,17 +318,14 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 			}
 
 			// Seed pinned, muted, archived and read state. Real events
-			// (which carry a time) always win over these seeds.
-			if err := messageStore.SeedChatStateFromHistory(
-				c.NormalizeChatJID(jid).String(),
-				conversation.GetPinned() > 0,
-				conversation.GetArchived(),
-				conversation.GetMarkedAsUnread(),
-				muteEndSeconds(int64(conversation.GetMuteEndTime())),
-				int(conversation.GetUnreadCount()),
-				timestamp,
-			); err != nil {
-				c.logger.Warnf("Failed to seed chat state for %s: %v", chatJID, err)
+			// (which carry a time) always win over these seeds. Only full
+			// syncs describe every chat; partial ones (on-demand backfills)
+			// leave most fields unset, which must not read as "all read".
+			if seedsChatState(historySync.Data.GetSyncType()) {
+				seed := chatSeedFromConversation(conversation, timestamp)
+				if err := messageStore.SeedChatStateFromHistory(c.NormalizeChatJID(jid).String(), seed); err != nil {
+					c.logger.Warnf("Failed to seed chat state for %s: %v", chatJID, err)
+				}
 			}
 
 			// Store messages
@@ -741,4 +738,44 @@ func autoDownloadExtractDirectPath(rawURL string) string {
 		}
 	}
 	return rawURL
+}
+
+// seedsChatState reports whether a history sync of this type is authoritative
+// for chat state. On-demand syncs (reconnect gap backfill, request_history)
+// and the other partial types carry only the messages asked for.
+func seedsChatState(t waHistorySync.HistorySync_HistorySyncType) bool {
+	switch t {
+	case waHistorySync.HistorySync_INITIAL_BOOTSTRAP,
+		waHistorySync.HistorySync_RECENT,
+		waHistorySync.HistorySync_FULL:
+		return true
+	}
+	return false
+}
+
+// chatSeedFromConversation reads the chat state a conversation actually
+// carries; fields absent from the proto stay nil.
+func chatSeedFromConversation(conv *waHistorySync.Conversation, latest time.Time) database.ChatSeed {
+	seed := database.ChatSeed{LatestMsg: latest}
+	if conv.Pinned != nil {
+		v := conv.GetPinned() > 0
+		seed.Pinned = &v
+	}
+	if conv.Archived != nil {
+		v := conv.GetArchived()
+		seed.Archived = &v
+	}
+	if conv.MarkedAsUnread != nil {
+		v := conv.GetMarkedAsUnread()
+		seed.MarkedUnread = &v
+	}
+	if conv.MuteEndTime != nil {
+		v := muteEndSeconds(int64(conv.GetMuteEndTime()))
+		seed.MutedUntil = &v
+	}
+	if conv.UnreadCount != nil {
+		v := int(conv.GetUnreadCount())
+		seed.UnreadCount = &v
+	}
+	return seed
 }
