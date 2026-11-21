@@ -534,7 +534,7 @@ def download_media(message_id: str, chat_jid: str) -> Any:
         For other media: a status dict with success, message, file_path.
 
     Hints:
-        - Use `list_messages` first to find messages with media_type set (image, video, audio, document)
+        - Use `list_messages` first to find messages with media_type set (image, video, audio, document, sticker)
         - The message_id and chat_jid come from `list_messages` results
         - Check message has media_type before attempting download
     """

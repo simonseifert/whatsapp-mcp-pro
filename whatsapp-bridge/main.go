@@ -136,12 +136,26 @@ func main() {
 			// Process regular messages with webhook support
 			client.HandleMessage(messageStore, webhookManager, v)
 
+		case *events.GroupInfo:
+			if v.Name != nil && v.Name.Name != "" {
+				if err := messageStore.RenameChat(v.JID.String(), v.Name.Name); err != nil {
+					logger.Warnf("Failed to rename chat %s: %v", v.JID, err)
+				} else {
+					logger.Infof("Renamed chat %s to %s", v.JID, v.Name.Name)
+				}
+			}
+
 		case *events.HistorySync:
 			// Process history sync events with detailed logging
 			logger.Infof("[SYNC] Starting HistorySync (Type: %v, Conversations: %d)", v.Data.SyncType, len(v.Data.Conversations))
 			client.HandleHistorySync(messageStore, v)
 			logger.Infof("[SYNC] ✓ Completed (Type: %v, %d conversations)", v.Data.SyncType, len(v.Data.Conversations))
 			identitySyncer.Trigger()
+
+		case *events.Pin, *events.Mute, *events.Archive, *events.MarkChatAsRead, *events.Receipt:
+			// Pinned, muted, archived and read state per chat. Receipt is also
+			// consumed by the phone monitor's own handler.
+			client.HandleChatStateEvent(messageStore, evt)
 
 		case *events.MediaRetry:
 			// A phone answering a request to re-upload purged media.

@@ -32,6 +32,7 @@ var hkdfInfo = map[string][]byte{
 	"image":    []byte("WhatsApp Image Keys"),
 	"video":    []byte("WhatsApp Video Keys"),
 	"audio":    []byte("WhatsApp Audio Keys"),
+	"sticker":  []byte("WhatsApp Image Keys"),
 	"document": []byte("WhatsApp Document Keys"),
 }
 

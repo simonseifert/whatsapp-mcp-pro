@@ -29,6 +29,12 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 	return err
 }
 
+// RenameChat replaces the stored name of a chat the bridge already knows.
+func (store *MessageStore) RenameChat(jid, name string) error {
+	_, err := store.db.Exec("UPDATE chats SET name = ? WHERE jid = ?", name, jid)
+	return err
+}
+
 // StoreMessage stores a message in the database
 func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content string, timestamp time.Time, isFromMe bool,
 	mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
@@ -122,7 +128,7 @@ func (store *MessageStore) RecentMediaMessages(since time.Time) ([]MediaMessage,
 	rows, err := store.db.Query(
 		`SELECT id, chat_jid, media_type, COALESCE(filename,''), file_sha256, timestamp
 		   FROM messages
-		  WHERE media_type IN ('image','video','audio','document')
+		  WHERE media_type IN ('image','video','audio','document','sticker')
 		    AND media_key IS NOT NULL AND length(media_key) > 0`)
 	if err != nil {
 		return nil, fmt.Errorf("recent media messages: %w", err)
@@ -333,13 +339,6 @@ func (store *MessageStore) GetContactInfo(jid string) (*types.ContactInfo, error
 	}
 
 	return contact, nil
-}
-
-// GetMessageReactionSummary returns a map of emoji -> count for message reactions.
-func (store *MessageStore) GetMessageReactionSummary(chatJID, msgID string) (map[string]int, error) {
-	// This is a placeholder - reactions storage depends on whatsmeow implementation
-	// For now, return empty map as reactions aren't stored in Phase 1
-	return make(map[string]int), nil
 }
 
 // GetGroupParticipants retrieves all participants in a group with their details.

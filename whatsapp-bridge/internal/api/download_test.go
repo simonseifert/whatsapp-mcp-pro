@@ -47,7 +47,8 @@ func TestMediaExtension(t *testing.T) {
 		{"hostile extension is sanitised", "document", "x.p/../df", ".bin"},
 		{"control bytes in extension", "document", "x.pd\x00f", ".pd_f"},
 		{"overlong extension ignored", "document", "x.aaaaaaaaaaaaaaaa", ".bin"},
-		{"unknown media type", "sticker", "", ".bin"},
+		{"sticker is webp", "sticker", "", ".webp"},
+		{"unknown media type", "gif", "", ".bin"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

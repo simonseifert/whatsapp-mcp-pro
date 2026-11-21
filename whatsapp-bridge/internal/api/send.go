@@ -56,6 +56,13 @@ type sendBackend interface {
 	// OwnGroupAdmin reports whether this account administers the group, the
 	// only case in which /api/delete revokes someone else's message.
 	OwnGroupAdmin(chatJID string) bool
+	// MarkMessagesRead sends read receipts (blue ticks).
+	MarkMessagesRead(chatJID string, messageIDs []string, senderJID string) error
+	// MarkMessagesPlayed sends played receipts for voice messages.
+	MarkMessagesPlayed(chatJID string, messageIDs []string, senderJID string) error
+	// NormalizeChat returns the chat key the store uses for chatJID (LID
+	// mapped to its phone JID when known).
+	NormalizeChat(chatJID string) string
 }
 
 const (

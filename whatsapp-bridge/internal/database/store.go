@@ -130,6 +130,23 @@ func runMigrations(db *sql.DB) error {
 			sql:  `ALTER TABLE messages ADD COLUMN deleted_by TEXT`,
 		},
 		{
+			// Community links and own admin status on identities (migrations/013).
+			name: "is_community",
+			sql:  `ALTER TABLE identities ADD COLUMN is_community INTEGER NOT NULL DEFAULT 0`,
+		},
+		{
+			name: "community_jid",
+			sql:  `ALTER TABLE identities ADD COLUMN community_jid TEXT`,
+		},
+		{
+			name: "is_default_subgroup",
+			sql:  `ALTER TABLE identities ADD COLUMN is_default_subgroup INTEGER NOT NULL DEFAULT 0`,
+		},
+		{
+			name: "i_am_admin",
+			sql:  `ALTER TABLE identities ADD COLUMN i_am_admin INTEGER NOT NULL DEFAULT 0`,
+		},
+		{
 			// Phone-offline tracking; see PhoneStatus. CREATE IF NOT EXISTS is
 			// idempotent, so it never hits the duplicate-column check below.
 			name: "phone_status",
@@ -150,7 +167,15 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 	// Persistent media retry queue (migrations/006 and 010).
-	return createMediaRequestTable(db)
+	if err := createMediaRequestTable(db); err != nil {
+		return err
+	}
+	// Reactions linked to their message (migrations/011).
+	if err := createReactionsTable(db); err != nil {
+		return err
+	}
+	// Pinned, muted, archived and read state per chat (migrations/012).
+	return createChatStateTable(db)
 }
 
 // createTables creates all necessary database tables

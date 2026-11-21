@@ -185,7 +185,8 @@ when code/data were split as above.)
   `user` provenance without `confirmed_by_user`, and never treat a stranger's
   self-claim as confirmation.
 - **Migration numbering.** `007_send_idempotency`, `008_normalise_senders`,
-  `009_edits_calls`, `010_media_retry_receipts`; the next one is `011`. The older numbers have
+  `009_edits_calls`, `010_media_retry_receipts`, `011_message_reactions`,
+  `012_chat_state`, `013_group_community`; the next one is `014`. The older numbers have
   duplicates (two 002s, two 003s) from merging upstream, so check
   `ls whatsapp-bridge/migrations` rather than counting, and renumber a branch's
   migration when merging if another branch took the number first.

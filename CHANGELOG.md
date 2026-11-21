@@ -8,6 +8,15 @@ All notable changes to this fork are recorded here. The format follows
 
 ### Added
 
+- `message_reactions` table (migration 011): one row per reactor per message,
+  newer change wins. Own reactions are stored; `[Reaction: X]` message rows are
+  kept.
+- `chat_state` table (migration 012): pinned, muted, archived, marked unread and
+  last read time per chat, seeded from history sync.
+- Community columns on `identities` (migration 013): `is_community`,
+  `community_jid`, `is_default_subgroup`, `i_am_admin`.
+- Stickers are downloaded like other media (`media_type` `sticker`, `.webp`),
+  including auto-download, the sweep and `/api/download`.
 - `/api/download` takes `no_phone_retry: true`, for bulk jobs that should take
   what's available and never notify the phone.
 - A daily media sweep saves recent media with no copy on disk: media the bridge
@@ -28,6 +37,21 @@ All notable changes to this fork are recorded here. The format follows
   about several times in an hour counted once. Requests are now logged in
   `media_retry_receipts` (migration 010).
 
+- Chat merges (`MergeLIDChats`) now move `message_reactions` and `chat_state`
+  from the LID chat to the phone-JID chat, newer change winning, instead of
+  leaving them stranded under the LID.
+- History sync seeds `chat_state` only from full sync types (initial bootstrap,
+  recent, full) and only the fields a conversation actually carries; on-demand
+  backfills no longer mark chats read or reset pinned, archived and muted state.
+- A removed reaction is kept as a tombstone (empty emoji) rather than deleted,
+  so a stale add replayed later by history sync cannot bring it back.
+- Reads made through `/api/read` (receipt type `read`) now update
+  `chat_state.last_read_at`; our own receipts are not echoed back as events.
+- A `message_reactions` table from a hand-applied migration 001 is renamed to
+  `message_reactions_legacy` (data kept) so migration 011's table can be created.
+- An identity sync that runs while disconnected no longer erases stored group
+  metadata (participant count, announce flag, owner, community links, own admin
+  status); those columns update only when live group data was read.
 - Media retry: `/api/download` now obeys `MEDIA_RETRY_MAX_PER_HOUR`, which it
   used to bypass, so a bulk download can no longer flood the phone with
   "Finished syncing" notices. Over the limit it sends nothing, leaves the
@@ -38,6 +62,11 @@ All notable changes to this fork are recorded here. The format follows
   upstream) and now runs in CI. Data loading sets state from promise
   callbacks, dialogs reset their fields during render instead of in an
   effect, and unused imports are gone. No visible change.
+
+### Security
+
+- Go toolchain 1.27.3 to 1.27.4, which fixes GO-2026-6859 in `net/http`. The
+  govulncheck scan failed on 1.27.3.
 
 ## [v0.7.2-pro] - 2026-10-23
 

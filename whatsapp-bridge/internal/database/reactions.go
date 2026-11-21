@@ -1,0 +1,138 @@
+package database
+
+import (
+	"database/sql"
+	"fmt"
+	"time"
+)
+
+// Reaction is one reactor's current emoji on one message. An empty Emoji passed
+// to StoreReaction means "removed" and is kept as a tombstone row.
+type Reaction struct {
+	ChatJID  string
+	TargetID string // the message reacted to
+	Sender   string // StoredSender form
+	Emoji    string
+	At       time.Time
+}
+
+// createReactionsTable mirrors migrations/011_message_reactions.sql.
+//
+// A store that ran migrations/001 by hand has an older message_reactions
+// (id, created_at, UNIQUE on the emoji too) that this CREATE would leave
+// untouched. That table is renamed to message_reactions_legacy first, rows and
+// its own indexes (different names from ours) intact; nothing is dropped.
+func createReactionsTable(db *sql.DB) error {
+	if err := retireLegacyReactionsTable(db); err != nil {
+		return err
+	}
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS message_reactions (
+			chat_jid   TEXT NOT NULL,
+			message_id TEXT NOT NULL,
+			sender     TEXT NOT NULL,
+			emoji      TEXT NOT NULL,
+			reacted_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (chat_jid, message_id, sender)
+		);
+		CREATE INDEX IF NOT EXISTS idx_message_reactions_msg ON message_reactions(chat_jid, message_id);
+	`)
+	if err != nil {
+		return fmt.Errorf("create message_reactions: %w", err)
+	}
+	return nil
+}
+
+// retireLegacyReactionsTable renames a message_reactions without reacted_at
+// (the migration 001 shape) to message_reactions_legacy. It refuses, rather
+// than drop anything, when that name is already taken.
+func retireLegacyReactionsTable(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'message_reactions'`).Scan(&n); err != nil {
+		return fmt.Errorf("check message_reactions: %w", err)
+	}
+	if n == 0 {
+		return nil
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('message_reactions') WHERE name = 'reacted_at'`).Scan(&n); err != nil {
+		return fmt.Errorf("inspect message_reactions: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'message_reactions_legacy'`).Scan(&n); err != nil {
+		return fmt.Errorf("check message_reactions_legacy: %w", err)
+	}
+	if n > 0 {
+		return fmt.Errorf("message_reactions has the legacy layout (no reacted_at) but message_reactions_legacy already exists; move or rename one of them by hand")
+	}
+	if _, err := db.Exec(`ALTER TABLE message_reactions RENAME TO message_reactions_legacy`); err != nil {
+		return fmt.Errorf("rename legacy message_reactions: %w", err)
+	}
+	return nil
+}
+
+// StoreReaction records r. An empty Emoji means the reactor removed their
+// reaction and is stored as a tombstone row (emoji ”), not deleted: events can
+// arrive out of order (history sync replays old ones), and without the row an
+// older add arriving later would bring a removed reaction back. A stored row
+// whose time is newer than r.At is never overwritten.
+func (store *MessageStore) StoreReaction(r Reaction) error {
+	// The driver compares timestamps as text, so mixed zones would misorder
+	// events; the edit code normalises to UTC for the same reason.
+	r.At = r.At.UTC()
+	if _, err := store.db.Exec(`
+		INSERT INTO message_reactions (chat_jid, message_id, sender, emoji, reacted_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(chat_jid, message_id, sender) DO UPDATE
+		SET emoji = excluded.emoji, reacted_at = excluded.reacted_at
+		WHERE excluded.reacted_at >= message_reactions.reacted_at`,
+		r.ChatJID, r.TargetID, r.Sender, r.Emoji, r.At); err != nil {
+		return fmt.Errorf("store reaction: %w", err)
+	}
+	return nil
+}
+
+// GetMessageReactionSummary returns emoji -> count for a message, leaving out
+// removal tombstones. A message
+// nobody reacted to (or that is not stored) gives an empty map.
+func (store *MessageStore) GetMessageReactionSummary(chatJID, msgID string) (map[string]int, error) {
+	out := make(map[string]int)
+	rows, err := store.db.Query(
+		`SELECT emoji, COUNT(*) FROM message_reactions WHERE chat_jid = ? AND message_id = ? AND emoji <> '' GROUP BY emoji`,
+		chatJID, msgID)
+	if err != nil {
+		return nil, fmt.Errorf("query reactions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var emoji string
+		var n int
+		if err := rows.Scan(&emoji, &n); err != nil {
+			return nil, fmt.Errorf("scan reaction: %w", err)
+		}
+		out[emoji] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read reactions: %w", err)
+	}
+	return out, nil
+}
+
+// mergeReactionsTx moves reactions from one chat key to another inside a
+// merge. Where the same reactor has a row under both, the newer reacted_at
+// wins (the target on a tie); the source rows are then deleted.
+func mergeReactionsTx(tx *sql.Tx, from, to string) error {
+	if _, err := tx.Exec(`
+		INSERT INTO message_reactions (chat_jid, message_id, sender, emoji, reacted_at)
+		SELECT ?, message_id, sender, emoji, reacted_at FROM message_reactions WHERE chat_jid = ?
+		ON CONFLICT(chat_jid, message_id, sender) DO UPDATE
+		SET emoji = excluded.emoji, reacted_at = excluded.reacted_at
+		WHERE excluded.reacted_at > message_reactions.reacted_at`, to, from); err != nil {
+		return fmt.Errorf("move reactions %s -> %s: %w", from, to, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM message_reactions WHERE chat_jid = ?`, from); err != nil {
+		return fmt.Errorf("drop source reactions in %s: %w", from, err)
+	}
+	return nil
+}

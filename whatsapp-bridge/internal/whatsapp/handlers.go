@@ -190,6 +190,17 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	}
 
 	// Extract text content
+	// A reaction is also stored against the message it targets, under the
+	// canonical reactor (LID and phone forms of one person share a row). The
+	// "[Reaction: X]" row below is kept so existing tools see no change.
+	if r, ok := reactionFromMessage(chatJID, c.reactorSender(msg.Info.Sender, msg.Info.SenderAlt), msg); ok {
+		if database.IsImportedMessageID(r.TargetID) {
+			c.logger.Warnf("Ignoring reaction %s in %s: it targets an imported ID", msg.Info.ID, chatJID)
+		} else if err := messageStore.StoreReaction(r); err != nil {
+			c.logger.Warnf("Failed to store reaction %s: %v", msg.Info.ID, err)
+		}
+	}
+
 	content := ExtractTextContent(msg.Message)
 
 	// A poll creation message needs its option list persisted locally, independent of anything
@@ -306,6 +317,17 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 				c.logger.Warnf("Failed to store chat: %v", err)
 			}
 
+			// Seed pinned, muted, archived and read state. Real events
+			// (which carry a time) always win over these seeds. Only full
+			// syncs describe every chat; partial ones (on-demand backfills)
+			// leave most fields unset, which must not read as "all read".
+			if seedsChatState(historySync.Data.GetSyncType()) {
+				seed := chatSeedFromConversation(conversation, timestamp)
+				if err := messageStore.SeedChatStateFromHistory(c.NormalizeChatJID(jid).String(), seed); err != nil {
+					c.logger.Warnf("Failed to seed chat state for %s: %v", chatJID, err)
+				}
+			}
+
 			// Store messages
 			for _, msg := range messages {
 				if msg == nil || msg.Message == nil {
@@ -320,6 +342,15 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 				// than being messages themselves; see historyChange.
 				if c.handleHistoryNonMessage(messageStore, chatJID, jid, msg.Message) {
 					continue
+				}
+
+				// Reactions ride along on the message they target (and a
+				// reaction can itself be a history message); store them even if
+				// the message below ends up skipped for having no content.
+				for _, r := range reactionsFromHistory(chatJID, msg.Message, c.historyReactorSender(jid)) {
+					if err := messageStore.StoreReaction(r); err != nil {
+						c.logger.Warnf("Failed to store history reaction on %s: %v", r.TargetID, err)
+					}
 				}
 
 				// Extract text content
@@ -472,7 +503,7 @@ func randomPathPart() string {
 //     wa-assistant read this layout directly, so it must not change.
 //  2. the same directory with the message ID prefixed to the name.
 //
-// The second form exists because ExtractMediaInfo names images, video and audio
+// The second form exists because ExtractMediaInfo names images, video, audio and stickers
 // by the receive time to the second, so two messages arriving in the same
 // second share a filename. The first one keeps the plain name (readers of that
 // layout are unaffected); later ones go to the ID-prefixed name, which is
@@ -643,18 +674,9 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 	}
 
 	// Classify media type for whatsmeow
-	var wmMediaType whatsmeow.MediaType
-	switch strings.ToLower(mediaType) {
-	case "image":
-		wmMediaType = whatsmeow.MediaImage
-	case "video":
-		wmMediaType = whatsmeow.MediaVideo
-	case "audio":
-		wmMediaType = whatsmeow.MediaAudio
-	case "document":
-		wmMediaType = whatsmeow.MediaDocument
-	default:
-		wmMediaType = whatsmeow.MediaImage
+	wmMediaType, err := downloadMediaType(mediaType)
+	if err != nil {
+		wmMediaType = whatsmeow.MediaImage // unknown types were always tried as images
 	}
 
 	dl := &autoDownloadableMedia{
@@ -670,7 +692,7 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	data, err := c.Client.Download(ctx, dl)
+	data, err := c.Download(ctx, dl)
 	if err != nil {
 		c.logger.Warnf("auto-download: %s/%s: %v", chatJID, msgID, err)
 		return
@@ -716,4 +738,44 @@ func autoDownloadExtractDirectPath(rawURL string) string {
 		}
 	}
 	return rawURL
+}
+
+// seedsChatState reports whether a history sync of this type is authoritative
+// for chat state. On-demand syncs (reconnect gap backfill, request_history)
+// and the other partial types carry only the messages asked for.
+func seedsChatState(t waHistorySync.HistorySync_HistorySyncType) bool {
+	switch t {
+	case waHistorySync.HistorySync_INITIAL_BOOTSTRAP,
+		waHistorySync.HistorySync_RECENT,
+		waHistorySync.HistorySync_FULL:
+		return true
+	}
+	return false
+}
+
+// chatSeedFromConversation reads the chat state a conversation actually
+// carries; fields absent from the proto stay nil.
+func chatSeedFromConversation(conv *waHistorySync.Conversation, latest time.Time) database.ChatSeed {
+	seed := database.ChatSeed{LatestMsg: latest}
+	if conv.Pinned != nil {
+		v := conv.GetPinned() > 0
+		seed.Pinned = &v
+	}
+	if conv.Archived != nil {
+		v := conv.GetArchived()
+		seed.Archived = &v
+	}
+	if conv.MarkedAsUnread != nil {
+		v := conv.GetMarkedAsUnread()
+		seed.MarkedUnread = &v
+	}
+	if conv.MuteEndTime != nil {
+		v := muteEndSeconds(int64(conv.GetMuteEndTime()))
+		seed.MutedUntil = &v
+	}
+	if conv.UnreadCount != nil {
+		v := int(conv.GetUnreadCount())
+		seed.UnreadCount = &v
+	}
+	return seed
 }

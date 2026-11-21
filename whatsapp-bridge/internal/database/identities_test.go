@@ -463,3 +463,113 @@ func TestMergeChatMovesEditsCallsAndKeepsChangeState(t *testing.T) {
 		t.Errorf("ED edits under the phone JID = %+v, %v", edits, err)
 	}
 }
+
+// History reactions and live chat state can land under the LID before a
+// mapping is known. A merge has to carry both to the phone-JID chat, and the
+// newer value wins where both forms hold one.
+func TestMergeChatMovesReactionsAndChatState(t *testing.T) {
+	store := newTestMessageStore(t)
+	lid, phone := testLIDChat, testPhoneChat
+	t1 := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	t2, t3, t4 := t1.Add(time.Hour), t1.Add(2*time.Hour), t1.Add(3*time.Hour)
+	for _, c := range []string{lid, phone} {
+		if err := store.StoreChat(c, "Max", t1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	react := func(chat, msg, sender, emoji string, at time.Time) {
+		t.Helper()
+		if err := store.StoreReaction(Reaction{ChatJID: chat, TargetID: msg, Sender: sender, Emoji: emoji, At: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	react(lid, "ONLY", "a@s.whatsapp.net", "👍", t1) // only under the LID: moves
+	react(lid, "BOTH", "a@s.whatsapp.net", "🔥", t3) // newer under the LID: wins
+	react(phone, "BOTH", "a@s.whatsapp.net", "😂", t2)
+	react(lid, "KEEP", "a@s.whatsapp.net", "😮", t2) // older under the LID: loses
+	react(phone, "KEEP", "a@s.whatsapp.net", "❤️", t3)
+
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := store.db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	// LID row: pinned by an event at t3, archived seeded, muted by an event at
+	// t1, read at t4, unread count seeded 5.
+	exec(`INSERT INTO chat_state (chat_jid, pinned, pinned_changed_at, archived, muted_until, muted_until_changed_at, last_read_at, history_unread_count)
+		VALUES (?, 1, ?, 1, 111, ?, ?, 5)`, lid, t3, t1, t4)
+	// Phone row: unpinned by an event at t2 (older), muted by an event at t2
+	// (newer), not archived (seeded), read at t2, unread count 2.
+	exec(`INSERT INTO chat_state (chat_jid, pinned, pinned_changed_at, archived, muted_until, muted_until_changed_at, last_read_at, history_unread_count)
+		VALUES (?, 0, ?, 0, 222, ?, ?, 2)`, phone, t2, t2, t2)
+
+	if _, err := store.MergeChat(lid, phone); err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	rows, err := store.db.Query(`SELECT message_id, emoji FROM message_reactions WHERE chat_jid = ?`, phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id, emoji string
+		if err := rows.Scan(&id, &emoji); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = emoji
+	}
+	_ = rows.Close()
+	want := map[string]string{"ONLY": "👍", "BOTH": "🔥", "KEEP": "❤️"}
+	for id, emoji := range want {
+		if got[id] != emoji {
+			t.Errorf("reaction %s = %q, want %q (all: %v)", id, got[id], emoji, got)
+		}
+	}
+	var left int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM message_reactions WHERE chat_jid = ?`, lid).Scan(&left); err != nil || left != 0 {
+		t.Errorf("%d reactions left under the LID (err %v)", left, err)
+	}
+
+	st, err := store.GetChatState(phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Pinned {
+		t.Error("pinned = false, want the newer LID event (true)")
+	}
+	if st.MutedUntil != 222 {
+		t.Errorf("muted_until = %d, want the newer phone event (222)", st.MutedUntil)
+	}
+	if !st.Archived {
+		t.Error("archived = false, want the LID's seeded true (target's is 0)")
+	}
+	if st.LastReadAt == nil || !st.LastReadAt.Equal(t4) {
+		t.Errorf("last_read_at = %v, want %v", st.LastReadAt, t4)
+	}
+	if st.HistoryUnreadCount == nil || *st.HistoryUnreadCount != 2 {
+		t.Errorf("history_unread_count = %v, want the target's 2", st.HistoryUnreadCount)
+	}
+	if lidState, err := store.GetChatState(lid); err != nil || lidState.ChatJID != "" {
+		t.Errorf("chat_state left under the LID: %+v (err %v)", lidState, err)
+	}
+}
+
+// With no chat_state under the target, the source's row moves as it is.
+func TestMergeChatMovesChatStateToEmptyTarget(t *testing.T) {
+	store := newTestMessageStore(t)
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(testLIDChat, "Max", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatPinned(testLIDChat, true, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MergeChat(testLIDChat, testPhoneChat); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := store.GetChatState(testPhoneChat); err != nil || !st.Pinned {
+		t.Errorf("target state = %+v, %v; want pinned", st, err)
+	}
+}

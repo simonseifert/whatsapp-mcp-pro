@@ -249,6 +249,16 @@ func (c *Client) enrichGroups(ctx context.Context, byJID map[string]*database.Id
 		return 0
 	}
 
+	var own []types.JID
+	if c.Client != nil && c.Store != nil {
+		if c.Store.ID != nil {
+			own = append(own, *c.Store.ID)
+		}
+		if !c.Store.LID.IsEmpty() {
+			own = append(own, c.Store.LID)
+		}
+	}
+
 	enriched := 0
 	for _, group := range groups {
 		row, ok := byJID[group.JID.String()]
@@ -274,10 +284,50 @@ func (c *Client) enrichGroups(ctx context.Context, byJID map[string]*database.Id
 		} else if !group.OwnerJID.IsEmpty() {
 			row.OwnerJID = group.OwnerJID.ToNonAD().String()
 		}
+		row.IsCommunity, row.CommunityJID, row.IsDefaultSubgroup, row.IAmAdmin = communityFields(group, own...)
+		row.GroupMetaFresh = true
 		addSource(row, "groups")
 		enriched++
 	}
 	return enriched
+}
+
+// communityFields extracts Community links and the linked account's admin
+// status from live group metadata. Admin is decided by comparing participants
+// to own on the same server only (JID, PhoneNumber and LID against own PN and
+// own LID); digits are never compared across phone and LID servers.
+func communityFields(g *types.GroupInfo, own ...types.JID) (isCommunity bool, communityJID string, isDefaultSubgroup bool, iAmAdmin bool) {
+	if g == nil {
+		return
+	}
+	isCommunity = g.IsParent
+	if !g.LinkedParentJID.IsEmpty() {
+		communityJID = g.LinkedParentJID.ToNonAD().String()
+	}
+	isDefaultSubgroup = g.IsDefaultSubGroup
+
+	isOwn := func(j types.JID) bool {
+		if j.IsEmpty() {
+			return false
+		}
+		j = j.ToNonAD()
+		for _, o := range own {
+			if !o.IsEmpty() && j == o.ToNonAD() {
+				return true
+			}
+		}
+		return false
+	}
+	for _, p := range g.Participants {
+		if !p.IsAdmin && !p.IsSuperAdmin {
+			continue
+		}
+		if isOwn(p.JID) || isOwn(p.PhoneNumber) || isOwn(p.LID) {
+			iAmAdmin = true
+			break
+		}
+	}
+	return
 }
 
 // MergeLIDChats folds every LID-filed chat into its phone-JID twin.

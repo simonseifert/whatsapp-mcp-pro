@@ -152,6 +152,71 @@ CREATE TABLE IF NOT EXISTS webhook_logs (
 );
 ```
 
+#### Table: `message_reactions` (migration 011)
+One row per reactor per message. A new reaction from the same sender replaces
+the old one. A removal is kept as a tombstone row with an empty emoji (and its
+time), so an older add arriving later cannot bring the reaction back; readers
+skip `emoji = ''`.
+
+```sql
+CREATE TABLE IF NOT EXISTS message_reactions (
+    chat_jid   TEXT NOT NULL,
+    message_id TEXT NOT NULL,      -- the message reacted to
+    sender     TEXT NOT NULL,      -- who reacted
+    emoji      TEXT NOT NULL,
+    reacted_at TIMESTAMP NOT NULL, -- UTC
+    PRIMARY KEY (chat_jid, message_id, sender)
+);
+```
+
+**Notes:**
+- No foreign key: history sync can deliver a reaction before its message.
+- History replays are dated by the message time, not the time of the replay.
+- Own reactions sent through `/api/reaction` are stored too.
+- The reactor is the phone JID when it is known (from `SenderAlt` or the LID
+  map), so one person is one row across LID and phone forms.
+- A store with the older `message_reactions` from migration 001 (no `reacted_at`) has it renamed to `message_reactions_legacy` at startup, data kept; startup fails with a clear error if that name is already taken.
+- The `[Reaction: X]` message rows are still written as before.
+- The MCP `GetMessageReactionSummary` reads this table.
+
+#### Table: `chat_state` (migration 012)
+Pinned, muted, archived and read state per chat.
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_state (
+    chat_jid                 TEXT PRIMARY KEY,
+    pinned                   INTEGER NOT NULL DEFAULT 0,
+    pinned_changed_at        TIMESTAMP,
+    muted_until              INTEGER NOT NULL DEFAULT 0,  -- unix seconds, -1 = forever, 0 = not muted
+    muted_until_changed_at   TIMESTAMP,
+    archived                 INTEGER NOT NULL DEFAULT 0,
+    archived_changed_at      TIMESTAMP,
+    marked_unread            INTEGER NOT NULL DEFAULT 0,
+    marked_unread_changed_at TIMESTAMP,
+    last_read_at             TIMESTAMP,
+    history_unread_count     INTEGER
+);
+```
+
+**Notes:**
+- `last_read_at` moves on read receipts from the linked account's own devices
+  and on `MarkChatAsRead`.
+- `EmitAppStateEventsOnFullSync` stays off, so the table is seeded from the
+  conversation fields in history sync. Seeded rows leave `*_changed_at` NULL.
+
+#### Community columns on `identities` (migration 013)
+`is_community`, `community_jid` (the parent community of a subgroup, NULL when
+none), `is_default_subgroup` and `i_am_admin` (the linked account is an admin
+or super admin). They are filled in `enrichGroups`.
+
+#### Rule: newer change wins
+Every `chat_state` field and every reaction carries its own timestamp. An
+incoming change is applied only if its timestamp is newer than the stored
+`*_changed_at` (or `reacted_at`) for that field. History sync replays old
+state, so without this rule it would overwrite a newer change. A NULL
+`*_changed_at` (a history seed) loses to any real event. All timestamps are
+stored in UTC.
+
 ---
 
 ### Database 2: `whatsapp.db` (whatsmeow managed)
@@ -277,7 +342,7 @@ whatsmeow_sessions
 
 ## Future Enhancement: Additional Tables
 
-### 1. Message Reactions
+### 1. Message Reactions (implemented, see `message_reactions` above; this is the original proposal)
 
 ```sql
 CREATE TABLE IF NOT EXISTS message_reactions (
@@ -553,7 +618,7 @@ ON chats(last_message_time DESC);
 | Aspect | Current State | Recommended |
 |--------|---------------|-------------|
 | Message storage | ✅ Complete | ✅ Keep |
-| Reactions | ❌ Not stored | ✅ Add |
+| Reactions | ✅ Stored (migration 011) | ✅ Keep |
 | Read receipts | ❌ Not stored | ✅ Add |
 | Edit history | ❌ Not stored | ✅ Add |
 | Presence | ❌ Not stored | ⚠️ Optional |

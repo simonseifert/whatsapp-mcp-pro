@@ -35,10 +35,21 @@ type Identity struct {
 	HasChat       bool // has a row in chats
 	MessageCount  int
 
+	// GroupMetaFresh is set when the group fields below were read from live
+	// server metadata in this sync. It is not stored: UpsertIdentities uses it
+	// to keep the stored values when the sync ran offline and could not fill them.
+	GroupMetaFresh bool
+
 	// Groups only, filled from live server metadata when connected.
 	ParticipantCount int
 	IsAnnounce       bool   // admins-only posting
 	OwnerJID         string // group creator, phone JID where known
+
+	// Community links and own admin status, groups only.
+	IsCommunity       bool   // parent group of a community
+	CommunityJID      string // parent community this group belongs to, empty if none
+	IsDefaultSubgroup bool   // the community's announcement subgroup
+	IAmAdmin          bool   // the linked account is an admin of this group
 
 	FirstSeen *time.Time
 	LastSeen  *time.Time
@@ -119,7 +130,10 @@ func createIdentityTable(db *sql.DB) error {
 
 // UpsertIdentities writes the whole directory in one transaction. Rows are
 // computed in full by the caller before they get here, so a plain overwrite of
-// every field is correct — created_at is the only thing carried forward.
+// every field is correct — created_at is the only thing carried forward. The
+// exception is the group metadata only a live connection can fill
+// (participant_count, is_announce, owner_jid and the community columns): a row
+// without GroupMetaFresh keeps what is stored, so an offline sync does not wipe it.
 func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 	if len(rows) == 0 {
 		return nil
@@ -137,8 +151,9 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			first_name, full_name, push_name, business_name, nickname, display_name, chat_name,
 			is_business, is_contact, has_chat, message_count,
 			participant_count, is_announce, owner_jid,
+			is_community, community_jid, is_default_subgroup, i_am_admin,
 			first_seen, last_seen, sources, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(jid) DO UPDATE SET
 			lid            = excluded.lid,
 			phone_jid      = excluded.phone_jid,
@@ -156,9 +171,13 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			is_contact     = excluded.is_contact,
 			has_chat       = excluded.has_chat,
 			message_count  = excluded.message_count,
-			participant_count = excluded.participant_count,
-			is_announce    = excluded.is_announce,
-			owner_jid      = excluded.owner_jid,
+			participant_count = CASE WHEN ?28 THEN excluded.participant_count ELSE identities.participant_count END,
+			is_announce    = CASE WHEN ?28 THEN excluded.is_announce ELSE identities.is_announce END,
+			owner_jid      = CASE WHEN ?28 THEN excluded.owner_jid ELSE identities.owner_jid END,
+			is_community   = CASE WHEN ?28 THEN excluded.is_community ELSE identities.is_community END,
+			community_jid  = CASE WHEN ?28 THEN excluded.community_jid ELSE identities.community_jid END,
+			is_default_subgroup = CASE WHEN ?28 THEN excluded.is_default_subgroup ELSE identities.is_default_subgroup END,
+			i_am_admin     = CASE WHEN ?28 THEN excluded.i_am_admin ELSE identities.i_am_admin END,
 			first_seen     = excluded.first_seen,
 			last_seen      = excluded.last_seen,
 			sources        = excluded.sources,
@@ -180,7 +199,9 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			nullIfEmpty(row.BusinessName), nullIfEmpty(row.Nickname), row.DisplayName, nullIfEmpty(row.ChatName),
 			row.IsBusiness, row.IsContact, row.HasChat, row.MessageCount,
 			nullIfZero(row.ParticipantCount), row.IsAnnounce, nullIfEmpty(row.OwnerJID),
+			row.IsCommunity, nullIfEmpty(row.CommunityJID), row.IsDefaultSubgroup, row.IAmAdmin,
 			row.FirstSeen, row.LastSeen, strings.Join(row.Sources, ","),
+			row.GroupMetaFresh,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert identity %s: %w", row.JID, err)
@@ -377,7 +398,7 @@ type MergeResult struct {
 // (a revoke filed under the LID, the original under the phone JID), and losing
 // deleted_at would show a revoked message as live again.
 //
-// The edit history and call log are keyed on chat_jid too and move with the
+// The edit history, call log, reactions and chat state are keyed on chat_jid too and move with the
 // messages, in the same transaction, so a merge never leaves a message's edits
 // behind under a chat nothing lists any more.
 func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
@@ -479,6 +500,21 @@ func (store *MessageStore) MergeChat(from, to string) (MergeResult, error) {
 		}
 		movedCalls, _ := res.RowsAffected()
 		result.CallsMoved = int(movedCalls)
+	}
+
+	// Reactions and chat state are keyed on chat_jid too; history files them
+	// under the raw (LID) chat JID and live events can land there before a
+	// mapping is known. Already-merged chats are skipped by MergeLIDChats, so
+	// whatever stays behind would never move.
+	if store.tableExists(tx, "message_reactions") {
+		if err = mergeReactionsTx(tx, from, to); err != nil {
+			return result, err
+		}
+	}
+	if store.tableExists(tx, "chat_state") {
+		if err = mergeChatStateTx(tx, from, to); err != nil {
+			return result, err
+		}
 	}
 
 	// Keep the newer of the two last-activity timestamps on the target.

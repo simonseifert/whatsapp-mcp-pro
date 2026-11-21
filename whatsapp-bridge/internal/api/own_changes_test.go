@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -161,5 +162,41 @@ func TestImportedIDsStayOffReceiptsAndHistoryRequests(t *testing.T) {
 	rec = post(t, s.handleRequestHistory, map[string]any{"chat_jid": "4915112345678@s.whatsapp.net", "oldest_msg_id": "import-a", "oldest_msg_timestamp": 1}, nil)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("history request anchored on an import: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// Our own read receipts never come back as events, so /api/read has to move
+// chat_state.last_read_at itself, under the key the store uses for the chat.
+func TestMarkReadRecordsLastReadAt(t *testing.T) {
+	const (
+		lid   = "123456789012345@lid"
+		phone = "4915112345678@s.whatsapp.net"
+	)
+	f := &fakeSender{normalized: map[string]string{lid: phone}}
+	s := newSendTestServer(t, f)
+
+	before := time.Now().Add(-time.Second)
+	if rec := post(t, s.handleMarkRead, map[string]any{"chat_jid": lid, "message_ids": []string{"3EB0A"}}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("read: %d %s", rec.Code, rec.Body)
+	}
+	st, err := s.messageStore.GetChatState(phone)
+	if err != nil || st.LastReadAt == nil || st.LastReadAt.Before(before) {
+		t.Fatalf("last_read_at under the phone JID = %+v, %v; want about now", st, err)
+	}
+	if st, _ := s.messageStore.GetChatState(lid); st.LastReadAt != nil {
+		t.Errorf("last_read_at recorded under the raw LID key: %+v", st)
+	}
+
+	// A played receipt is not a chat read; a failed send records nothing.
+	const other = "4915100000001@s.whatsapp.net"
+	if rec := post(t, s.handleMarkRead, map[string]any{"chat_jid": other, "message_ids": []string{"3EB0B"}, "receipt_type": "played"}, nil); rec.Code != http.StatusOK || len(f.played) != 1 {
+		t.Fatalf("played: %d %s (played calls %v)", rec.Code, rec.Body, f.played)
+	}
+	f.readErr = errors.New("not connected")
+	if rec := post(t, s.handleMarkRead, map[string]any{"chat_jid": other, "message_ids": []string{"3EB0C"}}, nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failing read: %d", rec.Code)
+	}
+	if st, _ := s.messageStore.GetChatState(other); st.LastReadAt != nil {
+		t.Errorf("last_read_at recorded for a failed or played receipt: %+v", st)
 	}
 }

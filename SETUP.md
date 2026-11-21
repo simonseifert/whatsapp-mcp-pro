@@ -33,7 +33,7 @@ uv --version        # https://docs.astral.sh/uv/
 sqlite3 --version
 ```
 
-`go.mod` pins a newer toolchain (`toolchain go1.27.3`). Any Go 1.26+ downloads
+`go.mod` pins a newer toolchain (`toolchain go1.27.4`). Any Go 1.26+ downloads
 it automatically on first build, unless `GOTOOLCHAIN=local` is set in the
 environment; unset it if the build complains about the toolchain.
 

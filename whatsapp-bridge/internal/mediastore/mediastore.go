@@ -19,6 +19,7 @@ var mediaExt = map[string]string{
 	"image":    ".jpg",
 	"video":    ".mp4",
 	"audio":    ".ogg",
+	"sticker":  ".webp",
 	"document": ".bin",
 }
 
