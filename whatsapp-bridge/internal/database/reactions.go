@@ -39,6 +39,9 @@ func createReactionsTable(db *sql.DB) error {
 // arrive out of order (history sync replays old ones), so a stored row whose
 // time is newer than r.At is never overwritten or deleted.
 func (store *MessageStore) StoreReaction(r Reaction) error {
+	// The driver compares timestamps as text, so mixed zones would misorder
+	// events; the edit code normalises to UTC for the same reason.
+	r.At = r.At.UTC()
 	if r.Emoji == "" {
 		if _, err := store.db.Exec(
 			`DELETE FROM message_reactions WHERE chat_jid = ? AND message_id = ? AND sender = ? AND reacted_at <= ?`,

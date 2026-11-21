@@ -127,3 +127,40 @@ func TestReactionsFromHistory(t *testing.T) {
 		}
 	})
 }
+
+func TestHistoryReactionTime(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	msgTime := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	claimed := msgTime.Add(time.Hour)
+	tests := []struct {
+		name      string
+		claimedMS int64
+		want      time.Time
+	}{
+		{"no timestamp uses message time, not now", 0, msgTime},
+		{"claimed time kept", claimed.UnixMilli(), claimed},
+		{"future claim capped at now", now.Add(48 * time.Hour).UnixMilli(), now},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := historyReactionTime(tt.claimedMS, msgTime, now); !got.Equal(tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReactionsFromHistoryNoTimestampUsesMessageTime(t *testing.T) {
+	msgTime := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	wmi := &waWeb.WebMessageInfo{
+		Key:              &waCommon.MessageKey{ID: proto.String("M1")},
+		MessageTimestamp: proto.Uint64(uint64(msgTime.Unix())),
+		Reactions: []*waWeb.Reaction{
+			{Key: &waCommon.MessageKey{ID: proto.String("R1"), Participant: proto.String("111@s.whatsapp.net")}, Text: proto.String("👍")},
+		},
+	}
+	got := reactionsFromHistory("g@g.us", wmi, func(*waCommon.MessageKey) (string, bool) { return "111@s.whatsapp.net", true })
+	if len(got) != 1 || !got[0].At.Equal(msgTime) {
+		t.Errorf("got %+v, want one reaction at %v", got, msgTime)
+	}
+}

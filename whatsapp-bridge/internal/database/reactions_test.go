@@ -45,10 +45,10 @@ func TestReactions(t *testing.T) {
 	}
 }
 
-// A LID reaction that later resolves to the phone JID must replace the earlier
-// phone-JID reaction of the same person: once canonicalised both writes use the
-// same key, so the newer one wins and the count stays 1.
-func TestReactionLIDResolvedToPhoneReplacesEarlier(t *testing.T) {
+// Once a reactor is canonicalised, every event from that person uses the same
+// key, so a later one replaces the earlier and the count stays 1. (The LID to
+// phone mapping itself is tested in internal/whatsapp.)
+func TestReactionSameCanonicalKeyReplaces(t *testing.T) {
 	store := newTestMessageStore(t)
 	const chat, pn = "g@g.us", "123@s.whatsapp.net"
 	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
@@ -66,5 +66,30 @@ func TestReactionLIDResolvedToPhoneReplacesEarlier(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, map[string]int{"😂": 1}) {
 		t.Errorf("got %v, want {😂:1}", got)
+	}
+}
+
+// A non-UTC time must order against UTC ones by instant, not by text.
+func TestReactionOrderingAcrossTimeZones(t *testing.T) {
+	store := newTestMessageStore(t)
+	const chat = "123@s.whatsapp.net"
+	plus5 := time.FixedZone("plus5", 5*3600)
+	// 12:00+05:00 is 07:00 UTC; as text it sorts after "10:00Z" though it is earlier.
+	earlier := time.Date(2026, 11, 1, 12, 0, 0, 0, plus5)
+	later := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	for _, r := range []Reaction{
+		{ChatJID: chat, TargetID: "M1", Sender: "a", Emoji: "❤️", At: later},
+		{ChatJID: chat, TargetID: "M1", Sender: "a", Emoji: "👍", At: earlier},
+	} {
+		if err := store.StoreReaction(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.GetMessageReactionSummary(chat, "M1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, map[string]int{"❤️": 1}) {
+		t.Errorf("got %v, want {❤️:1}", got)
 	}
 }

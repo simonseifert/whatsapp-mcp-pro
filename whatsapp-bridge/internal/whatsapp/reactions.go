@@ -71,6 +71,17 @@ func reactionTime(claimedMS int64, received time.Time) time.Time {
 	return t
 }
 
+// historyReactionTime is reactionTime for replayed history: with no claimed
+// time the reaction is dated by the message it came with, never "now", and a
+// claimed time is capped at now. Dating a replay "now" would let it outrank,
+// and overwrite, a real live reaction that happened since.
+func historyReactionTime(claimedMS int64, msgTime, now time.Time) time.Time {
+	if claimedMS <= 0 {
+		return msgTime
+	}
+	return reactionTime(claimedMS, now)
+}
+
 // reactionFromMessage extracts the reaction a live message carries. sender is
 // the already-canonical stored sender. An empty emoji is a removal.
 func reactionFromMessage(chatJID, sender string, msg *events.Message) (database.Reaction, bool) {
@@ -102,7 +113,8 @@ func reactionsFromHistory(chatJID string, wmi *waWeb.WebMessageInfo, senderOf fu
 	}
 	now := time.Now()
 	var out []database.Reaction
-	add := func(target string, key *waCommon.MessageKey, emoji string, claimedMS int64, fallback time.Time) {
+	msgTime := time.Unix(int64(wmi.GetMessageTimestamp()), 0)
+	add := func(target string, key *waCommon.MessageKey, emoji string, claimedMS int64) {
 		if target == "" || database.IsImportedMessageID(target) {
 			return
 		}
@@ -112,16 +124,15 @@ func reactionsFromHistory(chatJID string, wmi *waWeb.WebMessageInfo, senderOf fu
 		}
 		out = append(out, database.Reaction{
 			ChatJID: chatJID, TargetID: target, Sender: sender, Emoji: emoji,
-			At: reactionTime(claimedMS, fallback),
+			At: historyReactionTime(claimedMS, msgTime, now),
 		})
 	}
 	target := wmi.GetKey().GetID()
-	msgTime := time.Unix(int64(wmi.GetMessageTimestamp()), 0)
 	for _, r := range wmi.GetReactions() {
-		add(target, r.GetKey(), r.GetText(), r.GetSenderTimestampMS(), now)
+		add(target, r.GetKey(), r.GetText(), r.GetSenderTimestampMS())
 	}
 	if rm := wmi.GetMessage().GetReactionMessage(); rm != nil {
-		add(rm.GetKey().GetID(), wmi.GetKey(), rm.GetText(), rm.GetSenderTimestampMS(), msgTime)
+		add(rm.GetKey().GetID(), wmi.GetKey(), rm.GetText(), rm.GetSenderTimestampMS())
 	}
 	return out
 }
