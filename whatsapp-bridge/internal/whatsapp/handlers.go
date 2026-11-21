@@ -670,7 +670,7 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	data, err := c.Client.Download(ctx, dl)
+	data, err := c.Download(ctx, dl)
 	if err != nil {
 		c.logger.Warnf("auto-download: %s/%s: %v", chatJID, msgID, err)
 		return
