@@ -154,7 +154,11 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 	// Reactions linked to their message (migrations/011).
-	return createReactionsTable(db)
+	if err := createReactionsTable(db); err != nil {
+		return err
+	}
+	// Pinned, muted, archived and read state per chat (migrations/012).
+	return createChatStateTable(db)
 }
 
 // createTables creates all necessary database tables

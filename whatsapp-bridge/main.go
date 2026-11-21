@@ -152,6 +152,11 @@ func main() {
 			logger.Infof("[SYNC] ✓ Completed (Type: %v, %d conversations)", v.Data.SyncType, len(v.Data.Conversations))
 			identitySyncer.Trigger()
 
+		case *events.Pin, *events.Mute, *events.Archive, *events.MarkChatAsRead, *events.Receipt:
+			// Pinned, muted, archived and read state per chat. Receipt is also
+			// consumed by the phone monitor's own handler.
+			client.HandleChatStateEvent(messageStore, evt)
+
 		case *events.MediaRetry:
 			// A phone answering a request to re-upload purged media.
 			client.HandleMediaRetry(v)

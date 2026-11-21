@@ -317,6 +317,20 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 				c.logger.Warnf("Failed to store chat: %v", err)
 			}
 
+			// Seed pinned, muted, archived and read state. Real events
+			// (which carry a time) always win over these seeds.
+			if err := messageStore.SeedChatStateFromHistory(
+				c.NormalizeChatJID(jid).String(),
+				conversation.GetPinned() > 0,
+				conversation.GetArchived(),
+				conversation.GetMarkedAsUnread(),
+				muteEndSeconds(int64(conversation.GetMuteEndTime())),
+				int(conversation.GetUnreadCount()),
+				timestamp,
+			); err != nil {
+				c.logger.Warnf("Failed to seed chat state for %s: %v", chatJID, err)
+			}
+
 			// Store messages
 			for _, msg := range messages {
 				if msg == nil || msg.Message == nil {
