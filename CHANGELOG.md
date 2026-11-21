@@ -39,6 +39,11 @@ All notable changes to this fork are recorded here. The format follows
   callbacks, dialogs reset their fields during render instead of in an
   effect, and unused imports are gone. No visible change.
 
+### Security
+
+- Go toolchain 1.27.3 to 1.27.4, which fixes GO-2026-6859 in `net/http`. The
+  govulncheck scan failed on 1.27.3.
+
 ## [v0.7.2-pro] - 2026-10-23
 
 Dependency security update. No behaviour change.
