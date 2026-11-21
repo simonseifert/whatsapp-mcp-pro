@@ -7,7 +7,7 @@ import (
 )
 
 // Reaction is one reactor's current emoji on one message. An empty Emoji passed
-// to StoreReaction means "removed".
+// to StoreReaction means "removed" and is kept as a tombstone row.
 type Reaction struct {
 	ChatJID  string
 	TargetID string // the message reacted to
@@ -35,21 +35,15 @@ func createReactionsTable(db *sql.DB) error {
 	return nil
 }
 
-// StoreReaction records r. An empty Emoji removes the reactor's row. Events can
-// arrive out of order (history sync replays old ones), so a stored row whose
-// time is newer than r.At is never overwritten or deleted.
+// StoreReaction records r. An empty Emoji means the reactor removed their
+// reaction and is stored as a tombstone row (emoji ”), not deleted: events can
+// arrive out of order (history sync replays old ones), and without the row an
+// older add arriving later would bring a removed reaction back. A stored row
+// whose time is newer than r.At is never overwritten.
 func (store *MessageStore) StoreReaction(r Reaction) error {
 	// The driver compares timestamps as text, so mixed zones would misorder
 	// events; the edit code normalises to UTC for the same reason.
 	r.At = r.At.UTC()
-	if r.Emoji == "" {
-		if _, err := store.db.Exec(
-			`DELETE FROM message_reactions WHERE chat_jid = ? AND message_id = ? AND sender = ? AND reacted_at <= ?`,
-			r.ChatJID, r.TargetID, r.Sender, r.At); err != nil {
-			return fmt.Errorf("delete reaction: %w", err)
-		}
-		return nil
-	}
 	if _, err := store.db.Exec(`
 		INSERT INTO message_reactions (chat_jid, message_id, sender, emoji, reacted_at)
 		VALUES (?, ?, ?, ?, ?)
@@ -62,12 +56,13 @@ func (store *MessageStore) StoreReaction(r Reaction) error {
 	return nil
 }
 
-// GetMessageReactionSummary returns emoji -> count for a message. A message
+// GetMessageReactionSummary returns emoji -> count for a message, leaving out
+// removal tombstones. A message
 // nobody reacted to (or that is not stored) gives an empty map.
 func (store *MessageStore) GetMessageReactionSummary(chatJID, msgID string) (map[string]int, error) {
 	out := make(map[string]int)
 	rows, err := store.db.Query(
-		`SELECT emoji, COUNT(*) FROM message_reactions WHERE chat_jid = ? AND message_id = ? GROUP BY emoji`,
+		`SELECT emoji, COUNT(*) FROM message_reactions WHERE chat_jid = ? AND message_id = ? AND emoji <> '' GROUP BY emoji`,
 		chatJID, msgID)
 	if err != nil {
 		return nil, fmt.Errorf("query reactions: %w", err)

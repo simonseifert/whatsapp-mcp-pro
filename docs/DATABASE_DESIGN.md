@@ -154,7 +154,9 @@ CREATE TABLE IF NOT EXISTS webhook_logs (
 
 #### Table: `message_reactions` (migration 011)
 One row per reactor per message. A new reaction from the same sender replaces
-the old one; an empty emoji removes it.
+the old one. A removal is kept as a tombstone row with an empty emoji (and its
+time), so an older add arriving later cannot bring the reaction back; readers
+skip `emoji = ''`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS message_reactions (

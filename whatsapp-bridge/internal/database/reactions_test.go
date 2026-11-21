@@ -23,6 +23,9 @@ func TestReactions(t *testing.T) {
 		{"empty removes", []Reaction{r("M1", "a", "👍", 1), r("M1", "b", "❤️", 2), r("M1", "a", "", 3)}, "M1", map[string]int{"❤️": 1}},
 		{"older event ignored", []Reaction{r("M1", "b", "❤️", 5), r("M1", "b", "👎", 2)}, "M1", map[string]int{"❤️": 1}},
 		{"older removal ignored", []Reaction{r("M1", "b", "❤️", 5), r("M1", "b", "", 2)}, "M1", map[string]int{"❤️": 1}},
+		{"stale add after removal stays removed", []Reaction{r("M1", "a", "👍", 2), r("M1", "a", "", 3), r("M1", "a", "👍", 1)}, "M1", map[string]int{}},
+		{"removal before the add it follows", []Reaction{r("M1", "a", "", 3), r("M1", "a", "👍", 1), r("M1", "b", "❤️", 2)}, "M1", map[string]int{"❤️": 1}},
+		{"newer add after removal counts", []Reaction{r("M1", "a", "", 3), r("M1", "a", "👍", 4)}, "M1", map[string]int{"👍": 1}},
 		{"target not stored", []Reaction{r("M9", "a", "👍", 1)}, "M9", map[string]int{"👍": 1}},
 		{"no reactions", nil, "M7", map[string]int{}},
 	}
