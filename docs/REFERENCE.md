@@ -19,7 +19,7 @@ Moved from CLAUDE.md. Read before touching whatsmeow calls, message or JID handl
 - Returned by: send_message, send_file, send_audio_message
 
 ### JID (Jabber ID) Format
-- Individual: `{phone}@s.whatsapp.net` (e.g., `6593439326@s.whatsapp.net`)
+- Individual: `{phone}@s.whatsapp.net` (e.g., `123456789@s.whatsapp.net`)
 - Group: `{id}@g.us` (e.g., `120363123456789012@g.us`)
 - LID (linked device): `{id}@lid`
 - Broadcast: `status@broadcast`
