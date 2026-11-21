@@ -8,6 +8,15 @@ All notable changes to this fork are recorded here. The format follows
 
 ### Added
 
+- `message_reactions` table (migration 011): one row per reactor per message,
+  newer change wins. Own reactions are stored; `[Reaction: X]` message rows are
+  kept.
+- `chat_state` table (migration 012): pinned, muted, archived, marked unread and
+  last read time per chat, seeded from history sync.
+- Community columns on `identities` (migration 013): `is_community`,
+  `community_jid`, `is_default_subgroup`, `i_am_admin`.
+- Stickers are downloaded like other media (`media_type` `sticker`, `.webp`),
+  including auto-download, the sweep and `/api/download`.
 - `/api/download` takes `no_phone_retry: true`, for bulk jobs that should take
   what's available and never notify the phone.
 - A daily media sweep saves recent media with no copy on disk: media the bridge
