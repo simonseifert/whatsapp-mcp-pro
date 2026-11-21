@@ -506,7 +506,7 @@ func randomPathPart() string {
 //     wa-assistant read this layout directly, so it must not change.
 //  2. the same directory with the message ID prefixed to the name.
 //
-// The second form exists because ExtractMediaInfo names images, video and audio
+// The second form exists because ExtractMediaInfo names images, video, audio and stickers
 // by the receive time to the second, so two messages arriving in the same
 // second share a filename. The first one keeps the plain name (readers of that
 // layout are unaffected); later ones go to the ID-prefixed name, which is
@@ -677,18 +677,9 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 	}
 
 	// Classify media type for whatsmeow
-	var wmMediaType whatsmeow.MediaType
-	switch strings.ToLower(mediaType) {
-	case "image":
-		wmMediaType = whatsmeow.MediaImage
-	case "video":
-		wmMediaType = whatsmeow.MediaVideo
-	case "audio":
-		wmMediaType = whatsmeow.MediaAudio
-	case "document":
-		wmMediaType = whatsmeow.MediaDocument
-	default:
-		wmMediaType = whatsmeow.MediaImage
+	wmMediaType, err := downloadMediaType(mediaType)
+	if err != nil {
+		wmMediaType = whatsmeow.MediaImage // unknown types were always tried as images
 	}
 
 	dl := &autoDownloadableMedia{

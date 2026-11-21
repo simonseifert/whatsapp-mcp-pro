@@ -128,7 +128,7 @@ func (store *MessageStore) RecentMediaMessages(since time.Time) ([]MediaMessage,
 	rows, err := store.db.Query(
 		`SELECT id, chat_jid, media_type, COALESCE(filename,''), file_sha256, timestamp
 		   FROM messages
-		  WHERE media_type IN ('image','video','audio','document')
+		  WHERE media_type IN ('image','video','audio','document','sticker')
 		    AND media_key IS NOT NULL AND length(media_key) > 0`)
 	if err != nil {
 		return nil, fmt.Errorf("recent media messages: %w", err)

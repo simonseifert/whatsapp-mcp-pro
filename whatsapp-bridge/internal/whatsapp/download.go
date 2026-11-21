@@ -84,6 +84,11 @@ func loadStoredMedia(store *database.MessageStore, messageID, chatJID string) (*
 			URL: &urlCopy, DirectPath: &directPathCopy, MediaKey: mediaKey,
 			FileSHA256: fileSHA256, FileEncSHA256: fileEncSHA256, FileLength: &lengthCopy,
 		}
+	case "sticker":
+		msg = &waE2E.StickerMessage{
+			URL: &urlCopy, DirectPath: &directPathCopy, MediaKey: mediaKey,
+			FileSHA256: fileSHA256, FileEncSHA256: fileEncSHA256, FileLength: &lengthCopy,
+		}
 	case "video":
 		msg = &waE2E.VideoMessage{
 			URL: &urlCopy, DirectPath: &directPathCopy, MediaKey: mediaKey,
@@ -103,6 +108,22 @@ func loadStoredMedia(store *database.MessageStore, messageID, chatJID string) (*
 		return nil, fmt.Errorf("unsupported media type %q", mediaType)
 	}
 	return &storedMedia{mediaType: mediaType, filename: filename, mediaKey: mediaKey, msg: msg}, nil
+}
+
+// downloadMediaType maps a stored media_type to the whatsmeow media class that
+// selects the decryption keys. Stickers are encrypted with the image keys.
+func downloadMediaType(mediaType string) (whatsmeow.MediaType, error) {
+	switch strings.ToLower(mediaType) {
+	case "image", "sticker":
+		return whatsmeow.MediaImage, nil
+	case "video":
+		return whatsmeow.MediaVideo, nil
+	case "audio":
+		return whatsmeow.MediaAudio, nil
+	case "document":
+		return whatsmeow.MediaDocument, nil
+	}
+	return "", fmt.Errorf("unsupported media type %q", mediaType)
 }
 
 // isMediaGone reports a download error that means WhatsApp's servers no longer
@@ -273,6 +294,8 @@ func setDirectPath(msg whatsmeow.DownloadableMessage, path string) bool {
 	empty := ""
 	switch m := msg.(type) {
 	case *waE2E.ImageMessage:
+		m.DirectPath, m.URL = &path, &empty
+	case *waE2E.StickerMessage:
 		m.DirectPath, m.URL = &path, &empty
 	case *waE2E.VideoMessage:
 		m.DirectPath, m.URL = &path, &empty

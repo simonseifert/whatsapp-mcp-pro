@@ -263,3 +263,33 @@ func TestSaveAutoDownloadDoesNotClobberAlt(t *testing.T) {
 		t.Errorf("alt file was overwritten: %q", got)
 	}
 }
+
+func TestDownloadMediaType(t *testing.T) {
+	tests := map[string]whatsmeow.MediaType{
+		"image":    whatsmeow.MediaImage,
+		"sticker":  whatsmeow.MediaImage,
+		"video":    whatsmeow.MediaVideo,
+		"audio":    whatsmeow.MediaAudio,
+		"document": whatsmeow.MediaDocument,
+	}
+	for in, want := range tests {
+		got, err := downloadMediaType(in)
+		if err != nil || got != want {
+			t.Errorf("downloadMediaType(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := downloadMediaType("gif"); err == nil {
+		t.Error("unknown media type should error")
+	}
+}
+
+func TestSetDirectPathSticker(t *testing.T) {
+	url := "https://mmg.whatsapp.net/old"
+	msg := &waE2E.StickerMessage{URL: &url}
+	if !setDirectPath(msg, "/v/t62/new") {
+		t.Fatal("setDirectPath refused a sticker")
+	}
+	if msg.GetDirectPath() != "/v/t62/new" || msg.GetURL() != "" {
+		t.Errorf("got path=%q url=%q", msg.GetDirectPath(), msg.GetURL())
+	}
+}

@@ -279,3 +279,21 @@ func TestMediaRequestMigrationIsIdempotent(t *testing.T) {
 	}
 	mustMediaRequest(t, store)
 }
+
+func TestRecentMediaMessagesIncludesStickers(t *testing.T) {
+	store := newTestMessageStore(t)
+	if err := store.StoreChat("C@g.us", "C", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreMessage("S1", "C@g.us", "123@s.whatsapp.net", "", "[Sticker]", time.Now(), false,
+		"sticker", "sticker_x.webp", "https://mmg.whatsapp.net/s", "/v/s", []byte{1}, []byte{2}, []byte{3}, 10); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.RecentMediaMessages(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].MediaType != "sticker" {
+		t.Fatalf("got %+v, want the sticker row", got)
+	}
+}

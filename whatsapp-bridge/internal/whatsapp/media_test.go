@@ -230,3 +230,28 @@ func TestExtractReplyContext(t *testing.T) {
 		t.Fatalf("plain message context = %+v", rc)
 	}
 }
+
+func TestExtractMediaInfoSticker(t *testing.T) {
+	msg := &waE2E.Message{StickerMessage: &waE2E.StickerMessage{
+		URL:           proto.String("https://mmg.whatsapp.net/s"),
+		DirectPath:    proto.String("/v/t62/s"),
+		MediaKey:      []byte{1, 2, 3},
+		FileSHA256:    []byte{4, 5},
+		FileEncSHA256: []byte{6, 7},
+		FileLength:    proto.Uint64(2048),
+	}}
+	mt, name, url, dp, key, sha, enc, length := ExtractMediaInfo(msg)
+	if mt != "sticker" {
+		t.Errorf("mediaType = %q, want sticker", mt)
+	}
+	if !strings.HasPrefix(name, "sticker_") || !strings.HasSuffix(name, ".webp") {
+		t.Errorf("filename = %q, want sticker_<ts>.webp", name)
+	}
+	if url != "https://mmg.whatsapp.net/s" || dp != "/v/t62/s" || length != 2048 ||
+		string(key) != "\x01\x02\x03" || string(sha) != "\x04\x05" || string(enc) != "\x06\x07" {
+		t.Errorf("fields not carried through: %q %q %v %v %v %v", url, dp, key, sha, enc, length)
+	}
+	if got := ExtractTextContent(msg); got != "[Sticker]" {
+		t.Errorf("content = %q, want [Sticker]", got)
+	}
+}

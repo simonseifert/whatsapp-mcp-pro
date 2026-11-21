@@ -110,6 +110,12 @@ func ExtractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, ur
 			aud.GetURL(), aud.GetDirectPath(), aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
 	}
 
+	// Check for sticker message (WebP; encrypted with the image media keys)
+	if st := msg.GetStickerMessage(); st != nil {
+		return "sticker", "sticker_" + time.Now().Format("20060102_150405") + ".webp",
+			st.GetURL(), st.GetDirectPath(), st.GetMediaKey(), st.GetFileSHA256(), st.GetFileEncSHA256(), st.GetFileLength()
+	}
+
 	// Check for document message
 	if doc := msg.GetDocumentMessage(); doc != nil {
 		filename := doc.GetFileName()
