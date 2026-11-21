@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 )
 
 // assertTableColumns fails the test for every column in want that table lacks.
@@ -133,5 +134,75 @@ func TestM0MigrationsUpgradePreM0Store(t *testing.T) {
 	// And a second run is still a no-op.
 	if err := runMigrations(db); err != nil {
 		t.Fatalf("second runMigrations: %v", err)
+	}
+}
+
+// A store that applied migrations/001 by hand has an older message_reactions.
+// It is renamed, not dropped, and the new table takes its place.
+func TestReactionsLegacyTableIsRenamed(t *testing.T) {
+	db, err := sql.Open("sqlite3", "file:"+t.Name()+"?mode=memory&cache=shared&_foreign_keys=on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := createTables(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := createIdentityTable(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE message_reactions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL, chat_jid TEXT NOT NULL,
+			sender TEXT NOT NULL, sender_name TEXT, emoji TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(message_id, chat_jid, sender, emoji))`,
+		`CREATE INDEX idx_reactions_msg ON message_reactions(message_id, chat_jid)`,
+		`CREATE INDEX idx_reactions_sender ON message_reactions(chat_jid, sender)`,
+		`INSERT INTO message_reactions (message_id, chat_jid, sender, emoji) VALUES ('M1', 'c@s.whatsapp.net', 'a@s.whatsapp.net', '👍')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+
+	for i := 0; i < 2; i++ { // the second run must be a no-op
+		if err := runMigrations(db); err != nil {
+			t.Fatalf("runMigrations #%d: %v", i+1, err)
+		}
+	}
+	assertTableColumns(t, db, "message_reactions", "chat_jid", "message_id", "sender", "emoji", "reacted_at")
+	assertTableColumns(t, db, "message_reactions_legacy", "id", "sender_name", "created_at")
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM message_reactions_legacy WHERE emoji = '👍'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("legacy rows = %d (err %v), want the one row kept", n, err)
+	}
+	store := &MessageStore{db: db}
+	if err := store.StoreReaction(Reaction{ChatJID: "c@s.whatsapp.net", TargetID: "M1", Sender: "a@s.whatsapp.net", Emoji: "🔥", At: time.Now()}); err != nil {
+		t.Fatalf("StoreReaction on the upgraded store: %v", err)
+	}
+	if got, err := store.GetMessageReactionSummary("c@s.whatsapp.net", "M1"); err != nil || got["🔥"] != 1 || len(got) != 1 {
+		t.Errorf("summary = %v, %v", got, err)
+	}
+}
+
+// With message_reactions_legacy already present, a legacy message_reactions is
+// left alone and the migration fails with a clear error instead of dropping.
+func TestReactionsLegacyTableNameTakenFails(t *testing.T) {
+	db, err := sql.Open("sqlite3", "file:"+t.Name()+"?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, q := range []string{
+		`CREATE TABLE message_reactions (id INTEGER PRIMARY KEY, message_id TEXT, chat_jid TEXT, sender TEXT, emoji TEXT)`,
+		`CREATE TABLE message_reactions_legacy (id INTEGER PRIMARY KEY)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = createReactionsTable(db)
+	if err == nil || !strings.Contains(err.Error(), "message_reactions_legacy already exists") {
+		t.Fatalf("err = %v, want a clear refusal", err)
 	}
 }

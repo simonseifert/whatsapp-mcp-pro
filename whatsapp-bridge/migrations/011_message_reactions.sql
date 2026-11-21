@@ -11,6 +11,12 @@
 -- have to be stored yet (history can deliver reactions first), so there is no
 -- foreign key. Mirrors createReactionsTable in internal/database/reactions.go,
 -- which the bridge also runs at startup.
+--
+-- A store that applied migrations/001 by hand already has an older
+-- message_reactions (id, created_at, no reacted_at). The bridge renames it to
+-- message_reactions_legacy (rows and indexes kept, nothing dropped) before
+-- creating this table; this file does not do that, so rename it yourself first
+-- if you apply this SQL manually.
 
 CREATE TABLE IF NOT EXISTS message_reactions (
     chat_jid   TEXT NOT NULL,

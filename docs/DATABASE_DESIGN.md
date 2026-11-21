@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS message_reactions (
 - Own reactions sent through `/api/reaction` are stored too.
 - The reactor is the phone JID when it is known (from `SenderAlt` or the LID
   map), so one person is one row across LID and phone forms.
+- A store with the older `message_reactions` from migration 001 (no `reacted_at`) has it renamed to `message_reactions_legacy` at startup, data kept; startup fails with a clear error if that name is already taken.
 - The `[Reaction: X]` message rows are still written as before.
 - The MCP `GetMessageReactionSummary` reads this table.
 

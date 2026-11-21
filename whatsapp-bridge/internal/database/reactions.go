@@ -17,7 +17,15 @@ type Reaction struct {
 }
 
 // createReactionsTable mirrors migrations/011_message_reactions.sql.
+//
+// A store that ran migrations/001 by hand has an older message_reactions
+// (id, created_at, UNIQUE on the emoji too) that this CREATE would leave
+// untouched. That table is renamed to message_reactions_legacy first, rows and
+// its own indexes (different names from ours) intact; nothing is dropped.
 func createReactionsTable(db *sql.DB) error {
+	if err := retireLegacyReactionsTable(db); err != nil {
+		return err
+	}
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS message_reactions (
 			chat_jid   TEXT NOT NULL,
@@ -31,6 +39,35 @@ func createReactionsTable(db *sql.DB) error {
 	`)
 	if err != nil {
 		return fmt.Errorf("create message_reactions: %w", err)
+	}
+	return nil
+}
+
+// retireLegacyReactionsTable renames a message_reactions without reacted_at
+// (the migration 001 shape) to message_reactions_legacy. It refuses, rather
+// than drop anything, when that name is already taken.
+func retireLegacyReactionsTable(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'message_reactions'`).Scan(&n); err != nil {
+		return fmt.Errorf("check message_reactions: %w", err)
+	}
+	if n == 0 {
+		return nil
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('message_reactions') WHERE name = 'reacted_at'`).Scan(&n); err != nil {
+		return fmt.Errorf("inspect message_reactions: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'message_reactions_legacy'`).Scan(&n); err != nil {
+		return fmt.Errorf("check message_reactions_legacy: %w", err)
+	}
+	if n > 0 {
+		return fmt.Errorf("message_reactions has the legacy layout (no reacted_at) but message_reactions_legacy already exists; move or rename one of them by hand")
+	}
+	if _, err := db.Exec(`ALTER TABLE message_reactions RENAME TO message_reactions_legacy`); err != nil {
+		return fmt.Errorf("rename legacy message_reactions: %w", err)
 	}
 	return nil
 }
