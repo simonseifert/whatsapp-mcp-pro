@@ -47,4 +47,29 @@ func TestM0MigrationsIdempotent(t *testing.T) {
 	}
 	assertTableColumns(t, store.db, "message_reactions", "chat_jid", "message_id", "sender", "emoji", "reacted_at")
 	assertTableColumns(t, store.db, "chat_state", "chat_jid", "pinned", "pinned_changed_at", "muted_until", "muted_until_changed_at", "archived", "archived_changed_at", "marked_unread", "marked_unread_changed_at", "last_read_at", "history_unread_count")
+	assertTableColumns(t, store.db, "identities", "is_community", "community_jid", "is_default_subgroup", "i_am_admin")
+}
+
+// TestUpsertIdentitiesCommunityColumns checks the 013 columns are written.
+func TestUpsertIdentitiesCommunityColumns(t *testing.T) {
+	store := newTestMessageStore(t)
+	rows := []Identity{{
+		JID: "G1@g.us", Kind: "group",
+		IsCommunity: false, CommunityJID: "P@g.us", IsDefaultSubgroup: true, IAmAdmin: true,
+	}}
+	for i := 0; i < 2; i++ { // second pass exercises ON CONFLICT
+		if err := store.UpsertIdentities(rows); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+	var isCommunity, isDefault, admin bool
+	var parent string
+	err := store.db.QueryRow(`SELECT is_community, community_jid, is_default_subgroup, i_am_admin FROM identities WHERE jid = ?`, "G1@g.us").
+		Scan(&isCommunity, &parent, &isDefault, &admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isCommunity || parent != "P@g.us" || !isDefault || !admin {
+		t.Fatalf("got (%v,%q,%v,%v)", isCommunity, parent, isDefault, admin)
+	}
 }

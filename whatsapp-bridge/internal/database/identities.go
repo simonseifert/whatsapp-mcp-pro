@@ -40,6 +40,12 @@ type Identity struct {
 	IsAnnounce       bool   // admins-only posting
 	OwnerJID         string // group creator, phone JID where known
 
+	// Community links and own admin status, groups only.
+	IsCommunity       bool   // parent group of a community
+	CommunityJID      string // parent community this group belongs to, empty if none
+	IsDefaultSubgroup bool   // the community's announcement subgroup
+	IAmAdmin          bool   // the linked account is an admin of this group
+
 	FirstSeen *time.Time
 	LastSeen  *time.Time
 	Sources   []string // where the row came from: contacts, lid_map, chats, messages
@@ -137,8 +143,9 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			first_name, full_name, push_name, business_name, nickname, display_name, chat_name,
 			is_business, is_contact, has_chat, message_count,
 			participant_count, is_announce, owner_jid,
+			is_community, community_jid, is_default_subgroup, i_am_admin,
 			first_seen, last_seen, sources, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(jid) DO UPDATE SET
 			lid            = excluded.lid,
 			phone_jid      = excluded.phone_jid,
@@ -159,6 +166,10 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			participant_count = excluded.participant_count,
 			is_announce    = excluded.is_announce,
 			owner_jid      = excluded.owner_jid,
+			is_community   = excluded.is_community,
+			community_jid  = excluded.community_jid,
+			is_default_subgroup = excluded.is_default_subgroup,
+			i_am_admin     = excluded.i_am_admin,
 			first_seen     = excluded.first_seen,
 			last_seen      = excluded.last_seen,
 			sources        = excluded.sources,
@@ -180,6 +191,7 @@ func (store *MessageStore) UpsertIdentities(rows []Identity) error {
 			nullIfEmpty(row.BusinessName), nullIfEmpty(row.Nickname), row.DisplayName, nullIfEmpty(row.ChatName),
 			row.IsBusiness, row.IsContact, row.HasChat, row.MessageCount,
 			nullIfZero(row.ParticipantCount), row.IsAnnounce, nullIfEmpty(row.OwnerJID),
+			row.IsCommunity, nullIfEmpty(row.CommunityJID), row.IsDefaultSubgroup, row.IAmAdmin,
 			row.FirstSeen, row.LastSeen, strings.Join(row.Sources, ","),
 		)
 		if err != nil {
