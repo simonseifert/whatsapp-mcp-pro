@@ -45,4 +45,5 @@ func TestM0MigrationsIdempotent(t *testing.T) {
 	if err := runMigrations(store.db); err != nil {
 		t.Fatalf("second runMigrations: %v", err)
 	}
+	assertTableColumns(t, store.db, "message_reactions", "chat_jid", "message_id", "sender", "emoji", "reacted_at")
 }

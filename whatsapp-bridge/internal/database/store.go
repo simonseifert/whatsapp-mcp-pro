@@ -150,7 +150,11 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 	// Persistent media retry queue (migrations/006 and 010).
-	return createMediaRequestTable(db)
+	if err := createMediaRequestTable(db); err != nil {
+		return err
+	}
+	// Reactions linked to their message (migrations/011).
+	return createReactionsTable(db)
 }
 
 // createTables creates all necessary database tables

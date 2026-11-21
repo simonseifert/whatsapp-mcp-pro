@@ -341,13 +341,6 @@ func (store *MessageStore) GetContactInfo(jid string) (*types.ContactInfo, error
 	return contact, nil
 }
 
-// GetMessageReactionSummary returns a map of emoji -> count for message reactions.
-func (store *MessageStore) GetMessageReactionSummary(chatJID, msgID string) (map[string]int, error) {
-	// This is a placeholder - reactions storage depends on whatsmeow implementation
-	// For now, return empty map as reactions aren't stored in Phase 1
-	return make(map[string]int), nil
-}
-
 // GetGroupParticipants retrieves all participants in a group with their details.
 func (store *MessageStore) GetGroupParticipants(groupJID string) ([]*types.ContactInfo, error) {
 	// This requires group_members table which will be added in Phase 2

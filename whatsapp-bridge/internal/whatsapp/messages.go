@@ -682,6 +682,25 @@ func (c *Client) SendReactionWithOptions(ctx context.Context, messageStore *data
 	}
 	c.antiban.AfterSend(antiban.Reaction)
 
+	// whatsmeow does not echo our own sends back as events, so record the
+	// reaction here (an empty emoji is a removal). The message is already out;
+	// a storage failure is logged, not turned into a failed send.
+	if messageStore != nil && c.Store.ID != nil {
+		at := resp.Timestamp
+		if at.IsZero() {
+			at = time.Now()
+		}
+		if err := messageStore.StoreReaction(database.Reaction{
+			ChatJID:  c.NormalizeChatJID(chat).String(),
+			TargetID: messageID,
+			Sender:   StoredSender(*c.Store.ID),
+			Emoji:    emoji,
+			At:       at,
+		}); err != nil {
+			c.logger.Warnf("Failed to store own reaction on %s: %v", messageID, err)
+		}
+	}
+
 	return bridgeTypes.SendResult{Success: true, MessageID: string(resp.ID), Timestamp: resp.Timestamp}
 }
 

@@ -190,6 +190,17 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	}
 
 	// Extract text content
+	// A reaction is also stored against the message it targets, under the
+	// canonical reactor (LID and phone forms of one person share a row). The
+	// "[Reaction: X]" row below is kept so existing tools see no change.
+	if r, ok := reactionFromMessage(chatJID, c.reactorSender(msg.Info.Sender, msg.Info.SenderAlt), msg); ok {
+		if database.IsImportedMessageID(r.TargetID) {
+			c.logger.Warnf("Ignoring reaction %s in %s: it targets an imported ID", msg.Info.ID, chatJID)
+		} else if err := messageStore.StoreReaction(r); err != nil {
+			c.logger.Warnf("Failed to store reaction %s: %v", msg.Info.ID, err)
+		}
+	}
+
 	content := ExtractTextContent(msg.Message)
 
 	// A poll creation message needs its option list persisted locally, independent of anything
@@ -320,6 +331,15 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 				// than being messages themselves; see historyChange.
 				if c.handleHistoryNonMessage(messageStore, chatJID, jid, msg.Message) {
 					continue
+				}
+
+				// Reactions ride along on the message they target (and a
+				// reaction can itself be a history message); store them even if
+				// the message below ends up skipped for having no content.
+				for _, r := range reactionsFromHistory(chatJID, msg.Message, c.historyReactorSender(jid)) {
+					if err := messageStore.StoreReaction(r); err != nil {
+						c.logger.Warnf("Failed to store history reaction on %s: %v", r.TargetID, err)
+					}
 				}
 
 				// Extract text content
