@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"time"
+	"unicode"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 )
@@ -59,8 +61,20 @@ func ExtractTextContent(msg *waE2E.Message) string {
 
 	// Contact card
 	if contact := msg.GetContactMessage(); contact != nil {
-		if name := contact.GetDisplayName(); name != "" {
-			return fmt.Sprintf("[Contact: %s]", name)
+		return contactCardContent(contact)
+	}
+	if arr := msg.GetContactsArrayMessage(); arr != nil {
+		var blocks []string
+		for _, c := range arr.GetContacts() {
+			if len(blocks) >= maxContactCards {
+				break // the wa-app parser takes no trailer line, so extra cards are simply dropped
+			}
+			if c != nil {
+				blocks = append(blocks, contactCardContent(c))
+			}
+		}
+		if len(blocks) > 0 {
+			return strings.Join(blocks, "\n\n")
 		}
 	}
 
@@ -335,4 +349,75 @@ func placeholderWaveform(duration uint32) []byte {
 	}
 
 	return waveform
+}
+
+// maxContactPhones caps the phone numbers kept per contact card, so a hostile vCard cannot bloat a stored message.
+const maxContactPhones = 20
+
+// maxContactCards caps the cards kept from one contacts array message.
+const maxContactCards = 10
+
+// contactCardContent renders a shared contact as "[Contact: <name>]" followed by one "\n📞 <number>" line per
+// TEL entry of its vCard. The wa-app chat view parses exactly this format.
+func contactCardContent(c *waE2E.ContactMessage) string {
+	name, phones := parseVCard(c.GetVcard())
+	if n := cleanContactField(c.GetDisplayName()); n != "" {
+		name = n
+	}
+	if name == "" {
+		name = "Contact"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[Contact: %s]", name)
+	for _, p := range phones {
+		b.WriteString("\n📞 " + p)
+	}
+	return b.String()
+}
+
+// parseVCard returns the FN value and up to maxContactPhones TEL values of a vCard. It unfolds RFC 6350 continuation
+// lines, ignores property groups ("item1.TEL") and parameters, and takes a TEL value after the last colon so that
+// "TEL;VALUE=uri:tel:+385..." yields the bare number.
+func parseVCard(vcard string) (fn string, phones []string) {
+	vcard = strings.ReplaceAll(vcard, "\r\n", "\n")
+	vcard = strings.ReplaceAll(vcard, "\n ", "")
+	vcard = strings.ReplaceAll(vcard, "\n\t", "")
+	for _, line := range strings.Split(vcard, "\n") {
+		head, _, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		prop, _, _ := strings.Cut(head, ";")
+		if i := strings.LastIndex(prop, "."); i >= 0 {
+			prop = prop[i+1:]
+		}
+		switch strings.ToUpper(strings.TrimSpace(prop)) {
+		case "FN":
+			if fn == "" {
+				_, v, _ := strings.Cut(line, ":")
+				fn = cleanContactField(v)
+			}
+		case "TEL":
+			if len(phones) >= maxContactPhones {
+				continue
+			}
+			v := line[strings.LastIndex(line, ":")+1:]
+			if v = cleanContactField(v); v != "" {
+				phones = append(phones, v)
+			}
+		}
+	}
+	return fn, phones
+}
+
+// cleanContactField replaces control characters and line separators with spaces and trims, so a vCard value can
+// never start a new line in the stored card format.
+func cleanContactField(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(s)
 }

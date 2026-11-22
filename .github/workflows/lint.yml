@@ -93,3 +93,35 @@ jobs:
         with:
           dockerfile: docker/Dockerfile.mcp
           failure-threshold: error
+
+  wa-app:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Server checks
+        working-directory: wa-app/server
+        run: |
+          uv sync
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy .
+          uv run pytest -q
+
+      - name: Web checks
+        working-directory: wa-app/web
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm exec tsc -b
+          pnpm lint
+          pnpm test
+          pnpm build

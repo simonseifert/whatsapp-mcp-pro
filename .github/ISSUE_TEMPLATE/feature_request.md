@@ -13,7 +13,7 @@ labels: enhancement
 Brief description of the feature.
 
 ## Component
-Bridge / MCP server / identity directory / wa-assistant / wa-dispatch / wa-client / setup
+Bridge / MCP server / identity directory / wa-assistant / wa-dispatch / wa-app / setup
 
 ## Use Case
 Why is this feature needed? What problem does it solve?

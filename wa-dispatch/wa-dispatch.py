@@ -280,9 +280,9 @@ def sweep_stragglers(routes, dry_run):
 
 
 def poll_requests(routes, dry_run):
-    """Consume "-> Claude" requests queued by wa-client.
+    """Consume "-> Claude" requests queued by the old wa-client (deleted; the file may no longer be written).
 
-    wa-client runs next to the bridge, on a host that cannot reach this laptop,
+    The old wa-client ran next to the bridge, on a host that cannot reach this laptop,
     so the button only records a request. Reading it here on the existing poll
     keeps the one-way workstation->bridge direction and avoids opening anything inbound.
     """

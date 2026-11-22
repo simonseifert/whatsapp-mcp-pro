@@ -1494,12 +1494,13 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
 
-def download_media(message_id: str, chat_jid: str) -> str | None:
+def download_media(message_id: str, chat_jid: str, no_phone_retry: bool = False) -> str | None:
     """Download media from a message and return the local file path.
 
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
+        no_phone_retry: Never ask the sender's phone to re-upload missing media (that pings the phone)
 
     Returns:
         The local file path if download was successful, None otherwise
@@ -1515,7 +1516,9 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
             logger.warning(f"Could not resolve merged chat for {chat_jid}: {e}")
 
         url = f"{WHATSAPP_API_BASE_URL}/download"
-        payload = {"message_id": message_id, "chat_jid": chat_jid}
+        payload: dict[str, Any] = {"message_id": message_id, "chat_jid": chat_jid}
+        if no_phone_retry:
+            payload["no_phone_retry"] = True
 
         response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
 

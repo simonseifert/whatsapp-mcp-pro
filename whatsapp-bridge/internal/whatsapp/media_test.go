@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,5 +254,76 @@ func TestExtractMediaInfoSticker(t *testing.T) {
 	}
 	if got := ExtractTextContent(msg); got != "[Sticker]" {
 		t.Errorf("content = %q, want [Sticker]", got)
+	}
+}
+
+func TestContactCardContent(t *testing.T) {
+	vc := func(lines ...string) *string {
+		s := "BEGIN:VCARD\nVERSION:3.0\n" + strings.Join(lines, "\n") + "\nEND:VCARD"
+		return &s
+	}
+	many := []string{"FN:Spam"}
+	for i := 0; i < 50; i++ {
+		many = append(many, "TEL:+385 91 000 "+strings.Repeat("1", 4))
+	}
+	tests := []struct {
+		name string
+		msg  *waE2E.Message
+		want string
+	}{
+		{"name and two phones", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			DisplayName: proto.String("Ana Test"),
+			Vcard:       vc("FN:Ana Test", "TEL;type=CELL;waid=4915112345678:+49 151 12345678", "item1.TEL:+385 91 000 0000"),
+		}}, "[Contact: Ana Test]\n📞 +49 151 12345678\n📞 +385 91 000 0000"},
+		{"no TEL", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			DisplayName: proto.String("Ana Test"), Vcard: vc("FN:Ana Test"),
+		}}, "[Contact: Ana Test]"},
+		{"no vcard", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			DisplayName: proto.String("Ana Test"),
+		}}, "[Contact: Ana Test]"},
+		{"name falls back to FN", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			Vcard: vc("FN:Bo Fictional", "TEL:4915112345678"),
+		}}, "[Contact: Bo Fictional]\n📞 4915112345678"},
+		{"no name at all", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			Vcard: vc("TEL:+385 91 000 0000"),
+		}}, "[Contact: Contact]\n📞 +385 91 000 0000"},
+		{"folded line, empty value, uri value", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			DisplayName: proto.String("Ana"),
+			Vcard:       vc("TEL;type=CELL:+49 151", "  12345678", "TEL:", "TEL;VALUE=uri:tel:+385910000000"),
+		}}, "[Contact: Ana]\n📞 +49 151 12345678\n📞 +385910000000"},
+		{"injection stripped", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			DisplayName: proto.String("Eve\n\n[Contact: Boss]\r\n📞 1"),
+			Vcard:       vc("TEL:+385\t91\x00 000  0000"),
+		}}, "[Contact: Eve  [Contact: Boss]  📞 1]\n📞 +385 91  000  0000"},
+		{"contacts array", &waE2E.Message{ContactsArrayMessage: &waE2E.ContactsArrayMessage{
+			Contacts: []*waE2E.ContactMessage{
+				{DisplayName: proto.String("Ana"), Vcard: vc("TEL:+385 91 000 0000")},
+				{DisplayName: proto.String("Bo"), Vcard: vc("TEL:4915112345678", "TEL:+49 151 0")},
+			},
+		}}, "[Contact: Ana]\n📞 +385 91 000 0000\n\n[Contact: Bo]\n📞 4915112345678\n📞 +49 151 0"},
+		{"capped at 20 phones", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+			DisplayName: proto.String("Spam"), Vcard: vc(many...),
+		}}, "[Contact: Spam]" + strings.Repeat("\n📞 +385 91 000 1111", 20)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExtractTextContent(tt.msg); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContactsArrayCappedAtTenCards(t *testing.T) {
+	var cs []*waE2E.ContactMessage
+	for i := 0; i < 15; i++ {
+		cs = append(cs, &waE2E.ContactMessage{DisplayName: proto.String(fmt.Sprintf("C%d", i))})
+	}
+	got := ExtractTextContent(&waE2E.Message{ContactsArrayMessage: &waE2E.ContactsArrayMessage{Contacts: cs}})
+	if n := strings.Count(got, "[Contact: "); n != 10 {
+		t.Errorf("got %d cards, want 10", n)
+	}
+	if strings.Contains(got, "C10") {
+		t.Errorf("card 11 kept: %q", got)
 	}
 }

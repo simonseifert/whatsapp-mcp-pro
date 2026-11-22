@@ -75,10 +75,54 @@ Read this before you pair a number you care about.
 |---|---|---|
 | [`whatsapp-bridge/`](whatsapp-bridge) | Stable, in daily use | Go daemon on whatsmeow. Linked device, SQLite store, REST API, HMAC-signed webhooks. |
 | [`whatsapp-mcp-server/`](whatsapp-mcp-server) | Stable, in daily use | Python MCP server (mcp 2.x). stdio per session, or one shared HTTP server. |
-| [`wa-client/`](wa-client) | Retired, unmaintained | Chat web UI that rode the bridge's session. Its `app.py` ignores `WA_STORE_PATH`, so it shows stale data once the store lives outside the repo. Has no login. |
+| [`wa-app/`](wa-app) | M1, in daily use by the maintainer | wa-app (working name): a login-protected chat PWA that rides the bridge. Read and reply from your phone; see [App](#app). |
 | [`wa-assistant/`](wa-assistant) | Experimental, dormant | Text your own chat, a persistent Claude Code session replies. |
 | [`wa-dispatch/`](wa-dispatch) | Experimental, dormant | An incoming message opens a Claude Code session in that client's project and drafts a reply. macOS + tmux. |
 | [`whatsapp-web-ui/`](whatsapp-web-ui) | Upstream | Upstream's Next.js admin panel (pairing, webhooks). Not a chat client. |
+
+## App
+
+wa-app (working name) is a self-hosted chat app for your own number, in [`wa-app/`](wa-app). It is an independent
+hobby project, not an official WhatsApp product. It rides the bridge's session, so it uses no extra
+linked-device slot, and it is a PWA you add to your phone's home screen.
+
+Status: M1, read and reply. You can read every chat, see media, voice notes, replies, reactions and polls, and
+answer with text, replies, reactions and read receipts. AI drafts come in M2.
+
+<p>
+  <img src="docs/assets/wa-app-chats.png" alt="The chat list in the dark theme (fictional sample data)" width="300">
+  <img src="docs/assets/wa-app-chat.png" alt="A chat in the dark theme (fictional sample data)" width="300">
+</p>
+
+Requirements: a running bridge and MCP server from this repo, Python 3.11+ with [uv](https://docs.astral.sh/uv/),
+Node with pnpm (for the build), and, to reach it from your phone, [Tailscale](https://tailscale.com/).
+
+Install:
+
+```bash
+cd wa-app/web && pnpm install && pnpm build        # builds web/dist
+cd ../server && uv sync
+# systemd user unit: copy the template, fix the paths, start it
+mkdir -p ~/.config/systemd/user
+cp ../deploy/wa-app.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now wa-app
+# private-network access over https (never Funnel by default)
+tailscale serve --bg --https=8445 http://127.0.0.1:8085
+```
+
+It listens on `127.0.0.1:8085` (`WA_APP_HOST`, `WA_APP_PORT`; more in [wa-app/README.md](wa-app/README.md)) and
+keeps its own state in `WA_APP_DATA` (default `~/.local/share/wa-app/`). Open
+`https://<host>.ts.net:8445`; the first visit asks you to set a passphrase, later visits ask for it.
+
+Security notes:
+
+- Login is a passphrase (argon2 hash). The session cookie is `HttpOnly; Secure; SameSite=Strict`, and every
+  state-changing request checks `Origin`. That is why it needs https, which `tailscale serve` provides.
+- Login is rate limited to 5 failures per 15 minutes per address. Behind a proxy on loopback it uses the last
+  `X-Forwarded-For` hop only, since earlier hops are client-controlled.
+- It opens `messages.db` read-only. Every send goes through the bridge, so the send allowlists, caps and the
+  reachout lock apply as they do for the MCP tools.
+- It never asks your phone for media except when you tap "Try again".
 
 ## What the pro layer adds
 

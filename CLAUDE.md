@@ -25,8 +25,8 @@ our versions of `lib/recall.py` and `lib/transcribe.py` to be supersets.
         ▲            ▲                    ▲
         │ REST       │ REST+webhook       │ reads store directly
         │            │                    │
-  whatsapp-mcp-      wa-client/       wa-dispatch/ · wa-assistant/
-  server/ (Python)   (chat UI :8084)  (Claude Code sessions)
+  whatsapp-mcp-      wa-app/          wa-dispatch/ · wa-assistant/
+  server/ (Python)   (chat PWA :8085) (Claude Code sessions)
    stdio  or  :8082
         │
         ▼
@@ -37,13 +37,13 @@ our versions of `lib/recall.py` and `lib/transcribe.py` to be supersets.
 |---|---|
 | `whatsapp-bridge/` | Go daemon on whatsmeow. Pairs as a linked device, stores history in SQLite, exposes REST + webhooks. Packages: `api`, `whatsapp`, `webhook`, `database`, `config`, `antiban`, `security`, `types`. |
 | `whatsapp-mcp-server/` | Python, mcp 2.x `MCPServer` (formerly FastMCP). 39 tools (21 read-only) with every toolset enabled. Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
-| `wa-client/` | Chat web UI riding the bridge's session — costs **zero** extra device slots. Default :8084 (`WA_WEB_PORT`). |
+| `wa-app/` | Chat PWA (working name; Starlette server + React front end) riding the bridge's session — costs **zero** extra device slots. Reads `messages.db` read-only, sends through the bridge. Default :8085 (`WA_APP_PORT`). Replaced the deleted wa-client. |
 | `wa-assistant/` | Message your own chat, a persistent Claude Code session replies. Voice both ways. |
 | `wa-dispatch/` | An incoming message from a routed chat opens/wakes a Claude session in that project. Drafts, never sends. macOS + tmux. |
 | `whatsapp-web-ui/` | Upstream's Next.js admin panel (pairing, webhooks). Not a chat client. pnpm only: upstream ships a `package-lock.json`, keep it deleted. Security floors live in `pnpm-workspace.yaml` overrides. |
 | `plugins/` | From upstream. Currently a README only. |
 
-**Ports:** 8080 bridge REST · 8082 shared MCP HTTP · 8084 wa-client.
+**Ports:** 8080 bridge REST · 8082 shared MCP HTTP · 8085 wa-app.
 
 ## Layout that matters
 
@@ -105,7 +105,9 @@ sanctioned path: build + test, online store backup, `systemctl restart`, connect
 check. `/usr/local/sbin/standby-sync.sh` mirrors the data dir to the M1 warm
 standby and also points at `~/.local/share/whatsapp-mcp-pro`.
 
-**Live state of the optional parts (2026-10-21):** wa-client is retired. It ran on the
+**Live state of the optional parts (2026-11-22):** wa-app runs as the systemd user unit
+`wa-app.service` on :8085 and is exposed tailnet-only over HTTPS on port 8445 via
+`tailscale serve`. wa-client was retired 2026-10-21 and deleted in wa-app M1. It ran on the
 M1 (`com.simon.wa-web` LaunchAgent, now `.plist.disabled-20261021`) and had shown data
 frozen at Aug 25 since the code/data split without anyone noticing; its bridge webhook
 (id 2, "wa-web push") is disabled, not deleted. wa-dispatch and wa-assistant don't run
@@ -212,6 +214,9 @@ when code/data were split as above.)
   `CallLogMessage` is only accepted `IsFromMe`, keyed `log:<msgid>`. History
   revoke stubs are the only trusted path; `/api/edit` and `/api/delete` refuse
   others' messages up front (403) and are recorded as own-device changes.
+- **wa-app and the phone.** It never asks the phone for media except on an explicit
+  "Try again" (each retry shows "Finished syncing" on the phone), and it opens
+  `messages.db` read-only. Anything new in it that writes must go through the bridge.
 - **Never commit a `.env`.** `.env` and `.env.*` are gitignored; `.env.example`
   is the reference and is kept in sync with what the code reads.
 

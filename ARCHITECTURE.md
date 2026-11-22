@@ -31,7 +31,7 @@ flowchart TB
     subgraph optional["Optional interfaces"]
         ASSIST["wa-assistant<br/>(experimental)"]
         DISPATCH["wa-dispatch<br/>(experimental, macOS + tmux)"]
-        WEBCLIENT["wa-client :8084<br/>(retired, kept in tree)"]
+        WEBAPP["wa-app :8085<br/>(chat PWA, login)"]
     end
 
     WA <-->|linked device| BRIDGE
@@ -117,7 +117,7 @@ per-source queries if the table is missing.
 |---|---|---|
 | `wa-assistant/` | Message your own chat and a persistent Claude Code session replies, with optional voice in both directions. Watches both of your identities (phone JID and LID). | Experimental |
 | `wa-dispatch/` | A message in a routed chat opens or wakes a Claude Code session in the matching project. Sessions draft replies but cannot send; a deny-hook blocks outbound tools, and `wa-approve` relays a draft only after a human taps Send. macOS + tmux. | Experimental |
-| `wa-client/` | A chat web UI that rides the bridge's session (no extra device slot). | Retired: no longer run by the maintainer, kept in the tree |
+| `wa-app/` | A login-protected chat PWA (working name) that rides the bridge's session (no extra device slot). Reads `messages.db` read-only, sends through the bridge so every allowlist, cap and lock applies. | M1: read and reply |
 | `whatsapp-web-ui/` | Upstream's Next.js admin panel for pairing and webhooks. Not a chat client. | From upstream |
 | `plugins/` | Upstream's plugin notes. | From upstream |
 

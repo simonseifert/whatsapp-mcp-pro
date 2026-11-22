@@ -541,6 +541,13 @@ Safe while the bridge runs. Details, name mapping and limits: [docs/IMPORT.md](d
 
 ---
 
+## Optional: the wa-app chat app
+
+A chat PWA for your own number that rides the bridge. Build, install and expose it as described in the
+[README's App section](README.md#app). It needs the bridge running (it sends through it) and reads the same
+`messages.db`, so set `WA_STORE_PATH` in its unit to the bridge's store directory. It listens on
+`127.0.0.1:8085`; expose it only with `tailscale serve`, not Funnel.
+
 ## Troubleshooting
 
 **"API_KEY environment variable is required"**: the bridge doesn't see the key.

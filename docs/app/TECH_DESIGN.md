@@ -11,9 +11,8 @@ or a live test on 2026-11-21. Everything else is a proposal.
 | B | Extend `whatsapp-web-ui` (upstream Next.js admin panel) | It calls the bridge from the browser, which exposes the API key. It's a static export with no server for drafts or push. It's upstream code, so merges get harder | Rejected |
 | C | Build it into the Go bridge | Recall, transcription and drafting would all need rewriting in Go | Rejected |
 
-`wa-client/` (retired, D2) already follows A's shape. It is replaced, not revived: it
-has no login and ignores `WA_STORE_PATH`. It is deleted when M1 lands (decided
-2026-11-21). Working name: `wa-app`; the public name never contains "WhatsApp".
+`wa-client/` (retired, D2) followed A's shape. It was replaced, not revived (no login,
+ignored `WA_STORE_PATH`) and deleted in M1 (2026-11-22). Working name: `wa-app`; the public name never contains "WhatsApp".
 
 ## Shape
 

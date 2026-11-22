@@ -254,3 +254,34 @@ The public name is still open: Simon turned down Understudy; I advised against
 WhatsUp (Meta enforces the "Whats-" prefix, and the PRD rules out a WhatsApp-like
 name) and ClaudeChat (the app also runs on local models and other APIs, and
 Anthropic's brand rules don't allow "Claude" in third-party product names).
+
+## D20 — 2026-11-22 — wa-app chats list: how the store reader decides things
+Task 2 of the M1 plan. Choices the plan left open, all in `wa-app/server/wa_app/store.py`:
+- Favourites are the pinned chats (no favourites store exists yet).
+- `whatsapp-mcp-server` is flat modules, not a package, so `wa_app/mcp_lib.py` puts its
+  directory on `sys.path` (repo sibling, or `WA_MCP_SERVER_DIR`) and re-exports
+  `chat_forms`, `resolve_display_names`, `canonical_chat_jid`. The helpers used so far
+  (`lib.naming`, `lib.changes`, `lib.utils`) need only the standard library, so no new
+  dependencies yet. `lib.utils` insists on a messages.db at import time; `WA_SKIP_DB_CHECK`
+  is set so nothing resolves to a store, and every call passes the app's own connection.
+- A person filed under both `@lid` and `@s.whatsapp.net` is one conversation (JID forms
+  joined through `chat_forms`, the phone form is the chat's `jid`); states merge (pinned,
+  archived, marked-unread, muted: any; last read: newest; history count: sum).
+- Kinds: `@newsletter` is `newsletter`; a group that is announce-only or a community's
+  default subgroup is `announcement`; any other community member is `community_group`.
+- Voice-note length is not stored. It is read from the downloaded Ogg/Opus file when
+  there is one, else the preview is "Voice message" with no length. Receipts are not
+  stored either, so `ticks` is always null for now.
+
+## D21 — 2026-11-22 — M1 build rulings
+Choices made while building wa-app M1 (the number D20 above covers only the chats list):
+- Favourites are the pinned chats in M1.
+- Announcement kind precedence: announce-only or a community's default subgroup counts as
+  announcement before the community-member rule applies.
+- No TanStack Query. The front end uses plain fetch hooks.
+- `contact_cards` is a list, since one message can carry several cards.
+- Polls are read from the store, and poll-vote rows are hidden from the chat.
+- The members line is built from who has written in the chat, because no participant list is stored.
+- Ticks are not shown, because there is no receipt data.
+- The chat pane does not follow the finger yet (the DESIGN.md Motion row). Deferred.
+- Receipts are capped at the newest 200 per read.

@@ -15,7 +15,7 @@ on Groq, so a stopped GPU server degrades to the cloud instead of to nothing.
 The auto-transcribe pipeline (start_auto_transcribe, opt-in via
 AUTO_TRANSCRIBE_VOICE=true in the shared server) transcribes incoming voice
 notes in the background and writes the text into messages.content, which makes
-voice searchable by `recall` and readable in wa-client.
+voice searchable by `recall` and readable in wa-app.
 
 Pro tier — whatsapp-mcp-pro.
 """
