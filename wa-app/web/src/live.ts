@@ -2,6 +2,8 @@ import type { LiveEvent } from './api-types'
 
 export const BACKOFF_START_MS = 1000
 export const BACKOFF_MAX_MS = 30000
+/** While visible, ask listeners to refetch this often: covers what the server's poller cannot see. */
+export const SAFETY_RESYNC_MS = 5 * 60 * 1000
 
 const EVENT_NAMES = ['message', 'message_changed', 'reaction', 'chat', 'resync'] as const
 
@@ -44,6 +46,7 @@ export function connectLive(
     const next = factory(lastId ? `/api/live?last_event_id=${encodeURIComponent(lastId)}` : '/api/live')
     source = next
     next.addEventListener('hello', (e) => {
+      if (e.lastEventId) lastId = e.lastEventId // the server's current cursor: a drop before any event still resumes
       attempt = 0
       client = (JSON.parse(e.data) as { client: string }).client
       report(client, document.visibilityState === 'visible')
@@ -58,14 +61,25 @@ export function connectLive(
       if (stopped || source !== next) return
       next.close()
       source = null
-      timer = setTimeout(open, backoffDelay(attempt))
+      timer = setTimeout(() => {
+        const resumable = lastId !== ''
+        open()
+        if (!resumable) onEvent({ name: 'resync', data: {} }) // nothing to resume from: refetch instead
+      }, backoffDelay(attempt))
       attempt += 1
     }
+  }
+
+  let safety: ReturnType<typeof setInterval> | null = null
+  function startSafety(visible: boolean) {
+    if (safety) clearInterval(safety)
+    safety = visible ? setInterval(() => onEvent({ name: 'resync', data: {} }), SAFETY_RESYNC_MS) : null
   }
 
   function onVisibility() {
     const visible = document.visibilityState === 'visible'
     if (client) report(client, visible)
+    startSafety(visible)
     if (!visible) return
     attempt = 0
     open() // the old stream may be dead without having said so
@@ -73,11 +87,13 @@ export function connectLive(
   }
 
   document.addEventListener('visibilitychange', onVisibility)
+  startSafety(document.visibilityState === 'visible')
   open()
   return () => {
     stopped = true
     document.removeEventListener('visibilitychange', onVisibility)
     if (timer) clearTimeout(timer)
+    if (safety) clearInterval(safety)
     source?.close()
   }
 }

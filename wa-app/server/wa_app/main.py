@@ -14,7 +14,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import api, appdb, config, live
+from . import api, appdb, auth, config, live
 from .auth import AuthMiddleware
 from .config import Settings
 
@@ -42,14 +42,20 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
         return JSONResponse({"error": "Not found"}, status_code=404)
 
     hub = live.Hub()
+
+    def _session_alive(hashed: str) -> bool:
+        with appdb.db_lock:
+            return auth.session_hash_valid(conn, hashed)
+
     poller = live.Poller(settings)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
         async with live.running(poller, hub):
             yield
+        hub.close()
 
-    routes: list[Route | Mount] = [*live.routes(hub), *api.routes(conn, settings)]
+    routes: list[Route | Mount] = [*live.routes(hub, _session_alive, auth.COOKIE), *api.routes(conn, settings)]
     routes.append(Route("/api/{rest:path}", api_not_found))
     if dist.is_dir():
         routes.append(Mount("/", SpaFiles(directory=dist, html=True)))
@@ -68,4 +74,6 @@ def run() -> None:
     logger.info(
         "wa-app on %s:%s, store %s, data %s", settings.host, settings.port, settings.store_path, settings.data_dir
     )
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info")
+    uvicorn.run(
+        create_app(settings), host=settings.host, port=settings.port, log_level="info", timeout_graceful_shutdown=3
+    )

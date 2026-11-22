@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveEvent } from './api-types'
-import { backoffDelay, connectLive, type SourceFactory } from './live'
+import { backoffDelay, connectLive, SAFETY_RESYNC_MS, type SourceFactory } from './live'
 
 class FakeSource {
   static all: FakeSource[] = []
@@ -69,6 +69,41 @@ describe('connectLive', () => {
     FakeSource.all[3].fail()
     vi.advanceTimersByTime(60000)
     expect(FakeSource.all).toHaveLength(4)
+  })
+
+  it('a drop before any event still resumes: the hello id is the resume cursor', () => {
+    const seen: LiveEvent[] = []
+    const stop = connectLive((e) => seen.push(e), { factory, report: () => {} })
+    FakeSource.all[0].emit('hello', { client: 'c1' }, '777')
+    FakeSource.all[0].fail()
+    vi.advanceTimersByTime(1000)
+    expect(FakeSource.all[1].url).toBe('/api/live?last_event_id=777')
+    expect(seen).toEqual([]) // replay is possible: no refetch needed
+    stop()
+  })
+
+  it('refetches on a reconnect that has nothing to resume from', () => {
+    const seen: LiveEvent[] = []
+    const stop = connectLive((e) => seen.push(e), { factory, report: () => {} })
+    FakeSource.all[0].fail() // dropped before the hello
+    vi.advanceTimersByTime(1000)
+    expect(FakeSource.all[1].url).toBe('/api/live')
+    expect(seen).toEqual([{ name: 'resync', data: {} }])
+    stop()
+  })
+
+  it('asks for a refetch every 5 minutes while visible, not while hidden', () => {
+    const seen: LiveEvent[] = []
+    const stop = connectLive((e) => seen.push(e), { factory, report: () => {} })
+    vi.advanceTimersByTime(SAFETY_RESYNC_MS - 1)
+    expect(seen).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(seen).toHaveLength(1)
+    setVisibility('hidden')
+    vi.advanceTimersByTime(SAFETY_RESYNC_MS * 3)
+    expect(seen).toHaveLength(1)
+    stop()
+    setVisibility('visible')
   })
 
   it('passes events through', () => {

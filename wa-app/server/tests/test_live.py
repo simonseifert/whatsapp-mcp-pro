@@ -245,8 +245,7 @@ def test_stream_frames_and_heartbeat() -> None:
 
     preamble, hello, beat, frame, cursor = asyncio.run(run())
     assert preamble.startswith("retry: 3000\n")
-    assert hello.startswith("event: hello\n") and '"client"' in hello
-    assert "id:" not in hello  # the hello must not move the resume cursor
+    assert hello.startswith("id: ") and "event: hello\n" in hello and '"client"' in hello
     assert beat.startswith(": ")
     assert frame == f"id: {cursor}\nevent: reaction\ndata: {json.dumps({'chat_jid': 'c', 'message_id': 'm'})}\n\n"
 
@@ -278,3 +277,92 @@ def test_single_message_route(logged_in: TestClient) -> None:
     body = logged_in.get(f"/api/chats/{fx.EKIPA}/messages/E09").json()
     assert body["message"]["id"] == "E09"
     assert logged_in.get(f"/api/chats/{fx.EKIPA}/messages/NOPE").status_code == 404
+
+
+def test_hello_has_an_id_and_resuming_from_it_replays_later_events() -> None:
+    async def run() -> tuple[int, list[str]]:
+        hub = live.Hub()
+        stream = live.sse_stream(hub, None, heartbeat=5)
+        await anext(stream)
+        hello = await anext(stream)
+        cursor = int(hello.split("\n")[0].removeprefix("id: "))
+        await stream.aclose()  # the connection drops before any event
+        event = hub.publish("chat", {"n": 1})  # ...and something happens in the gap
+        assert event.cursor > cursor
+        again = live.sse_stream(hub, cursor, heartbeat=5)
+        await anext(again)
+        await anext(again)
+        frame = await anext(again)
+        await again.aclose()
+        return event.cursor, [frame]
+
+    cursor, [frame] = asyncio.run(run())
+    assert frame.startswith(f"id: {cursor}\nevent: chat\n")
+
+
+def test_stream_ends_when_its_session_ends() -> None:
+    async def run() -> list[str]:
+        hub = live.Hub()
+        alive = {"abc": True}
+        stream = live.sse_stream(hub, None, heartbeat=0.05, session="abc", still_valid=lambda h: alive[h])
+        out = [await anext(stream), await anext(stream)]
+        alive["abc"] = False  # logged out elsewhere, nothing told the hub
+        async for chunk in stream:
+            out.append(chunk)
+        assert hub.client_count() == 0
+        return out
+
+    out = asyncio.run(asyncio.wait_for(run(), 3))
+    assert all(c.startswith((": heartbeat", "retry", "id:")) for c in out)
+
+
+def test_drop_session_ends_that_sessions_streams_at_once() -> None:
+    async def run() -> None:
+        hub = live.Hub()
+        mine = live.sse_stream(hub, None, heartbeat=30, session="s1")
+        other = live.sse_stream(hub, None, heartbeat=30, session="s2")
+        for s in (mine, other):
+            await anext(s)
+            await anext(s)
+        hub.drop_session("s1")
+        assert [c async for c in mine] == []  # ends without waiting for a heartbeat
+        assert hub.client_count() == 1
+        hub.close()
+        assert [c async for c in other] == []
+        assert hub.client_count() == 0
+
+    asyncio.run(asyncio.wait_for(run(), 3))
+
+
+def test_logout_drops_the_open_stream(logged_in: TestClient) -> None:
+    from wa_app import auth
+
+    hub = live.current_hub()
+    token = logged_in.cookies.get(auth.COOKIE)
+    assert token
+    client = hub.subscribe(session=auth.token_hash(token))
+    assert logged_in.post("/api/auth/logout").status_code == 200
+    assert client.dropped
+    assert hub.client_count() == 0
+
+
+def test_schema_is_looked_up_once_per_baseline(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = live.Poller(settings)
+    p.poll_once()
+    seen: list[str] = []
+    real = sqlite3.Connection.execute
+
+    class Spy(sqlite3.Connection):
+        def execute(self, sql, *a):  # noqa: ANN001, ANN002, ANN202
+            seen.append(sql)
+            return real(self, sql, *a)
+
+    real_open = store.open_ro
+    monkeypatch.setattr(
+        store,
+        "open_ro",
+        lambda s: sqlite3.connect(f"{(s.store_path / 'messages.db').as_uri()}?mode=ro", uri=True, factory=Spy),
+    )
+    p.poll_once()
+    monkeypatch.setattr(store, "open_ro", real_open)
+    assert not [q for q in seen if "table_info" in q]

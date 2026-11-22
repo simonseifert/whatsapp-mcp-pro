@@ -75,3 +75,16 @@ test('the chat list moves a chat to the top of the unpinned chats when it gets a
   const after = await order()
   expect(after.indexOf('Lukas Brenner')).toBeLessThan(after.indexOf('Ekipa za vikend'))
 })
+
+test('logging out ends the open live stream at once', async ({ page }) => {
+  const ended = new Promise<void>((resolve) => {
+    page.on('requestfinished', (r) => r.url().includes('/api/live') && !r.url().includes('visibility') && resolve())
+    page.on('requestfailed', (r) => r.url().includes('/api/live') && !r.url().includes('visibility') && resolve())
+  })
+  const opened = page.waitForResponse((r) => r.url().endsWith('/api/live') && r.status() === 200)
+  await signIn(page)
+  await opened
+  const status = await page.evaluate(async () => (await fetch('/api/auth/logout', { method: 'POST' })).status)
+  expect(status).toBe(200)
+  await Promise.race([ended, page.waitForTimeout(3000).then(() => Promise.reject(new Error('stream still open')))])
+})

@@ -16,7 +16,7 @@ import secrets
 import sqlite3
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -27,6 +27,7 @@ from starlette.routing import Route
 
 from . import appdb, store
 from .config import Settings
+from .tokens import token_hash as auth_hash
 
 logger = logging.getLogger("wa_app.live")
 
@@ -49,6 +50,9 @@ _CHAT_STATE_COLUMNS = (
 _CHAT_STATE_VALUES = ("pinned", "muted_until", "archived", "marked_unread", "last_read_at", "history_unread_count")
 
 
+_CLOSE = "_close"  # sentinel event name: the stream ends
+
+
 @dataclass
 class Event:
     name: str
@@ -65,6 +69,7 @@ class Client:
     queue: asyncio.Queue[Event]
     visible: bool = False
     dropped: bool = False
+    session: str | None = None  # hash of the session token it was opened with
 
 
 _hub: "Hub | None" = None
@@ -97,8 +102,30 @@ class Hub:
                 logger.info("dropped a slow live client")
         return event
 
-    def subscribe(self, last_event_id: int | None = None) -> Client:
-        client = Client(secrets.token_urlsafe(9), asyncio.Queue(maxsize=self._queue_size))
+    @property
+    def cursor(self) -> int:
+        return self._cursor
+
+    def _end(self, client: Client) -> None:
+        """Ends one client's stream at once: flag it and wake its reader (a full queue is already waking it)."""
+        client.dropped = True
+        self._clients.pop(client.id, None)
+        with contextlib.suppress(asyncio.QueueFull):
+            client.queue.put_nowait(Event(_CLOSE, {}))
+
+    def close(self) -> None:
+        """Shutdown: every open stream ends now instead of at its next heartbeat."""
+        for client in list(self._clients.values()):
+            self._end(client)
+
+    def drop_session(self, session: str) -> None:
+        """A session ended (logout, expiry): its streams end now."""
+        for client in list(self._clients.values()):
+            if client.session == session:
+                self._end(client)
+
+    def subscribe(self, last_event_id: int | None = None, session: str | None = None) -> Client:
+        client = Client(secrets.token_urlsafe(9), asyncio.Queue(maxsize=self._queue_size), session=session)
         if last_event_id is not None:
             gap = last_event_id < self._base or (bool(self._history) and self._history[0].cursor > last_event_id + 1)
             if gap:
@@ -132,6 +159,12 @@ def current_hub() -> Hub:
     return _hub
 
 
+def drop_session(session: str) -> None:
+    """End the open streams of a session that is over (called by auth when a session is deleted)."""
+    if _hub:
+        _hub.drop_session(session)
+
+
 def visible_clients() -> int:
     """How many connected clients report their page as visible (M2's 'app open')."""
     return _hub.visible_count() if _hub else 0
@@ -141,29 +174,48 @@ def _frame(event: Event) -> str:
     return f"id: {event.cursor}\nevent: {event.name}\ndata: {json.dumps(event.data)}\n\n"
 
 
-async def sse_stream(hub: Hub, last_event_id: int | None, heartbeat: float = HEARTBEAT_SECONDS) -> AsyncIterator[str]:
-    client = hub.subscribe(last_event_id)
+async def sse_stream(
+    hub: Hub,
+    last_event_id: int | None,
+    heartbeat: float = HEARTBEAT_SECONDS,
+    session: str | None = None,
+    still_valid: Callable[[str], bool] | None = None,
+) -> AsyncIterator[str]:
+    """The SSE body. With `session` and `still_valid`, the session is re-checked (off the event loop) at least every
+    `heartbeat` seconds and the stream ends when it is over."""
+    client = hub.subscribe(last_event_id, session)
     try:
         yield f"retry: {RETRY_MS}\n\n"
-        # No `id:` on the hello: it must not move the browser's resume cursor.
-        yield f"event: hello\ndata: {json.dumps({'client': client.id})}\n\n"
+        # The hello carries the current cursor as its id, so a client that drops before any event still resumes
+        # from here and gets what it missed.
+        yield f"id: {hub.cursor}\nevent: hello\ndata: {json.dumps({'client': client.id})}\n\n"
+        checked = time.monotonic()
         while not client.dropped:
             try:
                 event = await asyncio.wait_for(client.queue.get(), heartbeat)
             except TimeoutError:
+                event = None
+            if session and still_valid and time.monotonic() - checked >= heartbeat:
+                checked = time.monotonic()
+                if not await run_in_threadpool(still_valid, session):
+                    return
+            if event is None:
                 yield ": heartbeat\n\n"
-                continue
-            yield _frame(event)
+            elif event.name == _CLOSE:
+                return
+            else:
+                yield _frame(event)
     finally:
         hub.unsubscribe(client)
 
 
-def routes(hub: Hub) -> list[Route]:
+def routes(hub: Hub, still_valid: Callable[[str], bool] | None = None, cookie: str = "") -> list[Route]:
     async def stream(request: Request) -> Response:
         raw = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
         last = int(raw) if raw and raw.isdigit() else None
+        token = request.cookies.get(cookie) if cookie else None
         return StreamingResponse(
-            sse_stream(hub, last),
+            sse_stream(hub, last, session=auth_hash(token) if token else None, still_valid=still_valid),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -221,12 +273,15 @@ class Poller:
         self._cursors: _Cursors | None = None
         self._appconn: sqlite3.Connection | None = None
         self._failing = False
+        self._schema: dict[str, set[str]] = {}
 
     # Reads of the bridge's tables. Each returns rows and tolerates a store that lacks the table or column.
 
-    @staticmethod
-    def _has(conn: sqlite3.Connection, table: str, column: str | None = None) -> bool:
-        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    def _has(self, conn: sqlite3.Connection, table: str, column: str | None = None) -> bool:
+        """Table/column existence, looked up once per baseline (the schema does not change under a running app)."""
+        cols = self._schema.get(table)
+        if cols is None:
+            cols = self._schema[table] = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         return bool(cols) and (column is None or column in cols)
 
     def _deleted(self, conn: sqlite3.Connection, since: float) -> list[tuple]:
@@ -268,6 +323,7 @@ class Poller:
         ).fetchall()
 
     def _baseline(self, conn: sqlite3.Connection) -> _Cursors:
+        self._schema = {}
         rowid = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM messages").fetchone()[0]
         edit = (
             conn.execute("SELECT COALESCE(MAX(id), 0) FROM message_edits").fetchone()[0]

@@ -1,6 +1,5 @@
 """Passphrase, server-side sessions, login rate limit, Origin check and the API middleware."""
 
-import hashlib
 import secrets
 import sqlite3
 import time
@@ -12,6 +11,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from . import live
+from .tokens import token_hash
+
 COOKIE = "wa_session"
 SESSION_SECONDS = 30 * 24 * 3600
 MIN_PASSPHRASE = 10
@@ -22,8 +24,7 @@ _hasher = PasswordHasher()
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+_hash_token = token_hash
 
 
 def passphrase_is_set(conn: sqlite3.Connection) -> bool:
@@ -69,9 +70,15 @@ def session_valid(conn: sqlite3.Connection, token: str | None) -> bool:
     return row is not None and row[0] > time.time()
 
 
+def session_hash_valid(conn: sqlite3.Connection, hashed: str) -> bool:
+    row = conn.execute("SELECT expires_at FROM sessions WHERE token_hash=?", (hashed,)).fetchone()
+    return row is not None and row[0] > time.time()
+
+
 def end_session(conn: sqlite3.Connection, token: str | None) -> None:
     if token:
         conn.execute("DELETE FROM sessions WHERE token_hash=?", (_hash_token(token),))
+        live.drop_session(_hash_token(token))  # its open live streams end now
 
 
 def login_blocked(conn: sqlite3.Connection, ip: str) -> bool:
