@@ -1,7 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { applyTheme, readTheme, resolveTheme, saveTheme, THEME_KEY } from './theme'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { applyTheme, readTheme, resolveTheme, saveTheme, THEME_COLOR, THEME_KEY } from './theme'
+
+function mockSystem(dark: boolean) {
+  window.matchMedia = ((q: string) => ({ matches: q.includes('dark') ? dark : !dark, addEventListener() {}, removeEventListener() {} })) as never
+}
+
+function metaColor() {
+  return document.querySelector('meta[name="theme-color"]')?.getAttribute('content')
+}
 
 afterEach(() => {
+  document.head.querySelector('meta[name="theme-color"]')?.remove()
   localStorage.clear()
   document.documentElement.removeAttribute('data-theme')
 })
@@ -14,6 +23,28 @@ describe('resolveTheme', () => {
   it('an explicit choice wins over the system', () => {
     expect(resolveTheme('dark', false)).toBe('dark')
     expect(resolveTheme('light', true)).toBe('light')
+  })
+})
+
+describe('theme-color meta', () => {
+  beforeEach(() => {
+    document.head.insertAdjacentHTML('beforeend', '<meta name="theme-color" content="#000000">')
+  })
+  it('follows the chosen theme, whatever the OS prefers', () => {
+    mockSystem(true)
+    saveTheme('light')
+    expect(metaColor()).toBe(THEME_COLOR.light)
+    mockSystem(false)
+    saveTheme('dark')
+    expect(metaColor()).toBe(THEME_COLOR.dark)
+  })
+  it('follows the OS for System', () => {
+    mockSystem(false)
+    saveTheme('system')
+    expect(metaColor()).toBe(THEME_COLOR.light)
+    mockSystem(true)
+    applyTheme('system')
+    expect(metaColor()).toBe(THEME_COLOR.dark)
   })
 })
 

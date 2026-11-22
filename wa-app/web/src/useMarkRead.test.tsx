@@ -29,6 +29,18 @@ describe('useMarkRead', () => {
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
+  it('marks nothing while inactive (the pane is sliding away), and cancels a pending mark', async () => {
+    const { rerender } = render(<Probe {...base} unread={0} />)
+    rerender(<Probe {...base} unread={0} newestKey="a/2" />)
+    rerender(<Probe {...base} unread={0} newestKey="a/2" active={false} />)
+    await act(() => vi.advanceTimersByTimeAsync(3000))
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockClear()
+    render(<Probe {...base} jid="b@s.whatsapp.net" active={false} />)
+    await act(() => vi.advanceTimersByTimeAsync(3000))
+    expect(spy).not.toHaveBeenCalled()
+  })
+
   it('does nothing for a chat opened with nothing unread', async () => {
     render(<Probe {...base} unread={0} />)
     await act(() => vi.advanceTimersByTimeAsync(3000))

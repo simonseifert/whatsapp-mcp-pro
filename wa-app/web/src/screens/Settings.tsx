@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../api'
+import { UpdateRow } from '../components/UpdateRow'
 import { readTheme, saveTheme, THEMES, type ThemePref } from '../theme'
 
 export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void }) {
@@ -62,6 +63,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
             )}
           </div>
         </div>
+        <UpdateRow />
         {version && <p className="settings-about">wa-app {version}</p>}
       </div>
     </div>

@@ -6,6 +6,8 @@ export const READ_DEBOUNCE_MS = 1000
 
 type Input = {
   jid: string
+  /** The chat is the one on screen. False while its pane slides away: nothing is marked then. Default true. */
+  active?: boolean
   /** The chat is loaded and shows its newest message. */
   ready: boolean
   /** Identifies the newest message; it changes only when something new arrived. */
@@ -27,7 +29,7 @@ function pageVisible(): boolean {
  * arrives while that stays true. Never repeats for the same newest message. A chat opened with nothing unread is not
  * marked: nothing changes on the phone side, so there is nothing to send.
  */
-export function useMarkRead({ jid, ready, newestKey, unread, markedUnread, atBottom }: Input): void {
+export function useMarkRead({ jid, active = true, ready, newestKey, unread, markedUnread, atBottom }: Input): void {
   const done = useRef<string | null>(null) // the newest message already marked (or needing no marking)
   const visible = useRef(pageVisible())
   const wake = useRef<(() => void) | null>(null)
@@ -46,7 +48,7 @@ export function useMarkRead({ jid, ready, newestKey, unread, markedUnread, atBot
   }, [jid])
 
   useEffect(() => {
-    if (!ready || !newestKey || !atBottom || unread === undefined) return
+    if (!active || !ready || !newestKey || !atBottom || unread === undefined) return
     let timer: ReturnType<typeof setTimeout> | null = null
     const attempt = () => {
       if (!visible.current || done.current === newestKey) return
@@ -74,5 +76,5 @@ export function useMarkRead({ jid, ready, newestKey, unread, markedUnread, atBot
       wake.current = null
       if (timer) clearTimeout(timer)
     }
-  }, [jid, ready, newestKey, unread, markedUnread, atBottom])
+  }, [jid, active, ready, newestKey, unread, markedUnread, atBottom])
 }

@@ -1604,3 +1604,49 @@ input {
     max-width: min(80%, 560px);
   }
 }
+
+/* iOS standalone runs black-translucent: the status bar floats over the page with a white clock. In the light theme a
+   dark strip the height of the safe area sits behind it. Content already pads itself by the same inset. */
+@media (display-mode: standalone) {
+  [data-theme='light'] body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    height: env(safe-area-inset-top);
+    background: var(--color-background);
+    pointer-events: none;
+  }
+}
+
+@media (display-mode: standalone) and (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    height: env(safe-area-inset-top);
+    background: var(--color-background);
+    pointer-events: none;
+  }
+}
+
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.update-row.banner {
+  flex: none;
+  justify-content: center;
+  min-height: var(--spacing-touch);
+  padding-top: env(safe-area-inset-top);
+  background: var(--accent-soft);
+}

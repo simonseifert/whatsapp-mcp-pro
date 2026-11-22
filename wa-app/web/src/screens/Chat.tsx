@@ -29,7 +29,8 @@ const GROUP_KINDS = ['group', 'community_group', 'announcement']
 const LOAD_OLDER_AT_PX = 160
 const AT_BOTTOM_PX = 80 // within this of the end counts as "at the bottom"
 
-export function Chat({ jid }: { jid: string }) {
+/** `active` is false while the pane slides out after the URL left the chat: nothing there may be marked read then. */
+export function Chat({ jid, active = true }: { jid: string; active?: boolean }) {
   const scroller = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const stickToEnd = useRef(false)
@@ -89,6 +90,7 @@ export function Chat({ jid }: { jid: string }) {
   const prevFirstId = useRef<string | undefined>(undefined)
   const last = messages[messages.length - 1]
   useMarkRead({
+    active,
     jid,
     ready: status === 'ready',
     newestKey: last ? `${last.chat_jid}/${last.id}` : undefined,

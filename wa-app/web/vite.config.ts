@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import type { Plugin } from 'vite'
@@ -24,7 +25,10 @@ function serviceWorker(): Plugin {
     generateBundle(_options, bundle) {
       const files = Object.keys(bundle).filter((name) => name !== 'sw.js' && SHELL_EXT.test(name))
       const shell = ['/', ...files.map((name) => `/${name}`), ...PUBLIC_SHELL]
-      const hash = createHash('sha256').update(shell.join('\n')).digest('hex').slice(0, 12)
+      // The version covers the file names and the bytes of the public files (icons, manifest), which are not hashed names.
+      const digest = createHash('sha256').update(shell.join('\n'))
+      for (const name of PUBLIC_SHELL) digest.update(readFileSync(`public${name}`))
+      const hash = digest.digest('hex').slice(0, 12)
       const sw = bundle['sw.js']
       if (sw?.type !== 'chunk') throw new Error('sw.js was not built')
       sw.code = sw.code.replace('__BUILD_HASH__', JSON.stringify(hash)).replace('__SHELL_FILES__', JSON.stringify(shell))

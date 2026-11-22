@@ -174,4 +174,21 @@ test.describe('service worker', () => {
     expect(cached.some((u) => u.endsWith('.css'))).toBe(true)
     expect(cached.some((u) => u.startsWith('/api/'))).toBe(false)
   })
+
+  test('/api passes through to the network and offline navigation falls back to the shell', async ({ page, context }) => {
+    await signIn(page)
+    await page.evaluate('navigator.serviceWorker.ready.then(() => true)')
+    await page.reload()
+    await expect(page.getByRole('heading', { name: 'Chats' })).toBeVisible()
+    // Online: the API answers live, never from a cache.
+    const status = await page.evaluate<number>(`fetch('/api/about').then((r) => r.status)`)
+    expect(status).toBe(200)
+    await context.setOffline(true)
+    const offlineApi = await page.evaluate<string>(`fetch('/api/about').then(() => 'answered', () => 'failed')`)
+    expect(offlineApi).toBe('failed') // not served from any cache
+    await page.reload()
+    expect(await page.title()).toBe('wa-app') // the cached shell, not the browser's offline error page
+    await expect(page.locator('script[type="module"]')).toHaveCount(1)
+    await context.setOffline(false)
+  })
 })
