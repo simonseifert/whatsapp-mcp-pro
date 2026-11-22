@@ -1,0 +1,19 @@
+# systemd user unit template for wa-app. Copy to ~/.config/systemd/user/wa-app.service,
+# adjust the placeholder paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now wa-app
+[Unit]
+Description=wa-app chat PWA
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/code/whatsapp-mcp-pro/wa-app/server/.venv/bin/wa-app
+Environment=WA_STORE_PATH=/home/alice/.local/share/whatsapp-mcp-pro/store
+Environment=WA_APP_DATA=%h/.local/share/wa-app
+Environment=WA_APP_HOST=127.0.0.1
+Environment=WA_APP_PORT=8085
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

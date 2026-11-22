@@ -1,0 +1,164 @@
+@import 'tailwindcss';
+@import './tokens.css';
+@import '@fontsource-variable/geist';
+
+/* Semantic aliases over the exported DESIGN.md tokens. Dark is the default. */
+:root {
+  color-scheme: dark;
+  --bg: var(--color-background);
+  --surface: var(--color-surface);
+  --surface2: var(--color-surface-2);
+  --fg: var(--color-foreground);
+  --muted: var(--color-muted-foreground);
+  --hair: var(--color-border);
+  --accent: var(--color-primary);
+  --accent-ink: var(--color-on-primary);
+  --accent-text: var(--color-primary);
+  --danger-ink: var(--color-danger);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+    --bg: var(--color-background-light);
+    --surface: var(--color-surface-light);
+    --surface2: var(--color-surface-2-light);
+    --fg: var(--color-foreground-light);
+    --muted: var(--color-muted-foreground-light);
+    --hair: var(--color-border-light);
+    --accent: var(--color-primary-light);
+    --accent-ink: var(--color-on-primary-light);
+    --accent-text: var(--color-primary-text-light);
+    --danger-ink: var(--color-danger-light);
+  }
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --bg: var(--color-background-light);
+  --surface: var(--color-surface-light);
+  --surface2: var(--color-surface-2-light);
+  --fg: var(--color-foreground-light);
+  --muted: var(--color-muted-foreground-light);
+  --hair: var(--color-border-light);
+  --accent: var(--color-primary-light);
+  --accent-ink: var(--color-on-primary-light);
+  --accent-text: var(--color-primary-text-light);
+  --danger-ink: var(--color-danger-light);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Geist Variable', system-ui, sans-serif;
+  font-size: var(--text-body);
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.page {
+  min-height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: calc(var(--spacing-xxl) + env(safe-area-inset-top)) var(--spacing-lg) calc(var(--spacing-xl) + env(safe-area-inset-bottom));
+}
+
+.large-title {
+  font-size: var(--text-large-title);
+  font-weight: var(--font-weight-large-title);
+  line-height: 1.1;
+  letter-spacing: var(--tracking-large-title);
+}
+
+.secondary {
+  color: var(--muted);
+  font-size: var(--text-body-sm);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-xl);
+}
+
+.field {
+  width: 100%;
+  height: var(--spacing-touch);
+  padding: 0 var(--spacing-lg);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--hair);
+  font-size: var(--text-body);
+  outline: 0;
+}
+
+.field::placeholder {
+  color: var(--muted);
+}
+
+.field:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.button-primary {
+  height: var(--spacing-touch);
+  padding: 0 var(--spacing-lg);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--text-title);
+  font-weight: var(--font-weight-title);
+  cursor: pointer;
+  transition: background 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.button-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.button-text {
+  min-height: var(--spacing-touch);
+  padding: 0 var(--spacing-sm);
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font-weight: var(--font-weight-title);
+  cursor: pointer;
+}
+
+.form-error {
+  color: var(--danger-ink);
+  font-size: var(--text-body-sm);
+}
+
+.shell-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.empty {
+  margin-top: var(--spacing-xxl);
+  color: var(--muted);
+}
