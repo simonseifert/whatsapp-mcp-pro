@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageView } from '../api-types'
 import { Bubble } from './Bubble'
@@ -78,5 +78,23 @@ describe('Bubble gestures', () => {
     expect(onReply).not.toHaveBeenCalled()
     fireEvent.contextMenu(el)
     expect(onMenu).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers Retry on a retryable failure and only Discard on one that cannot succeed', () => {
+    const view = (retryable: boolean) =>
+      render(
+        <Bubble
+          message={{ ...message, from_me: true }}
+          showSender={false}
+          tail
+          delivery={{ state: 'failed', error: 'Not sent: x', retryable }}
+        />,
+      )
+    view(true)
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeNull()
+    cleanup()
+    view(false)
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeNull()
   })
 })

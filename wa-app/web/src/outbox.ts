@@ -29,6 +29,8 @@ export type Box = {
 }
 
 const EMPTY: Box = { pending: [], reactions: {}, aliases: {}, notice: null }
+const NO_ID_MS = 120_000 // a sent bubble the bridge gave no id for is dropped after this
+const SKEW_MS = 60_000 // tolerated clock difference between this device and the stored message time
 const SETTLE_MS = 10_000 // a confirmed reaction override is dropped after this even if no live event showed it
 
 // Unsent and in-flight work is kept here, in memory only: it outlives the Chat screen but not a reload.
@@ -86,7 +88,7 @@ async function attempt(jid: string, p: Pending): Promise<void> {
           ...b,
           aliases: { ...b.aliases, [id]: pendingId(p.key) },
         }))
-      }
+      } else setTimeout(() => dismiss(jid, p.key), NO_ID_MS)
     } else
       patch(jid, p.key, {
         status: 'failed',
@@ -171,8 +173,11 @@ export async function react(jid: string, m: MessageView, emoji: string): Promise
   }
   update(jid, (b) => {
     const reactions = { ...b.reactions }
-    if (before) reactions[m.id] = before
-    else delete reactions[m.id]
+    // A newer change of mine on this message owns the override now: do not undo it.
+    if (reactions[m.id]?.emoji === next && !reactions[m.id].confirmed) {
+      if (before) reactions[m.id] = before
+      else delete reactions[m.id]
+    }
     return { ...b, reactions, notice: result.error }
   })
 }
@@ -192,7 +197,16 @@ function settle(jid: string, id: string, emoji: string): void {
 export function reconcile(jid: string, messages: MessageView[]): void {
   const box = getBox(jid)
   const ids = new Set(messages.map((m) => m.id))
-  const gone = box.pending.filter((p) => p.messageId && ids.has(p.messageId))
+  const gone = box.pending.filter(
+    (p) =>
+      (p.messageId && ids.has(p.messageId)) ||
+      // No id came back: the same text from me, stored after the send, is that message.
+      (p.status === 'sent' &&
+        !p.messageId &&
+        messages.some(
+          (m) => m.from_me && m.text === p.text && Date.parse(m.timestamp_iso) >= Date.parse(p.at) - SKEW_MS,
+        )),
+  )
   const settled = Object.entries(box.reactions).filter(([id, o]) => {
     const m = messages.find((x) => x.id === id)
     return o.confirmed && m !== undefined && myReaction(m) === o.emoji

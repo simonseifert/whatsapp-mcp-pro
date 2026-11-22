@@ -9,7 +9,7 @@ import { ReactionBar } from './ReactionBar'
 import { RichText } from './RichText'
 
 /** An outgoing text this device is still sending, or could not send. */
-export type Delivery = { state: 'sending' | 'sent' | 'failed'; error?: string }
+export type Delivery = { state: 'sending' | 'sent' | 'failed'; error?: string; retryable?: boolean }
 
 type Props = {
   message: MessageView
@@ -147,9 +147,11 @@ export function Bubble({
       {delivery?.state === 'failed' && (
         <div className="failline" role="alert">
           <span dir="auto">{delivery.error}</span>
-          <button className="button-text" type="button" onClick={onRetry}>
-            Retry
-          </button>
+          {delivery.retryable !== false && (
+            <button className="button-text" type="button" onClick={onRetry}>
+              Retry
+            </button>
+          )}
           <button className="button-text quiet" type="button" onClick={onDismiss}>
             Discard
           </button>

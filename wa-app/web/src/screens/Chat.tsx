@@ -188,7 +188,7 @@ export function Chat({ jid }: { jid: string }) {
                 showSender={item.showSender}
                 tail={item.tail}
                 rise={key === riseKey}
-                delivery={pending && { state: pending.status, error: pending.error }}
+                delivery={pending && { state: pending.status, error: pending.error, retryable: pending.retryable }}
                 onRetry={pending && (() => void retry(jid, pending.key))}
                 onDismiss={pending && (() => dismiss(jid, pending.key))}
                 onReply={m.actionable ? () => setReplyTo(m) : undefined}

@@ -132,4 +132,41 @@ describe('outbox', () => {
     reconcile(JID, [msg('M1', { reactions: [{ emoji: '👍', count: 1, mine: true }] })])
     expect(getBox(JID).reactions.M1).toBeUndefined()
   })
+
+  it('a sent bubble without an id is dropped once a matching message of mine appears after it', async () => {
+    send.mockResolvedValueOnce({ ok: true, message_id: null })
+    await sendText(JID, 'Bok', null)
+    expect(getBox(JID).pending).toHaveLength(1)
+    const at = getBox(JID).pending[0].at
+    reconcile(JID, [msg('OLD', { from_me: true, text: 'Bok', timestamp_iso: '2020-01-01T00:00:00+00:00' })])
+    expect(getBox(JID).pending).toHaveLength(1)
+    reconcile(JID, [msg('NEW', { from_me: true, text: 'Bok', timestamp_iso: at })])
+    expect(getBox(JID).pending).toEqual([])
+  })
+
+  it('a sent bubble without an id is dropped after two minutes', async () => {
+    vi.useFakeTimers()
+    try {
+      send.mockResolvedValueOnce({ ok: true, message_id: null })
+      await sendText(JID, 'Bok', null)
+      await vi.advanceTimersByTimeAsync(119_000)
+      expect(getBox(JID).pending).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(getBox(JID).pending).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a failed reaction only reverts when the override is still its own', async () => {
+    const m = msg('M1')
+    let release: (r: api.SendResult) => void = () => undefined
+    reactApi.mockReturnValueOnce(new Promise<api.SendResult>((r) => (release = r)))
+    const first = react(JID, m, '👍')
+    await react(JID, m, '❤️') // a second change while the first is out
+    release(fail)
+    await first
+    expect(getBox(JID).reactions.M1.emoji).toBe('❤️')
+    expect(getBox(JID).notice).toBe('Not sent: limit')
+  })
 })

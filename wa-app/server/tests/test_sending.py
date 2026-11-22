@@ -7,7 +7,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from tests import conftest as fx
-from wa_app import mcp_lib, sending
+from wa_app import appdb, mcp_lib, sending
 from wa_app.config import Settings
 
 KEY = "2f6f0c1e-8a53-4d0e-9a53-1b1c9a3a0001"
@@ -96,6 +96,15 @@ def sending_timeout() -> str:
         (
             {"http_status": 502, "code": "whatsapp_error", "error": "HTTP 502 - server said no", "retryable": True},
             "Not sent: server said no",
+            True,
+        ),
+        (
+            {
+                "http_status": 409,
+                "error": "HTTP 409 - request with this idempotency_key is still being sent",
+                "retryable": False,
+            },
+            "Not sent: bridge didn't answer",
             True,
         ),
         ({"http_status": 400, "error": "HTTP 400 - bad jid", "retryable": False}, "Not sent: bad jid", False),
@@ -230,3 +239,28 @@ def test_react_validation_and_failure(logged_in: TestClient, bridge) -> None:
 def test_map_failure_unknown_is_truncated() -> None:
     out = sending.map_failure({"http_status": 500, "error": "HTTP 500 - " + "y" * 500, "retryable": True})
     assert out.body["error"].startswith("Not sent: yyy") and len(out.body["error"]) <= 140
+
+
+def test_text_is_trimmed_before_sending(logged_in: TestClient, bridge) -> None:
+    calls, _ = bridge
+    assert post(logged_in, fx.ANA, text="\n\n  Hej\nsvima  \n\n").status_code == 200
+    assert calls[0]["text"] == "  Hej\nsvima"
+    assert post(logged_in, fx.ANA, text="\n\n \n").status_code == 422
+    assert post(logged_in, fx.ANA, text="x" * 4096 + "\n\n").status_code == 200  # the limit counts the trimmed text
+
+
+def test_recipient_is_remembered_per_key_and_pruned(logged_in: TestClient, settings: Settings, bridge) -> None:
+    calls, _ = bridge
+    assert post(logged_in, fx.ANA, text="Hej").status_code == 200
+    app = appdb.connect(settings)
+    assert app.execute("SELECT recipient FROM send_keys WHERE client_key = ?", (KEY,)).fetchone() == (fx.ANA,)
+    # The same key from another route form of the chat goes to the recipient it first used.
+    app.execute("UPDATE send_keys SET recipient = ? WHERE client_key = ?", ("385910000555@s.whatsapp.net", KEY))
+    assert post(logged_in, fx.ANA, text="Hej").status_code == 200
+    assert calls[1]["to"] == "385910000555@s.whatsapp.net"
+    # Rows older than 24 h are dropped on the next send.
+    app.execute("UPDATE send_keys SET created_at = created_at - 90000")
+    other = str(uuid.uuid4())
+    assert post(logged_in, fx.ANA, text="Hej", client_key=other).status_code == 200
+    assert app.execute("SELECT client_key FROM send_keys").fetchall() == [(other,)]
+    app.close()

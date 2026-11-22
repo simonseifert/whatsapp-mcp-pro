@@ -197,7 +197,7 @@ def map_failure(result: dict) -> Outcome:
         return _fail(502, MSG_LIMIT, retryable)
     if code == "forbidden" or http == 403:
         return _fail(502, MSG_FORBIDDEN)
-    if code in ("timeout", "not_connected") or http in (503, 504):
+    if code in ("timeout", "not_connected") or http in (409, 503, 504):  # 409: the same key is still being sent
         return _fail(502, MSG_NO_ANSWER, True)
     if http is None and retryable and code is None:  # _send_request's timeout / dropped connection result
         return _fail(502, MSG_NO_ANSWER, True)
@@ -212,6 +212,20 @@ def _call(fn, *args, **kwargs) -> dict:  # noqa: ANN001
         return {"success": False, "retryable": True}  # no structured result: shown as "bridge didn't answer"
 
 
+KEY_TTL = 24 * 3600  # the bridge forgets a key after 24 h
+
+
+def _recipient_for(appconn: sqlite3.Connection, key: str, recipient: str) -> str:
+    now = int(time.time())
+    with appdb.db_lock:
+        appconn.execute("DELETE FROM send_keys WHERE created_at < ?", (now - KEY_TTL,))
+        appconn.execute(
+            "INSERT OR IGNORE INTO send_keys (client_key, recipient, created_at) VALUES (?, ?, ?)",
+            (key, recipient, now),
+        )
+        return str(appconn.execute("SELECT recipient FROM send_keys WHERE client_key = ?", (key,)).fetchone()[0])
+
+
 def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: object) -> Outcome:
     """Blocking: validate, resolve the recipient, send through the bridge with the client's key."""
     if not isinstance(body, dict):
@@ -220,6 +234,8 @@ def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: o
     key = valid_key(body.get("client_key"))
     if key is None:
         return _bad("client_key must be a UUID")
+    if isinstance(text, str):
+        text = text.lstrip("\r\n").rstrip()
     if not isinstance(text, str) or not text.strip():
         return _bad("Message is empty")
     if len(text) > MAX_TEXT:
@@ -240,8 +256,13 @@ def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: o
     finally:
         ro.close()
     # The canonical jid the list uses (the phone form when known), never a bare LID that may be unmapped.
+    # A retry keeps the recipient of the first attempt: the bridge scopes the key to endpoint + recipient.
     result = _call(
-        mcp_lib.send_message, chat.jid, text, quoted_message_id=quoted.id if quoted else None, idempotency_key=key
+        mcp_lib.send_message,
+        _recipient_for(appconn, key, chat.jid),
+        text,
+        quoted_message_id=quoted.id if quoted else None,
+        idempotency_key=key,
     )
     if not result.get("success"):
         return map_failure(result)
