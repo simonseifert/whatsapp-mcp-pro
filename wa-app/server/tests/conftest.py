@@ -94,6 +94,7 @@ OLD_ARCHIVED = "385910000012@s.whatsapp.net"
 OLD_ARCHIVED_GROUP = "120363000000000013@g.us"
 ACCOUNTANT_NAME = "Đurđica Šimunović-Petrović (Računovodstvo d.o.o.)"
 VOICE_SECONDS = 42
+LONG_CHAT = "385910000015@s.whatsapp.net"
 EKIPA = "120363000000000014@g.us"
 ME = "385910000099@s.whatsapp.net"
 ME_LID = "999@lid"
@@ -262,6 +263,13 @@ def _fill(conn: sqlite3.Connection, store: Path) -> None:
     msg(CHANNEL, 9000, "Nova linija u petak.", sender=CHANNEL)
 
     _ekipa(conn, msg, chat, identity, state, ts)
+
+    # A long private chat for paging tests: 150 numbered filler messages, old, all read.
+    chat(LONG_CHAT, "Marta Dugi", 30000 - 150)
+    identity(LONG_CHAT, phone="385910000015", phone_jid=LONG_CHAT, full_name="Marta Dugi", display_name="Marta Dugi")
+    for n in range(1, 151):
+        msg(LONG_CHAT, 30000 - n, f"Filler message {n:03d}", sender=LONG_CHAT, from_me=n % 3 == 0)
+    state(LONG_CHAT, last_read_at=ts(1))
 
     # Two archived chats.
     chat(OLD_ARCHIVED, "Stara Kolegica", 20000)

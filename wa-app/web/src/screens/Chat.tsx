@@ -16,25 +16,30 @@ export function Chat({ jid }: { jid: string }) {
   const firstId = messages[0]?.id
   const lastId = messages[messages.length - 1]?.id
   const settled = useRef(false)
+  const prevFirstId = useRef<string | undefined>(undefined)
 
-  // Open at the newest message; when older messages are added above, keep what the reader is looking at in place.
+  // Open at the newest message. When older messages arrive above (the first id changes), put the reader's view back
+  // where it was: Safari has no native scroll anchoring. Not keyed on loadingOlder, which would consume the anchor
+  // before the page has arrived.
   useLayoutEffect(() => {
     const el = scroller.current
     if (!el) return
-    if (anchor.current) {
+    if (anchor.current && prevFirstId.current && firstId !== prevFirstId.current) {
       el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.height)
       anchor.current = null
     } else if (!settled.current && lastId) {
       el.scrollTop = el.scrollHeight
       settled.current = true
     }
-  }, [firstId, lastId, loadingOlder])
+    prevFirstId.current = firstId
+  }, [firstId, lastId])
 
-  function onScroll() {
+  async function onScroll() {
     const el = scroller.current
-    if (!el || !hasMore || loadingOlder || el.scrollTop > LOAD_OLDER_AT_PX) return
+    if (!el || !hasMore || loadingOlder || anchor.current || el.scrollTop > LOAD_OLDER_AT_PX) return
     anchor.current = { height: el.scrollHeight, top: el.scrollTop }
-    void loadOlder()
+    // Nothing started, or the request failed: forget the anchor so the next scroll can try again.
+    if (!(await loadOlder())) anchor.current = null
   }
 
   const chat = detail?.chat
@@ -65,7 +70,7 @@ export function Chat({ jid }: { jid: string }) {
         </div>
       )}
       {status === 'ready' && (
-        <div className="msgs" ref={scroller} onScroll={onScroll}>
+        <div className="msgs" ref={scroller} onScroll={() => void onScroll()}>
           {messages.length === 0 && <p className="empty-state">No messages yet.</p>}
           {toItems(messages, inGroup).map((item) =>
             item.kind === 'day' ? (

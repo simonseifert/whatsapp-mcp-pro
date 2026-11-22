@@ -89,5 +89,7 @@ describe('chat formatting', () => {
     expect(formatDuration(37)).toBe('0:37')
     expect(formatDuration(605)).toBe('10:05')
     expect(telHref('+385 (91) 000-0777')).toBe('tel:+385910000777')
+    expect(telHref('n/a')).toBeNull()
+    expect(telHref('+')).toBeNull()
   })
 })

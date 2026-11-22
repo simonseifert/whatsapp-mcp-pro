@@ -39,8 +39,9 @@ export function useChat(jid: string) {
   }, [path, attempt])
 
   const oldest = state.messages[0]?.timestamp_iso
-  const loadOlder = useCallback(async () => {
-    if (busy.current || !state.hasMore || !oldest) return
+  /** Starts loading the page before the oldest message; false when nothing was started. */
+  const loadOlder = useCallback(async (): Promise<boolean> => {
+    if (busy.current || !state.hasMore || !oldest) return false
     busy.current = true
     setState((s) => ({ ...s, loadingOlder: true }))
     try {
@@ -55,6 +56,7 @@ export function useChat(jid: string) {
     } finally {
       busy.current = false
     }
+    return true
   }, [path, oldest, state.hasMore])
 
   const retry = useCallback(() => setAttempt((n) => n + 1), [])

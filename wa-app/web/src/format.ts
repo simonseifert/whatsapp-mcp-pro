@@ -90,7 +90,8 @@ export function formatDuration(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${two(seconds % 60)}`
 }
 
-/** A tel: target with only digits and a leading plus. */
-export function telHref(phone: string): string {
-  return `tel:${phone.replace(/[^\d+]/g, '')}`
+/** A tel: target with only digits and a leading plus; null when the text has no digits. */
+export function telHref(phone: string): string | null {
+  const number = phone.replace(/[^\d+]/g, '')
+  return /\d/.test(number) ? `tel:${number}` : null
 }
