@@ -8,6 +8,9 @@ All notable changes to this fork are recorded here. The format follows
 
 ### Added
 
+- Shared contact cards keep their phone numbers: the stored content is `[Contact: <name>]` plus one
+  `\n📞 <number>` line per vCard TEL (max 20), contact arrays are separated by a blank line, and the name falls
+  back to the vCard FN. Control characters are stripped.
 - `message_reactions` table (migration 011): one row per reactor per message,
   newer change wins. Own reactions are stored; `[Reaction: X]` message rows are
   kept.
