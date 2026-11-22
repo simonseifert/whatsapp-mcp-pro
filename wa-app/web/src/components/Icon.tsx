@@ -53,6 +53,13 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v3" />
     </>
   ),
+  play: <path d="M8 5.5v13l11-6.5z" fill="currentColor" />,
+  pause: (
+    <>
+      <path d="M8.5 5.5v13M15.5 5.5v13" strokeWidth={3} />
+    </>
+  ),
+  close: <path d="M6 6l12 12M18 6L6 18" />,
   chart: <path d="M5 20V10M12 20V4M19 20v-7" />,
   phone: (
     <path d="M6.5 4h3l1.5 4-2 1.5a11 11 0 005.5 5.5L16 13l4 1.5v3a2 2 0 01-2 2C10.8 19.5 4.5 13.2 4.5 6a2 2 0 012-2z" />

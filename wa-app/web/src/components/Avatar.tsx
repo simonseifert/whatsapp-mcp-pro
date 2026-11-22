@@ -6,9 +6,9 @@ type Props = { name: string; src?: string; kind?: string }
 
 /** Profile picture when the server has one; otherwise initials, or an icon for channels and bare numbers. */
 export function Avatar({ name, src, kind }: Props) {
-  const [failed, setFailed] = useState(false)
-  if (src && !failed) {
-    return <img className="av" src={src} alt="" loading="lazy" onError={() => setFailed(true)} />
+  const [failedSrc, setFailedSrc] = useState<string | undefined>()
+  if (src && failedSrc !== src) {
+    return <img className="av" src={src} alt="" loading="lazy" onError={() => setFailedSrc(src)} />
   }
   const letters = initials(name)
   let content

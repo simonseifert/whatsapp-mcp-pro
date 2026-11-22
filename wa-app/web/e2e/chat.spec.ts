@@ -39,8 +39,8 @@ test('Ekipa za vikend shows every message kind', async ({ page }) => {
   await expect(poll.getByText('Ručak poslije?')).toBeVisible()
   await expect(poll.locator('.opt', { hasText: 'Konoba kod Mate' })).toContainText('3')
   await expect(poll.getByText('4 votes')).toBeVisible()
-  // voice note (placeholder until the media step) with its length
-  await expect(page.getByText('Voice message · 0:37')).toBeVisible()
+  // voice note with its length
+  await expect(page.locator('.voice', { hasText: '0:37' })).toBeVisible()
   // reply quote, including a quote of a deleted message
   await expect(page.locator('.quote', { hasText: 'Voice message (0:37)' })).toContainText('Petra')
   await expect(page.locator('.quote', { hasText: 'Message deleted' })).toBeVisible()

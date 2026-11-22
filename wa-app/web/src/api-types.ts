@@ -27,7 +27,13 @@ export type ChatSummary = {
 
 export type ChatsResponse = { chats: ChatSummary[]; archived_count: number }
 
-export type MediaView = { type: string; filename: string | null; duration_s: number | null; has_file: boolean }
+export type MediaView = {
+  type: string
+  filename: string | null
+  duration_s: number | null
+  has_file: boolean
+  size_bytes: number | null
+}
 export type QuoteView = { id: string; sender_name: string | null; preview: string }
 export type ReactionView = { emoji: string; count: number; mine: boolean }
 export type PollView = { question: string; options: { text: string; votes: number }[]; total: number }

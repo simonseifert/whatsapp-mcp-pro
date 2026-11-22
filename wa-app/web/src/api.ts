@@ -23,3 +23,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
   return body as T
 }
+
+/** URL of a message's media file, its thumbnail, or (retry) the one that may ask the sender's phone. */
+export function mediaUrl(chat: string, id: string, kind: 'file' | 'thumb' | 'retry' = 'file'): string {
+  const base = `/api/media/${encodeURIComponent(chat)}/${encodeURIComponent(id)}`
+  return kind === 'thumb' ? `${base}/thumb` : kind === 'retry' ? `${base}?retry=1` : base
+}
