@@ -53,6 +53,7 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     async def lifespan(app: Starlette):  # noqa: ANN202
         async with live.running(poller, hub):
             yield
+        # Under uvicorn the real work is timeout_graceful_shutdown (it waits for streams before lifespan shutdown).
         hub.close()
 
     routes: list[Route | Mount] = [*live.routes(hub, _session_alive, auth.COOKIE), *api.routes(conn, settings)]

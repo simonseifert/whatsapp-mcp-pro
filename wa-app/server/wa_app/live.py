@@ -70,6 +70,7 @@ class Client:
     visible: bool = False
     dropped: bool = False
     session: str | None = None  # hash of the session token it was opened with
+    resume_point: int = 0  # the hello's id: everything after it is still queued for this client
 
 
 _hub: "Hub | None" = None
@@ -125,12 +126,18 @@ class Hub:
                 self._end(client)
 
     def subscribe(self, last_event_id: int | None = None, session: str | None = None) -> Client:
-        client = Client(secrets.token_urlsafe(9), asyncio.Queue(maxsize=self._queue_size), session=session)
+        client = Client(
+            secrets.token_urlsafe(9),
+            asyncio.Queue(maxsize=self._queue_size),
+            session=session,
+            resume_point=self._cursor,
+        )
         if last_event_id is not None:
             gap = last_event_id < self._base or (bool(self._history) and self._history[0].cursor > last_event_id + 1)
             if gap:
                 client.queue.put_nowait(Event("resync", {}, self._cursor))
             else:
+                client.resume_point = last_event_id  # the replay below is queued after the hello
                 for event in self._history:
                     if event.cursor > last_event_id:
                         client.queue.put_nowait(event)
@@ -186,9 +193,9 @@ async def sse_stream(
     client = hub.subscribe(last_event_id, session)
     try:
         yield f"retry: {RETRY_MS}\n\n"
-        # The hello carries the current cursor as its id, so a client that drops before any event still resumes
-        # from here and gets what it missed.
-        yield f"id: {hub.cursor}\nevent: hello\ndata: {json.dumps({'client': client.id})}\n\n"
+        # The hello's id is the resume point captured in subscribe(), before any replay or publish was queued: a drop
+        # right after it resumes from there and loses nothing that was still queued.
+        yield f"id: {client.resume_point}\nevent: hello\ndata: {json.dumps({'client': client.id})}\n\n"
         checked = time.monotonic()
         while not client.dropped:
             try:
@@ -278,10 +285,12 @@ class Poller:
     # Reads of the bridge's tables. Each returns rows and tolerates a store that lacks the table or column.
 
     def _has(self, conn: sqlite3.Connection, table: str, column: str | None = None) -> bool:
-        """Table/column existence, looked up once per baseline (the schema does not change under a running app)."""
+        """Table/column existence, looked up once per baseline when present (the schema does not change under a running app)."""
         cols = self._schema.get(table)
-        if cols is None:
-            cols = self._schema[table] = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not cols:  # an absent table is looked up again: the bridge may create it later
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if cols:
+                self._schema[table] = cols
         return bool(cols) and (column is None or column in cols)
 
     def _deleted(self, conn: sqlite3.Connection, since: float) -> list[tuple]:

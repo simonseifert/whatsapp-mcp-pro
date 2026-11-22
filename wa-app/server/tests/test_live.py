@@ -366,3 +366,37 @@ def test_schema_is_looked_up_once_per_baseline(settings: Settings, monkeypatch: 
     p.poll_once()
     monkeypatch.setattr(store, "open_ro", real_open)
     assert not [q for q in seen if "table_info" in q]
+
+
+def test_hello_id_is_the_resume_point_not_the_latest_cursor() -> None:
+    async def run() -> str:
+        hub = live.Hub()
+        events = [hub.publish("chat", {"n": n}) for n in range(5)]
+        stream = live.sse_stream(hub, events[0].cursor)  # resuming: events 1-4 are queued behind the hello
+        await anext(stream)
+        hello = await anext(stream)
+        assert hello.startswith(f"id: {events[0].cursor}\n")
+        assert hello.split("\n")[0] != f"id: {hub.cursor}"
+        replay = await anext(stream)
+        await stream.aclose()
+        return replay
+
+    assert asyncio.run(run()).startswith("id: ")
+
+
+def test_absent_table_is_looked_up_again(settings: Settings) -> None:
+    p = live.Poller(settings)
+    with bridge(settings) as w:
+        w.execute("DROP TABLE message_edits")
+    p.poll_once()
+    with bridge(settings) as w:
+        w.execute(
+            "CREATE TABLE message_edits (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, chat_jid TEXT,"
+            " edit_id TEXT, new_content TEXT, edited_at TEXT, status TEXT DEFAULT 'applied')"
+        )
+        w.execute(
+            "INSERT INTO message_edits (message_id, chat_jid, edit_id, new_content, edited_at)"
+            " VALUES ('E02', ?, 'z', 'x', ?)",
+            (fx.EKIPA, now()),
+        )
+    assert [e.name for e in p.poll_once()] == ["message_changed", "chat"]
