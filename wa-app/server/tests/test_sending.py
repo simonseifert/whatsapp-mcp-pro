@@ -10,7 +10,7 @@ from tests import conftest as fx
 from wa_app import appdb, mcp_lib, sending
 from wa_app.config import Settings
 
-KEY = "2f6f0c1e-8a53-4d0e-9a53-1b1c9a3a0001"
+CLIENT_ID = "2f6f0c1e-8a53-4d0e-9a53-1b1c9a3a0001"
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def first_incoming(client: TestClient, jid: str) -> str:
 
 
 def post(client: TestClient, jid: str, **body: object):  # noqa: ANN201
-    body.setdefault("client_key", KEY)
+    body.setdefault("client_key", CLIENT_ID)
     return client.post(f"/api/chats/{jid}/send", json=body)
 
 
@@ -48,20 +48,20 @@ def test_send_passes_client_key_as_idempotency_key(logged_in: TestClient, bridge
     response = post(logged_in, fx.ANA, text="Vidimo se")
     assert response.status_code == 200
     assert response.json() == {"ok": True, "message_id": "NEWID1"}
-    assert calls == [{"kind": "send", "to": fx.ANA, "text": "Vidimo se", "quoted": None, "key": KEY}]
+    assert calls == [{"kind": "send", "to": fx.ANA, "text": "Vidimo se", "quoted": None, "key": CLIENT_ID}]
 
 
 def test_retry_reuses_key(logged_in: TestClient, bridge) -> None:
     calls, answer = bridge
     answer.clear()
-    answer.update({"success": False, "error": sending_timeout(), "retryable": True, "idempotency_key": KEY})
+    answer.update({"success": False, "error": sending_timeout(), "retryable": True, "idempotency_key": CLIENT_ID})
     first = post(logged_in, fx.ANA, text="Hej")
     assert first.json() == {"ok": False, "error": "Not sent: bridge didn't answer", "retryable": True}
     answer.clear()
     answer.update({"success": True, "message_id": "NEWID2", "deduplicated": True})
     second = post(logged_in, fx.ANA, text="Hej")
     assert second.json() == {"ok": True, "message_id": "NEWID2"}
-    assert [c["key"] for c in calls] == [KEY, KEY]
+    assert [c["key"] for c in calls] == [CLIENT_ID, CLIENT_ID]
 
 
 def sending_timeout() -> str:
@@ -88,7 +88,7 @@ def sending_timeout() -> str:
             False,
         ),
         (
-            {"error": sending_timeout(), "retryable": True, "idempotency_key": KEY},
+            {"error": sending_timeout(), "retryable": True, "idempotency_key": CLIENT_ID},
             "Not sent: bridge didn't answer",
             True,
         ),
@@ -184,7 +184,7 @@ def test_reply_to_import_id_rejected(logged_in: TestClient, settings: Settings, 
     assert response.status_code == 422
     assert bridge[0] == []
     react = logged_in.post(
-        f"/api/chats/{fx.ANA}/react", json={"message_id": "import-abc123", "emoji": "👍", "client_key": KEY}
+        f"/api/chats/{fx.ANA}/react", json={"message_id": "import-abc123", "emoji": "👍", "client_key": CLIENT_ID}
     )
     assert react.status_code == 422 and bridge[0] == []
 
@@ -199,7 +199,9 @@ def test_requires_login_and_origin(client: TestClient, logged_in: TestClient, br
     anon = TestClient(client.app, base_url="https://testserver")
     assert post(anon, fx.ANA, text="Hej").status_code in (401, 403)
     cross = logged_in.post(
-        f"/api/chats/{fx.ANA}/send", json={"text": "Hej", "client_key": KEY}, headers={"Origin": "https://evil.example"}
+        f"/api/chats/{fx.ANA}/send",
+        json={"text": "Hej", "client_key": CLIENT_ID},
+        headers={"Origin": "https://evil.example"},
     )
     assert cross.status_code == 403
     assert bridge[0] == []
@@ -208,15 +210,19 @@ def test_requires_login_and_origin(client: TestClient, logged_in: TestClient, br
 def test_react_passes_key_and_chat(logged_in: TestClient, bridge) -> None:
     calls, _ = bridge
     mid = first_incoming(logged_in, fx.ANA)
-    response = logged_in.post(f"/api/chats/{fx.ANA}/react", json={"message_id": mid, "emoji": "👍", "client_key": KEY})
+    response = logged_in.post(
+        f"/api/chats/{fx.ANA}/react", json={"message_id": mid, "emoji": "👍", "client_key": CLIENT_ID}
+    )
     assert response.status_code == 200 and response.json() == {"ok": True}
-    assert calls == [{"kind": "react", "chat": fx.ANA, "id": mid, "emoji": "👍", "key": KEY}]
+    assert calls == [{"kind": "react", "chat": fx.ANA, "id": mid, "emoji": "👍", "key": CLIENT_ID}]
 
 
 def test_react_remove_with_empty_emoji(logged_in: TestClient, bridge) -> None:
     calls, _ = bridge
     mid = first_incoming(logged_in, fx.ANA)
-    response = logged_in.post(f"/api/chats/{fx.ANA}/react", json={"message_id": mid, "emoji": "", "client_key": KEY})
+    response = logged_in.post(
+        f"/api/chats/{fx.ANA}/react", json={"message_id": mid, "emoji": "", "client_key": CLIENT_ID}
+    )
     assert response.status_code == 200
     assert calls[0]["emoji"] == ""
 
@@ -225,10 +231,10 @@ def test_react_validation_and_failure(logged_in: TestClient, bridge) -> None:
     calls, answer = bridge
     mid = first_incoming(logged_in, fx.ANA)
     url = f"/api/chats/{fx.ANA}/react"
-    assert logged_in.post(url, json={"message_id": mid, "emoji": "x" * 40, "client_key": KEY}).status_code == 422
-    assert logged_in.post(url, json={"message_id": mid, "emoji": None, "client_key": KEY}).status_code == 422
+    assert logged_in.post(url, json={"message_id": mid, "emoji": "x" * 40, "client_key": CLIENT_ID}).status_code == 422
+    assert logged_in.post(url, json={"message_id": mid, "emoji": None, "client_key": CLIENT_ID}).status_code == 422
     assert logged_in.post(url, json={"message_id": mid, "emoji": "👍", "client_key": "no"}).status_code == 422
-    assert logged_in.post(url, json={"message_id": "NOPE", "emoji": "👍", "client_key": KEY}).status_code == 404
+    assert logged_in.post(url, json={"message_id": "NOPE", "emoji": "👍", "client_key": CLIENT_ID}).status_code == 404
     assert calls == []
     answer.clear()
     answer.update({"success": False, "http_status": 429, "code": "rate_limited", "retryable": True})
@@ -253,9 +259,9 @@ def test_recipient_is_remembered_per_key_and_pruned(logged_in: TestClient, setti
     calls, _ = bridge
     assert post(logged_in, fx.ANA, text="Hej").status_code == 200
     app = appdb.connect(settings)
-    assert app.execute("SELECT recipient FROM send_keys WHERE client_key = ?", (KEY,)).fetchone() == (fx.ANA,)
+    assert app.execute("SELECT recipient FROM send_keys WHERE client_key = ?", (CLIENT_ID,)).fetchone() == (fx.ANA,)
     # The same key from another route form of the chat goes to the recipient it first used.
-    app.execute("UPDATE send_keys SET recipient = ? WHERE client_key = ?", ("385910000555@s.whatsapp.net", KEY))
+    app.execute("UPDATE send_keys SET recipient = ? WHERE client_key = ?", ("385910000555@s.whatsapp.net", CLIENT_ID))
     assert post(logged_in, fx.ANA, text="Hej").status_code == 200
     assert calls[1]["to"] == "385910000555@s.whatsapp.net"
     # Rows older than 24 h are dropped on the next send.
