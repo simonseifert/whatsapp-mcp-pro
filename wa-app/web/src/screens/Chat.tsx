@@ -34,6 +34,12 @@ export function Chat({ jid }: { jid: string }) {
     prevFirstId.current = firstId
   }, [firstId, lastId])
 
+  // A load that ended without new messages on top (a failed request, or a page of known messages) leaves no
+  // reason to keep the anchor; a stale one would block every later load.
+  useLayoutEffect(() => {
+    if (!loadingOlder && anchor.current && firstId === prevFirstId.current) anchor.current = null
+  }, [loadingOlder, firstId])
+
   async function onScroll() {
     const el = scroller.current
     if (!el || !hasMore || loadingOlder || anchor.current || el.scrollTop > LOAD_OLDER_AT_PX) return
