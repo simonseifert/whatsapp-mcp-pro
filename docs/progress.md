@@ -12,7 +12,8 @@ Plan: docs/superpowers/plans/2026-11-22-wa-app-m1-chat-app.md. Branch feat/m1-ch
 | 5 Live updates | done, reviewed (3 fix rounds: reconnect gaps, streams end on logout; 5 ms per check on the live store) |
 | 6 Read state | done, reviewed (1 fix round: phone "marked unread" dot clears after reading in the app; receipts capped at 200) |
 | 7 Sending | done, reviewed by Opus (1 fix round: slow sends never look failed, retries keep their key and recipient) |
-| 8 Desktop, settings, PWA | next |
-| 9-10 | to do |
+| 8 Desktop, settings, PWA | done, reviewed (1 fix round: iPhone status bar in light mode, update notice) |
+| 9 Bridge contact cards | next |
+| 10 Retire wa-client, docs | to do |
 
 Running now: `systemctl --user status wa-app` (runs from the worktree until merge; repoint ExecStart to the main checkout after the M1 merge).
