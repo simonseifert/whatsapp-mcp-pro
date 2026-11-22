@@ -285,7 +285,8 @@ def test_thumbnail_refuses_oversized_images(settings, monkeypatch):
     big = _jpeg(settings.store_path / "huge.jpg", (400, 400))  # 160k px, far over the cap
     assert media.thumbnail(settings, big) is None
     barely = _jpeg(settings.store_path / "warn.jpg", (110, 100))  # between 1x and 2x: warning becomes an error
-    assert media.thumbnail(settings, barely) is None
+    with pytest.warns(Image.DecompressionBombWarning):
+        assert media.thumbnail(settings, barely) is None
 
 
 def test_ffmpeg_is_locked_down(settings, monkeypatch):

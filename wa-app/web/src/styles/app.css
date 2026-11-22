@@ -1650,3 +1650,8 @@ input {
   padding-top: env(safe-area-inset-top);
   background: var(--accent-soft);
 }
+
+/* The banner already clears the status bar, so the list below it does not pad by the inset a second time. */
+.pane-list:has(.update-row.banner) .pane-scroll {
+  padding-top: 0;
+}

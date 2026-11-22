@@ -17,7 +17,8 @@ body:
         - Bridge (Go)
         - MCP server (tools, recall, transcription)
         - Identity directory
-        - wa-assistant / wa-dispatch / wa-client
+        - wa-app (chat app)
+        - wa-assistant / wa-dispatch
         - Setup, deployment or docs
         - Not sure
     validations:

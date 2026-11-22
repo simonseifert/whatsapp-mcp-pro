@@ -13,7 +13,7 @@ labels: bug
 Brief description of the bug.
 
 ## Component
-Bridge / MCP server / identity directory / wa-assistant / wa-dispatch / wa-client / web UI / setup
+Bridge / MCP server / identity directory / wa-assistant / wa-dispatch / wa-app / web UI / setup
 
 ## Steps to Reproduce
 1.

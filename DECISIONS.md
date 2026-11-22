@@ -272,3 +272,16 @@ Task 2 of the M1 plan. Choices the plan left open, all in `wa-app/server/wa_app/
 - Voice-note length is not stored. It is read from the downloaded Ogg/Opus file when
   there is one, else the preview is "Voice message" with no length. Receipts are not
   stored either, so `ticks` is always null for now.
+
+## D21 — 2026-11-22 — M1 build rulings
+Choices made while building wa-app M1 (the number D20 above covers only the chats list):
+- Favourites are the pinned chats in M1.
+- Announcement kind precedence: announce-only or a community's default subgroup counts as
+  announcement before the community-member rule applies.
+- No TanStack Query. The front end uses plain fetch hooks.
+- `contact_cards` is a list, since one message can carry several cards.
+- Polls are read from the store, and poll-vote rows are hidden from the chat.
+- The members line is built from who has written in the chat, because no participant list is stored.
+- Ticks are not shown, because there is no receipt data.
+- The chat pane does not follow the finger yet (the DESIGN.md Motion row). Deferred.
+- Receipts are capped at the newest 200 per read.

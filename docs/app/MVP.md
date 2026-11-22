@@ -18,21 +18,23 @@ and counts as done only after the maintainer has used it on his real data and ph
   fill on the live store.
 
 ## M1: the chat app, read and reply
-- **Bridge:** contact cards keep their number and details as searchable text, not
+
+Built 2026-11-22 (done = code landed, tick marks below). The "Done when" week of real use is still open.
+- [x] **Bridge:** contact cards keep their number and details as searchable text, not
   only `[Contact: name]`, so the app can show them as a card (idea from
   verygoodplugins/whatsapp-mcp; Simon, 2026-11-22).
-- **Server:** login, a read-only store reader, live updates over SSE, read state and
+- [x] **Server:** login, a read-only store reader, live updates over SSE, read state and
   unread counts, the avatar cache, media and thumbnails.
-- **Screens:**
+- [x] **Screens:**
   - **Chats list:** search, filter chips (All, Unread, Favourites, Groups), pinned
     first, muted and archived.
   - **Chat view:** text, media, replies, forwarded, edited and deleted messages,
     reactions, polls.
   - **Voice notes:** play, plus "Show text" with on-demand transcription.
-- **Sending:** text, replies, reactions, read receipts. Every send goes through the
+- [x] **Sending:** text, replies, reactions, read receipts. Every send goes through the
   bridge's safety checks.
-- PWA install, dark and light themes, mobile-first. A desktop two-pane layout as well.
-- **Done when:** the maintainer reads and answers his day on his phone through it for
+- [x] PWA install, dark and light themes, mobile-first. A desktop two-pane layout as well.
+- [ ] **Done when:** the maintainer reads and answers his day on his phone through it for
   a week.
 
 ## M2: AI drafts

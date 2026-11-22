@@ -2,7 +2,7 @@
 
 A self-hosted, login-protected chat PWA that rides the whatsapp-mcp-pro bridge. Visual contract: [DESIGN.md](DESIGN.md).
 
-Status: first slice (server, login, empty shell). The chat list, chat view, media, live updates and sending arrive in later tasks.
+Status: M1, read and reply (chat list, chat view, media, live updates, read state, sending). AI drafts come in M2. Install and screenshots: see the repo [README](../README.md#app).
 
 ## Layout
 

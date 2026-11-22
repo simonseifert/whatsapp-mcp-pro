@@ -11,7 +11,7 @@ worth closing are listed below in value order.
 - [x] Rebase pro layer onto live upstream; CI green (tests fixed upstream-side too)
 - [x] Shared streamable-HTTP server for N concurrent Claude sessions
 - [x] Scoped bearer tokens (full / read-only by tool annotation)
-- [x] wa-client: chat web UI riding the bridge session (zero device slots) — **retired 2026-10-21** (DECISIONS D2): it ignores `WA_STORE_PATH`, had no login, and showed stale data for weeks unnoticed
+- [x] wa-client: chat web UI riding the bridge session (zero device slots) — **retired 2026-10-21** (DECISIONS D2), deleted in wa-app M1, which replaces it: it ignores `WA_STORE_PATH`, had no login, and showed stale data for weeks unnoticed
 - [x] Real-time push: bridge webhook → SSE → browser
 - [x] Scheduled sends (queue + delivery loop + composer UI)
 - [x] Send JID allowlist in the bridge (upstream issue #47)
@@ -35,8 +35,8 @@ worth closing are listed below in value order.
 - [x] **Media-retry path for expired media** (shipped, opt-in) — `internal/whatsapp/download.go` does `SendMediaRetryReceipt` → `events.MediaRetry` → `DecryptMediaRetryNotification` and refreshes `direct_path`. Opt-in via `MEDIA_RETRY_ENABLED=true`, because each retry shows "Finished syncing" on the phone. Enabled on the maintainer's install since 2026-10-21 (DECISIONS D3); it only recovers media the phone still has. The persistent retry queue shipped in v0.5.0-pro.
 - [~] **LID/PN JID normalization** — chat merge done (`MERGE_LID_CHATS`, default on; every MCP entry point follows `chats.merged_into` since 2026-10-22); `sender` column still open. Chat side: `NormalizeChatJID` + `MergeLIDChats` leave 0 split `@lid` chats (checked 2026-10-21). Still open: (1) the `sender` column mixes bare user parts (live path, `handlers.go`), full `@lid` and full `@s.whatsapp.net` JIDs (history path), and bare LID numbers can't be told from phone numbers; store `Sender.ToNonAD()`, prefer a phone `SenderAlt`, backfill via `identities.lid`. (2) webhooks carry the raw `msg.Info.Chat`, not the normalized `chat_jid` the row is stored under, which is why wa-assistant watches both. (3) history sync doesn't call `NormalizeChatJID` on `conversation.ID`.
 - [x] **Presence policy decision** (2026-07-19; superseded 2026-08-04; current default `WA_PRESENCE_MODE=human` + `PRESENCE_PING_ENABLED=false`) — upstream's presence manager now replaces our static gate: offline by default, online only transiently around real outgoing sends, `PresenceModeAlwaysOnline` to opt back in. `PRESENCE_PING_ENABLED` still governs the periodic ping. Original decision was **off by default**. Both the on-connect `SetPresence("available")` and the periodic ping are now gated behind `PRESENCE_PING_ENABLED` (default `false`), so the paired phone keeps its push notifications and the bridge stops painting an always-online fingerprint. Opt back in with `PRESENCE_PING_ENABLED=true` if you want to appear online to contacts. Future option (not done): mirror real activity mautrix-style.
-- [x] **Reply/quote in send_message** (upstream #57, merged in 2026-08-04) — `send_message` now takes `quoted_message_id` and `mentioned_jids`. Remaining: wa-client swipe-to-reply UI.
-- [ ] ~~**Reactions in wa-client**~~ — dropped with wa-client's retirement; the bridge endpoint and `send_reaction` tool exist
+- [x] **Reply/quote in send_message** (upstream #57, merged in 2026-08-04) — `send_message` now takes `quoted_message_id` and `mentioned_jids`. The wa-app chat UI has reply from M1.
+- [ ] ~~**Reactions in wa-client**~~ — dropped with wa-client's retirement; wa-app M1 sends reactions through the bridge endpoint
 - [x] **Voice-note auto-transcription pipeline** (shipped 2026-07-06) — background loop transcribes incoming voice notes into `content`; recall indexes them; backend-pluggable (mlx / faster-whisper / Groq)
 - [ ] **Scheduled sends as MCP tools** (`schedule_message`, `list_scheduled`, `cancel_scheduled`) so agents can schedule, not just the web UI
 - [ ] **Upstream PRs**: tests fix (done in-fork), JID allowlist, scheduled sends — keep the fork mergeable and the upstream relationship warm
@@ -47,7 +47,7 @@ worth closing are listed below in value order.
 - [x] **go-security green** (shipped 2026-07-06) — CI pinned an exact patch (1.25.10) that missed a stdlib security fix; floated to `1.25` so setup-go always grabs the latest patch. Same bug exists upstream (FelixIsaac) — worth a PR.
 - [ ] **Observability** (upstream #10/#11): Prometheus `/metrics` (messages/hr, webhook deliveries, send latency, recall index lag) + structured JSON logs
 - [~] **MCP resources for live state** — `whatsapp://status`, `whatsapp://sync-status` and `whatsapp://directory` exist; recall index status is still a tool (`recall_index_status`)
-- [ ] ~~**wa-client PWA**~~ — dropped with wa-client's retirement
+- [ ] ~~**wa-client PWA**~~ — superseded by wa-app (a PWA, M1)
 - [ ] **Per-agent token registry** — N named tokens with per-toolset scopes (WAHA 2026.4-style), not just full/readonly
 - [x] **Contact enrichment** — shipped as the identity directory: the `identities` table joins phone contacts and LID mappings, exposed via `lookup_identity`, `search_directory` and `whatsapp://directory`
 

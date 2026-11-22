@@ -8,6 +8,10 @@ All notable changes to this fork are recorded here. The format follows
 
 ### Added
 
+- `wa-app/` (working name): a login-protected chat PWA for your own number that rides the bridge. M1 reads every
+  chat (media, voice notes, replies, reactions, polls, live updates) and sends text, replies, reactions and read
+  receipts through the bridge's safety checks. Listens on `127.0.0.1:8085`; see the README's App section.
+
 - Shared contact cards keep their phone numbers: the stored content is `[Contact: <name>]` plus one
   `\n📞 <number>` line per vCard TEL (max 20), contact arrays are separated by a blank line, and the name falls
   back to the vCard FN. Control characters are stripped. Contact arrays keep at most 10 cards.
@@ -30,6 +34,10 @@ All notable changes to this fork are recorded here. The format follows
   (default 14, `0` to disable).
 - `MEDIA_RETRY_QUIET_HOURS` (default `23-8`, local time, `off` to disable): the
   background queue sends nothing in those hours.
+
+### Removed
+
+- `wa-client/`, retired 2026-10-21 and replaced by wa-app.
 
 ### Changed
 
