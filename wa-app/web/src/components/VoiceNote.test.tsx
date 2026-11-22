@@ -51,4 +51,18 @@ describe('VoiceNote', () => {
     expect(await screen.findByText('Ok.')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
   })
+
+  it('has a keyboard-operable seek slider', () => {
+    render(<VoiceNote chat="a@s.whatsapp.net" id="M1" durationS={37} />)
+    const slider = screen.getByRole('slider', { name: 'Seek voice message' })
+    expect(slider.getAttribute('aria-valuemin')).toBe('0')
+    expect(slider.getAttribute('aria-valuemax')).toBe('37')
+    expect(slider.getAttribute('aria-valuenow')).toBe('0')
+    const audio = document.querySelector('audio') as HTMLAudioElement
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    expect(audio.currentTime).toBe(5)
+    expect(slider.getAttribute('aria-valuenow')).toBe('5')
+    fireEvent.keyDown(slider, { key: 'End' })
+    expect(slider.getAttribute('aria-valuenow')).toBe('37')
+  })
 })

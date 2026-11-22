@@ -86,3 +86,37 @@ def test_transcript_only_for_voice_notes(logged_in: TestClient, monkeypatch):
 def test_transcript_post_checks_origin(logged_in: TestClient, voice_id):
     response = logged_in.post(f"/api/transcripts/{FAMILY}/{voice_id}", headers={"Origin": "https://evil.example"})
     assert response.status_code == 403
+
+
+def test_transcriptions_run_one_at_a_time(settings, monkeypatch):
+    import threading
+    import time
+
+    from wa_app import appdb, transcripts
+
+    conn = appdb.connect(settings)
+    audio = settings.store_path / FAMILY / "audio_20261122_204800.ogg"
+    monkeypatch.setattr(mcp_lib, "download_media", lambda *a, **k: str(audio))
+    running = peak = 0
+    lock = threading.Lock()
+
+    def slow(path, language=None):
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+        return {"success": True, "text": "x", "language": "hr"}
+
+    monkeypatch.setattr(mcp_lib, "transcribe_file", slow)
+    threads = [
+        threading.Thread(target=transcripts.get_or_make, args=(conn, settings, f"V{i}", FAMILY)) for i in range(4)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak == 1
+    assert conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0] == 4

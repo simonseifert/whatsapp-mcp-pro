@@ -6,6 +6,7 @@ phone to re-upload media (that pings the phone and spends an hourly budget). Onl
 """
 
 import hashlib
+import io
 import logging
 import mimetypes
 import os
@@ -14,7 +15,9 @@ import subprocess
 import tempfile
 import threading
 import time
+import warnings
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageOps
 
@@ -23,16 +26,24 @@ from .config import Settings
 
 logger = logging.getLogger("wa_app.media")
 
+# Untrusted files: no format sniffing beyond these, and a pixel cap whose warning is an error.
+IMAGE_FORMATS = ("JPEG", "PNG", "GIF", "WEBP")
+Image.MAX_IMAGE_PIXELS = 40_000_000
+warnings.simplefilter("error", Image.DecompressionBombWarning)
+
 THUMB_PX = 480
 AVATAR_PX = 256
 AVATAR_TTL = 24 * 3600
 AVATAR_NEGATIVE_TTL = 6 * 3600
 AVATAR_ERROR_TTL = 5 * 60
 MAX_AVATAR_BYTES = 2_000_000
-FFMPEG_TIMEOUT = 20
+FFMPEG_TIMEOUT = 15
+THUMB_SLOTS = 3
+AVATAR_HOSTS = (".whatsapp.net", ".fbcdn.net")
 
 _JID = re.compile(r"^[0-9A-Za-z._:\-]{1,64}@[a-z.]{1,32}$")
 _avatar_slots = threading.BoundedSemaphore(4)
+_thumb_slots = threading.BoundedSemaphore(THUMB_SLOTS)
 
 # Types the browser may show inline. Everything else (documents, SVG, HTML) is a download, never rendered.
 _INLINE_IMAGES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -93,8 +104,9 @@ def _write_atomic(target: Path, data: bytes) -> None:
 
 
 def _encode(img: Image.Image, max_px: int) -> tuple[bytes, str]:
-    import io
-
+    # Explicit cap too: the warning-to-error filter above can be reset by whoever configures warnings.
+    if img.width * img.height > (Image.MAX_IMAGE_PIXELS or 0):
+        raise ValueError("image too large")
     img = ImageOps.exif_transpose(img) or img
     img.thumbnail((max_px, max_px))
     buffer = io.BytesIO()
@@ -108,7 +120,25 @@ def _encode(img: Image.Image, max_px: int) -> tuple[bytes, str]:
 def _video_frame(path: Path) -> bytes | None:
     try:
         run = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"],
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file",
+                "-format_whitelist",
+                "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm",
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-f",
+                "image2pipe",
+                "-c:v",
+                "png",
+                "-",
+            ],
             capture_output=True,
             timeout=FFMPEG_TIMEOUT,
             check=False,
@@ -130,26 +160,33 @@ def thumbnail(settings: Settings, path: Path, max_px: int = THUMB_PX) -> Path | 
         if (folder / f"{key}{ext}").is_file():
             return folder / f"{key}{ext}"
     ctype = content_type(path)
+    with _thumb_slots:
+        made = _generate(path, ctype, max_px)
+    if made is None:
+        return None
+    data, ext = made
+    target = folder / f"{key}{ext}"
+    _write_atomic(target, data)
+    return target
+
+
+def _generate(path: Path, ctype: str, max_px: int) -> tuple[bytes, str] | None:
     try:
         if ctype.startswith("video/"):
             frame = _video_frame(path)
             if frame is None:
                 return None
-            import io
-
-            with Image.open(io.BytesIO(frame)) as img:
+            with Image.open(io.BytesIO(frame), formats=["PNG"]) as img:
                 data, ext = _encode(img, max_px)
         elif ctype.startswith("image/"):
-            with Image.open(path) as img:
+            with Image.open(path, formats=list(IMAGE_FORMATS)) as img:
                 data, ext = _encode(img, max_px)
         else:
             return None
     except Exception:  # noqa: BLE001 - Pillow raises many types on hostile or truncated files
         logger.info("no thumbnail for %s", path.name)
         return None
-    target = folder / f"{key}{ext}"
-    _write_atomic(target, data)
-    return target
+    return data, ext
 
 
 def _fetch(url: str) -> bytes | None:
@@ -178,6 +215,15 @@ def _touch(path: Path) -> None:
     path.touch()
 
 
+def _avatar_url_ok(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    return parts.scheme == "https" and any(host.endswith(suffix) for suffix in AVATAR_HOSTS)
+
+
 def avatar(settings: Settings, jid: str) -> Path | None:
     """Profile picture for a chat or person, cached 24 h; a confirmed "no picture" is remembered for 6 h."""
     if not _JID.match(jid):
@@ -202,16 +248,14 @@ def avatar(settings: Settings, jid: str) -> Path | None:
                 err if (isinstance(info, dict) and info.get("success") is False) or not isinstance(info, dict) else none
             )
             return None
-        if not str(url).startswith("https://"):
+        if not _avatar_url_ok(str(url)):
             _touch(none)
             return None
         try:
             raw = _fetch(str(url))
             if raw is None:
                 raise ValueError("no data")
-            import io
-
-            with Image.open(io.BytesIO(raw)) as img:
+            with Image.open(io.BytesIO(raw), formats=["JPEG", "PNG", "WEBP"]) as img:
                 data, _ = _encode(img.convert("RGB"), AVATAR_PX)
         except Exception:  # noqa: BLE001
             _touch(err)

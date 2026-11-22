@@ -82,7 +82,7 @@ export function Media({ chat, id, media }: Props) {
     return <Missing chat={chat} id={id} media={media} onFound={() => (setBroken(false), setFound(true))} />
   }
   const voice = media.type === 'audio' || media.type === 'ptt'
-  if (voice) return <VoiceNote chat={chat} id={id} durationS={media.duration_s} />
+  if (voice) return <VoiceNote chat={chat} id={id} durationS={media.duration_s} onBroken={() => setBroken(true)} />
   if (media.type === 'image' || media.type === 'sticker') {
     const label = media.type === 'sticker' ? 'sticker' : 'photo'
     return (

@@ -18,10 +18,10 @@ function barHeights(seed: string): number[] {
 
 type Text = { state: 'idle' } | { state: 'loading' } | { state: 'shown'; text: string } | { state: 'hidden'; text: string }
 
-type Props = { chat: string; id: string; durationS: number | null }
+type Props = { chat: string; id: string; durationS: number | null; onBroken?: () => void }
 
 /** Voice note: play/pause, a waveform drawn from the duration, speed 1x/1.5x/2x and "Show text". */
-export function VoiceNote({ chat, id, durationS }: Props) {
+export function VoiceNote({ chat, id, durationS, onBroken }: Props) {
   const audio = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
@@ -45,11 +45,25 @@ export function VoiceNote({ chat, id, durationS }: Props) {
     if (audio.current) audio.current.playbackRate = next
   }
 
-  function seek(event: React.MouseEvent<HTMLDivElement>) {
+  function seekTo(seconds: number) {
     const el = audio.current
     if (!el || !total) return
+    el.currentTime = Math.max(0, Math.min(total, seconds))
+    setCurrent(el.currentTime)
+  }
+
+  function seek(event: React.MouseEvent<HTMLDivElement>) {
     const box = event.currentTarget.getBoundingClientRect()
-    el.currentTime = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * total
+    if (total) seekTo(((event.clientX - box.left) / box.width) * total)
+  }
+
+  function seekKey(event: React.KeyboardEvent<HTMLDivElement>) {
+    const step: Record<string, number> = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5 }
+    if (event.key === 'Home') seekTo(0)
+    else if (event.key === 'End') seekTo(total ?? 0)
+    else if (event.key in step) seekTo(current + step[event.key])
+    else return
+    event.preventDefault()
   }
 
   async function toggleText() {
@@ -81,7 +95,18 @@ export function VoiceNote({ chat, id, durationS }: Props) {
         >
           <Icon name={playing ? 'pause' : 'play'} size={22} />
         </button>
-        <div className="wave" onClick={seek} aria-hidden="true">
+        <div
+          className="wave"
+          role="slider"
+          tabIndex={0}
+          aria-label="Seek voice message"
+          aria-valuemin={0}
+          aria-valuemax={total ?? 0}
+          aria-valuenow={Math.floor(current)}
+          aria-valuetext={`${formatDuration(Math.floor(current))} of ${formatDuration(total ?? 0)}`}
+          onClick={seek}
+          onKeyDown={seekKey}
+        >
           {bars.map((h, i) => (
             <span key={i} className={i / BARS < progress ? 'on' : ''} style={{ height: `${Math.round(h * 100)}%` }} />
           ))}
@@ -94,6 +119,7 @@ export function VoiceNote({ chat, id, durationS }: Props) {
           ref={audio}
           src={mediaUrl(chat, id)}
           preload="none"
+          onError={onBroken}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => {

@@ -1,8 +1,12 @@
 """app.db: the app's own state. Never touches the bridge's messages.db."""
 
 import sqlite3
+import threading
 
 from .config import Settings
+
+# app.db is one shared connection used from the event loop and from worker threads: take this around its use there.
+db_lock = threading.Lock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

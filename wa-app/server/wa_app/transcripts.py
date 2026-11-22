@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Any
 
-from . import mcp_lib
+from . import appdb, mcp_lib
 from .config import Settings
 from .media import file_for
 
@@ -16,7 +16,8 @@ NO_BACKEND = "No transcription backend"
 NO_AUDIO = "Audio not available"
 FAILED = "Transcription failed"
 
-_db_lock = threading.Lock()
+_db_lock = appdb.db_lock
+_transcribe_slot = threading.Semaphore(1)  # whisper is heavy: one transcription at a time
 _key_locks: dict[tuple[str, str], threading.Lock] = {}
 
 
@@ -39,7 +40,8 @@ def get_or_make(conn: sqlite3.Connection, settings: Settings, message_id: str, c
         path = file_for(settings, message_id, chat_jid)
         if path is None:
             return {"error": NO_AUDIO}
-        result = mcp_lib.transcribe_file(str(path), None)
+        with _transcribe_slot:
+            result = mcp_lib.transcribe_file(str(path), None)
         if not result.get("success"):
             logger.warning("transcription failed (%s): %s", result.get("backend"), result.get("message"))
             return {"error": NO_BACKEND if result.get("backend") == "none" else FAILED}

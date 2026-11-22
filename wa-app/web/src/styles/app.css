@@ -1035,7 +1035,7 @@ input {
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 32px;
+  height: var(--spacing-touch);
   min-width: 0;
   cursor: pointer;
 }

@@ -183,7 +183,7 @@ def test_thumbnail_of_a_broken_image_is_none(logged_in: TestClient, settings, do
 def test_avatar_fetched_once_and_cached(settings, monkeypatch, tmp_path):
     picture = _jpeg(tmp_path / "pp.jpg", (200, 200))
     asked: list[str] = []
-    monkeypatch.setattr(mcp_lib, "get_profile_picture", _bridge(asked, {"url": "https://x.test/pp.jpg"}))
+    monkeypatch.setattr(mcp_lib, "get_profile_picture", _bridge(asked, {"url": "https://pps.whatsapp.net/pp.jpg"}))
     monkeypatch.setattr(media, "_fetch", lambda url: picture.read_bytes())
     path = media.avatar(settings, NIKOLA)
     assert path is not None and path.is_relative_to(settings.data_dir / "avatars")
@@ -202,7 +202,7 @@ def test_avatar_negative_cache(settings, monkeypatch):
 def test_avatar_cache_expiry(settings, monkeypatch, tmp_path):
     picture = _jpeg(tmp_path / "pp.jpg", (100, 100))
     asked: list[str] = []
-    monkeypatch.setattr(mcp_lib, "get_profile_picture", _bridge(asked, {"url": "https://x.test/p.jpg"}))
+    monkeypatch.setattr(mcp_lib, "get_profile_picture", _bridge(asked, {"url": "https://pps.whatsapp.net/p.jpg"}))
     monkeypatch.setattr(media, "_fetch", lambda url: picture.read_bytes())
     path = media.avatar(settings, NIKOLA)
     assert path is not None
@@ -218,7 +218,9 @@ def test_avatar_cache_expiry(settings, monkeypatch, tmp_path):
     marker = next((settings.data_dir / "avatars").glob("*.none"))
     older = time.time() - media.AVATAR_NEGATIVE_TTL - 10
     os.utime(marker, (older, older))
-    monkeypatch.setattr(mcp_lib, "get_profile_picture", lambda jid, preview=True: {"url": "https://x.test/p.jpg"})
+    monkeypatch.setattr(
+        mcp_lib, "get_profile_picture", lambda jid, preview=True: {"url": "https://pps.whatsapp.net/p.jpg"}
+    )
     assert media.avatar(settings, FAMILY) is not None
 
 
@@ -231,9 +233,113 @@ def test_avatar_rejects_non_https_and_bad_jids(settings, monkeypatch):
 
 def test_avatar_route(logged_in: TestClient, settings, monkeypatch, tmp_path):
     picture = _jpeg(tmp_path / "pp.jpg", (200, 200))
-    monkeypatch.setattr(mcp_lib, "get_profile_picture", lambda jid, preview=True: {"url": "https://x.test/pp.jpg"})
+    monkeypatch.setattr(
+        mcp_lib, "get_profile_picture", lambda jid, preview=True: {"url": "https://pps.whatsapp.net/pp.jpg"}
+    )
     monkeypatch.setattr(media, "_fetch", lambda url: picture.read_bytes())
     ok = logged_in.get(f"/api/avatar/{NIKOLA}")
     assert ok.status_code == 200 and ok.headers["content-type"] == "image/jpeg"
     monkeypatch.setattr(mcp_lib, "get_profile_picture", lambda jid, preview=True: {"has_picture": False})
     assert logged_in.get(f"/api/avatar/{FAMILY}").status_code == 404
+
+
+def test_avatar_host_must_be_a_whatsapp_cdn(settings, monkeypatch):
+    monkeypatch.setattr(media, "_fetch", lambda url: pytest.fail("must not fetch " + url))
+    for url in (
+        "https://10.0.0.1/pp.jpg",
+        "https://localhost/pp.jpg",
+        "https://whatsapp.net.evil.example/pp.jpg",
+        "https://evilwhatsapp.net/pp.jpg",
+        "https://pps.whatsapp.net@evil.example/pp.jpg",
+        "https://evil.example/pps.whatsapp.net",
+    ):
+        monkeypatch.setattr(mcp_lib, "get_profile_picture", _bridge([], {"url": url}))
+        assert media.avatar(settings, NIKOLA) is None
+        for leftover in (settings.data_dir / "avatars").glob("*"):
+            leftover.unlink()
+
+
+def test_avatar_accepts_fbcdn_and_whatsapp_hosts():
+    assert media._avatar_url_ok("https://pps.whatsapp.net/v/t61/x.jpg")
+    assert media._avatar_url_ok("https://scontent.xx.fbcdn.net/x.jpg")
+    assert not media._avatar_url_ok("http://pps.whatsapp.net/x.jpg")
+
+
+def test_thumbnail_refuses_other_formats(logged_in: TestClient, settings, downloads):
+    _, results = downloads
+    eps = settings.store_path / NIKOLA / "evil.jpg"  # named like a jpeg, sniffs as something else
+    eps.parent.mkdir(parents=True, exist_ok=True)
+    eps.write_bytes(b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n")
+    bmp = settings.store_path / NIKOLA / "x.png"
+    Image.new("RGB", (8, 8)).save(bmp, "BMP")
+    results["E1"], results["B1"] = str(eps), str(bmp)
+    assert media.thumbnail(settings, eps) is None
+    assert media.thumbnail(settings, bmp) is None
+    for mid in ("E1", "B1"):
+        response = logged_in.get(f"/api/media/{NIKOLA}/{mid}/thumb")
+        assert response.status_code == 404 and response.json() == {"error": "No preview"}
+
+
+def test_thumbnail_refuses_oversized_images(settings, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10_000)
+    big = _jpeg(settings.store_path / "huge.jpg", (400, 400))  # 160k px, far over the cap
+    assert media.thumbnail(settings, big) is None
+    barely = _jpeg(settings.store_path / "warn.jpg", (110, 100))  # between 1x and 2x: warning becomes an error
+    assert media.thumbnail(settings, barely) is None
+
+
+def test_ffmpeg_is_locked_down(settings, monkeypatch):
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        assert kwargs["timeout"] <= 15
+        raise OSError("no ffmpeg here")
+
+    monkeypatch.setattr(media.subprocess, "run", fake_run)
+    video = settings.store_path / "clip.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"x")
+    assert media.thumbnail(settings, video) is None
+    cmd = seen[0]
+    assert "-nostdin" in cmd
+    assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"
+    assert "mp4" in cmd[cmd.index("-format_whitelist") + 1]
+    assert cmd.index("-protocol_whitelist") < cmd.index("-i") and cmd.index("-format_whitelist") < cmd.index("-i")
+
+
+def test_thumbnail_generation_is_limited_to_three(settings, monkeypatch):
+    import threading
+
+    lock = threading.Lock()
+    running = peak = 0
+
+    def slow(path, ctype, max_px):
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+        return b"x", ".jpg"
+
+    monkeypatch.setattr(media, "_generate", slow)
+    files = [_jpeg(settings.store_path / f"p{i}.jpg", (20, 20)) for i in range(9)]
+    threads = [threading.Thread(target=media.thumbnail, args=(settings, f)) for f in files]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert 1 < peak <= 3
+
+
+def test_retry_refuses_imported_messages_without_recording(logged_in: TestClient, downloads, settings):
+    calls, _ = downloads
+    response = logged_in.get(f"/api/media/{NIKOLA}/import-abc?retry=1")
+    assert response.status_code == 400 and "error" in response.json()
+    assert calls == []
+    from wa_app import appdb
+
+    row = appdb.connect(settings).execute("SELECT 1 FROM media_retries WHERE message_id='import-abc'").fetchone()
+    assert row is None

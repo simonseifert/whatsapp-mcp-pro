@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import auth, media, store, transcripts
+from . import appdb, auth, media, store, transcripts
 from .config import Settings
 
 MEDIA_RETRY_SECONDS = 6 * 3600
@@ -165,11 +165,14 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         retry = request.query_params.get("retry") == "1"
         if retry:
             # One phone ping per message per 6 hours; recorded before asking so a failed ask counts too.
+            if mid.startswith("import-"):
+                return _error(400, "Imported messages have no media to re-request")
             now = int(time.time())
-            row = conn.execute("SELECT at FROM media_retries WHERE message_id=?", (mid,)).fetchone()
-            if row and now - row[0] < MEDIA_RETRY_SECONDS:
-                return _error(429, "Already asked recently, try again later")
-            conn.execute("INSERT OR REPLACE INTO media_retries (message_id, at) VALUES (?, ?)", (mid, now))
+            with appdb.db_lock:
+                row = conn.execute("SELECT at FROM media_retries WHERE message_id=?", (mid,)).fetchone()
+                if row and now - row[0] < MEDIA_RETRY_SECONDS:
+                    return _error(429, "Already asked recently, try again later")
+                conn.execute("INSERT OR REPLACE INTO media_retries (message_id, at) VALUES (?, ?)", (mid, now))
         path = await run_in_threadpool(media.file_for, settings, mid, chat, retry=retry)
         if path is None:
             return _error(404, "Media not available")

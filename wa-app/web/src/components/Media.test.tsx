@@ -52,4 +52,16 @@ describe('Media', () => {
     expect(link.textContent).toContain('plan.pdf')
     expect(link.textContent).toContain('717 KB')
   })
+
+  it('falls back to the placeholder when the audio cannot load', () => {
+    render(
+      <Media
+        chat="a@s.whatsapp.net"
+        id="V1"
+        media={{ type: 'ptt', filename: null, duration_s: 9, has_file: true, size_bytes: null }}
+      />,
+    )
+    fireEvent.error(document.querySelector('audio') as HTMLAudioElement)
+    expect(screen.getByText(/Media not available/)).toBeTruthy()
+  })
 })
