@@ -221,3 +221,36 @@ covered live incoming messages, so everything the bridge sent or got through his
 was a row with keys, and it became unrecoverable when the servers purged it. A daily sweep
 now fetches recent media with no copy, without asking the phone. Files older than the
 window are not chased, because almost none of them were still on the servers.
+
+## D16 — 2026-11-22 — wa-app design directions, round 1 (waiting on Simon's pick)
+Three directions on fictional sample data, published at
+https://wa-app-directions.vercel.app (throwaway Vercel project; its GitHub link,
+added by the Vercel CLI, was disconnected straight away). A: familiar, quiet and
+native (amber). B: dark statement, one loud accent (lime only on drafts and
+unread, Geist Mono labels). C: reading, not chatting (serif transcript, ink red).
+Recommended B: it is Simon's recorded taste and its accent makes a draft
+impossible to mistake for a sent message (RESEARCH.md F2, F5). No pick yet.
+
+## D17 — 2026-11-22 — Direction A picked (Simon: "A pls")
+Simon picked A, "Familiar, quiet and native", against my recommendation of B.
+Its contract is `wa-app/DESIGN.md` (linted, 0 errors, every text pair passes AA in
+both themes). B and C are in its "Already tried" list. The two-strangers "does it
+look AI-made" check from the skill was not done: there was nobody to ask in-session.
+Key components (list rows, chat bottom with draft card and composer, tab bar) and
+three symbol-mark options are at https://wa-app-directions.vercel.app/key-components/
+and /marks/sheet.html, waiting on Simon's ok and mark pick before the design-lock tag.
+
+## D18 — 2026-11-22 — App icon: option 2 (Simon: "icon 2")
+The amber bubble with a solid dot inside (wa-app/docs/brand/src/options/option-2.svg),
+against my recommendation of option 1. Masters and the icon set are made from it at
+the lock. Key components not yet okayed in Simon's words.
+
+## D19 — 2026-11-22 — Key components okayed, design locked (Simon: "pieces are ok")
+Simon okayed the key components page (chat rows, chat bottom with the draft card and
+composer, tab bar) as shown. `wa-app/DESIGN.md` is the locked contract (tag
+`design-lock`), with the brand masters and icon set in `wa-app/docs/brand/`. The
+favicon uses the dark tile, because the bare amber mark is too faint on light tabs.
+The public name is still open: Simon turned down Understudy; I advised against
+WhatsUp (Meta enforces the "Whats-" prefix, and the PRD rules out a WhatsApp-like
+name) and ClaudeChat (the app also runs on local models and other APIs, and
+Anthropic's brand rules don't allow "Claude" in third-party product names).

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>wa-app</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;--bg:#0b0b0c;--surface:#151517;--surface2:#1d1d20;--text:#f3f3f4;--text2:#a0a0a7;--hair:rgba(255,255,255,.1);
+--accent:#f0a94a;--accent-ink:#1a1100;--accent-soft:rgba(240,169,74,.12);--accent-text:#f0a94a;
+--them:#1e1e21;--me:#3a2b14;--me-text:#fbefdc;--me-meta:#d2bd9b;--me-quote:rgba(240,169,74,.16);--ph:#26262a;--ph-text:#8c8c93;}
+@media (prefers-color-scheme:light){:root:not([data-theme=dark]){color-scheme:light;--bg:#f7f5f1;--surface:#efece6;--surface2:#e7e3dc;--text:#151413;--text2:#67655f;--hair:rgba(0,0,0,.11);
+--accent:#a35e05;--accent-ink:#ffffff;--accent-soft:rgba(163,94,5,.09);--accent-text:#935400;
+--them:#ebe8e1;--me:#f3dfb8;--me-text:#2b1d06;--me-meta:#6a5426;--me-quote:rgba(163,94,5,.14);--ph:#dedad2;--ph-text:#6f6c65;}}
+:root[data-theme=light]{color-scheme:light;--bg:#f7f5f1;--surface:#efece6;--surface2:#e7e3dc;--text:#151413;--text2:#67655f;--hair:rgba(0,0,0,.11);
+--accent:#a35e05;--accent-ink:#ffffff;--accent-soft:rgba(163,94,5,.09);--accent-text:#935400;
+--them:#ebe8e1;--me:#f3dfb8;--me-text:#2b1d06;--me-meta:#6a5426;--me-quote:rgba(163,94,5,.14);--ph:#dedad2;--ph-text:#6f6c65;}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:'Geist',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:16px;line-height:1.35;-webkit-font-smoothing:antialiased;font-feature-settings:'ss01'}
+button,input{font:inherit;color:inherit;background:none;border:0}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
+ul{list-style:none}
+.ic{flex:none;display:block}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.iconbtn{width:44px;height:44px;display:grid;place-items:center;border-radius:50%;color:var(--accent-text)}
+.iconbtn:hover{background:var(--accent-soft)}
+/* list */
+.listpane{display:flex;flex-direction:column;min-height:100vh;background:var(--bg)}
+.lhead{padding:10px 16px 6px}
+.ltop{display:flex;justify-content:flex-end;height:44px;margin-right:-8px}
+h1.large{font-size:34px;line-height:1.1;font-weight:700;letter-spacing:-.025em;margin:-2px 0 12px}
+.search{display:flex;align-items:center;gap:8px;height:44px;border-radius:12px;background:var(--surface);padding:0 12px;color:var(--text2)}
+.search input{flex:1;min-width:0;outline:0;color:var(--text);font-size:16px}
+.search input::placeholder{color:var(--text2)}
+.chips{flex:none;display:flex;gap:8px;padding:12px 16px 8px;overflow-x:auto;scrollbar-width:none}
+.chip{position:relative;height:34px;padding:0 14px;border-radius:17px;background:var(--surface);font-size:14px;font-weight:500;color:var(--text);white-space:nowrap}
+.chip::after{content:"";position:absolute;inset:-6px -2px}
+.chip[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text);box-shadow:inset 0 0 0 1px var(--accent)}
+.row{display:flex;align-items:stretch;gap:12px;padding:0 16px;min-height:76px;cursor:pointer;position:relative}
+.row:hover{background:var(--surface)}
+.row .av{align-self:center}
+.av{width:50px;height:50px;border-radius:50%;background:var(--surface2);color:var(--text2);display:grid;place-items:center;font-size:17px;font-weight:600;flex:none;letter-spacing:.01em}
+.av.sm{width:38px;height:38px;font-size:14px}
+.body{flex:1;min-width:0;padding:11px 0 11px;border-bottom:1px solid var(--hair)}
+.ls li:last-child .body{border-bottom:0}
+.top{display:flex;gap:8px;align-items:baseline}
+.name{flex:1;min-width:0;font-size:16.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.005em;display:flex;align-items:center;gap:6px}
+.name span.t{overflow:hidden;text-overflow:ellipsis}
+.name .ic{color:var(--accent-text)}
+.time{font-size:13px;color:var(--text2);flex:none;font-variant-numeric:tabular-nums}
+.row.unread .time{color:var(--accent-text)}
+.bot{display:flex;gap:8px;align-items:flex-start;margin-top:2px}
+.prev{flex:1;min-width:0;font-size:14.5px;line-height:1.3;color:var(--text2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.prev b{font-weight:500;color:var(--text)}
+.prev .ic{display:inline-block;vertical-align:-3px;margin-right:4px}
+.prev.del{font-style:italic}
+.prev .tick{color:var(--accent-text)}
+.badges{display:flex;gap:6px;align-items:center;flex:none;height:19px;margin-top:1px;color:var(--text2)}
+.badge{min-width:20px;height:20px;border-radius:10px;padding:0 6px;background:var(--accent);color:var(--accent-ink);font-size:12.5px;font-weight:600;display:grid;place-items:center;font-variant-numeric:tabular-nums}
+.badge.muted{background:var(--surface2);color:var(--text)}
+.arch .av{background:transparent;color:var(--accent-text);width:50px;height:50px;border-radius:12px}
+.arch .body{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:500;font-size:16px}
+.arch .cnt{color:var(--text2);display:flex;align-items:center;gap:4px;font-size:15px}
+.tabs{margin-top:auto;display:grid;grid-template-columns:repeat(4,1fr);background:var(--bg);border-top:1px solid var(--hair);padding:4px 8px 22px}
+.tab{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:48px;font-size:11px;font-weight:500;color:var(--text2);text-decoration:none}
+.tab[aria-current=page]{color:var(--accent-text)}
+/* chat */
+.chatpane{background:var(--bg);display:flex;flex-direction:column;min-height:100vh}
+.chead{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:8px;height:60px;padding:0 6px 0 2px;background:var(--bg);border-bottom:1px solid var(--hair)}
+.chead .who{flex:1;min-width:0}
+.chead .gname{font-size:16.5px;font-weight:600;letter-spacing:-.005em}
+.chead .mem{font-size:12.5px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msgs{flex:1;padding:8px 16px 14px;display:flex;flex-direction:column;gap:2px}
+.day{align-self:center;font-size:12.5px;font-weight:500;color:var(--text2);margin:14px 0 8px}
+.msg{display:flex;flex-direction:column;max-width:80%;margin-top:6px}
+.msg.run{margin-top:2px}
+.msg.me{align-self:flex-end;align-items:flex-end}
+.msg.them{align-self:flex-start;align-items:flex-start}
+.bubble{position:relative;padding:8px 12px 6px;border-radius:19px;font-size:16px;line-height:1.35;min-width:0;max-width:100%}
+.them .bubble{background:var(--them)}
+.me .bubble{background:var(--me);color:var(--me-text)}
+.sender{font-size:12.5px;font-weight:600;color:var(--text2);margin:0 0 2px;letter-spacing:.005em}
+.meta{display:flex;justify-content:flex-end;align-items:center;gap:5px;font-size:11.5px;color:var(--text2);margin-top:2px;font-variant-numeric:tabular-nums}
+.me .meta{color:var(--me-meta)}
+.meta .tick{color:var(--accent)}
+.txt{overflow-wrap:anywhere}
+.tail::before,.tail::after{content:"";position:absolute;bottom:0;height:19px}
+.them.tail .bubble::before{left:-7px;width:20px;background:var(--them);border-bottom-right-radius:16px 14px}
+.them.tail .bubble::after{left:-26px;width:26px;background:var(--bg);border-bottom-right-radius:10px}
+.me.tail .bubble::before{right:-7px;width:20px;background:var(--me);border-bottom-left-radius:16px 14px}
+.me.tail .bubble::after{right:-26px;width:26px;background:var(--bg);border-bottom-left-radius:10px}
+.tail .bubble::before,.tail .bubble::after{content:"";position:absolute;bottom:0;height:19px}
+.react{display:flex;gap:4px;margin:-6px 8px 0;position:relative;z-index:1}
+.me .react{align-self:flex-end}
+.rx{display:flex;align-items:center;gap:3px;height:24px;padding:0 7px;border-radius:12px;background:var(--surface2);box-shadow:0 0 0 2px var(--bg);font-size:12.5px;font-variant-numeric:tabular-nums}
+.fwd{display:flex;align-items:center;gap:4px;font-size:12.5px;font-style:italic;color:var(--text2);margin-bottom:2px}
+.quote{background:var(--accent-soft);border-radius:10px;padding:5px 10px;margin:0 0 5px;font-size:13.5px;line-height:1.3}
+.me .quote{background:var(--me-quote)}
+.quote b{display:block;font-size:12.5px;font-weight:600;color:var(--accent-text)}
+.me .quote b{color:var(--accent)}
+.quote span{color:var(--text2)}.me .quote span{color:var(--me-meta)}
+.del{font-style:italic;color:var(--text2);display:flex;align-items:center;gap:6px}
+.bubble.deleted{background:transparent!important;box-shadow:inset 0 0 0 1px var(--hair)}
+.bubble.deleted::before,.bubble.deleted::after{display:none!important}
+.photo{width:248px;max-width:100%;aspect-ratio:4/3;border-radius:12px;background:var(--ph);display:grid;place-items:center;color:var(--ph-text);font-size:13px;gap:4px;align-content:center;justify-items:center;margin:0 0 6px;padding:12px}
+.bubble.media{padding:4px 4px 6px}
+.bubble.media .txt,.bubble.media .meta{padding:0 8px}
+.poll{width:268px;max-width:100%}
+.poll .pq{font-size:16px;font-weight:600;margin-bottom:8px}
+.opt{position:relative;margin:0 0 7px;padding:7px 10px;border-radius:10px;overflow:hidden;display:flex;justify-content:space-between;font-size:15px;background:rgba(127,127,127,.12)}
+.opt i{position:absolute;inset:0 auto 0 0;background:var(--accent);opacity:.28;border-radius:10px 6px 6px 10px}
+.opt span{position:relative}
+.poll .v{font-size:12.5px;color:var(--text2)}
+.voice{width:272px;max-width:100%}
+.vp{display:flex;align-items:center;gap:10px}
+.play{width:40px;height:40px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;flex:none}
+.wave{flex:1;display:flex;align-items:center;gap:2px;height:32px}
+.wave i{display:block;width:3px;border-radius:2px;background:var(--text2);opacity:.75}
+.dur{font-size:13px;color:var(--text2);font-variant-numeric:tabular-nums}
+.tr{margin-top:8px;padding-top:8px;border-top:1px solid var(--hair);font-size:14.5px;line-height:1.4}
+.trt{display:flex;align-items:center;gap:4px;min-height:32px;margin-top:2px;font-size:13px;font-weight:500;color:var(--accent-text)}
+/* draft + composer */
+.dock{z-index:5;background:var(--bg);padding-top:6px}
+.draft{margin:0 12px 8px;border:1.5px dashed var(--accent);border-radius:14px;background:var(--accent-soft)}
+.dh{display:flex;align-items:center;gap:6px;padding:2px 2px 0 12px;color:var(--accent-text);font-size:13px;font-weight:600}
+.dh .lab{flex:1;display:flex;align-items:center;gap:6px;min-width:0}
+.dq{padding:0 12px 6px;font-size:12.5px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alt{display:flex;align-items:center;gap:10px;width:100%;min-height:48px;padding:9px 12px;text-align:left;font-size:15px;line-height:1.3;border-top:1px dashed color-mix(in srgb,var(--accent) 55%,transparent)}
+.alt:last-child{border-radius:0 0 12px 12px}
+.alt:hover{background:var(--accent-soft)}
+.alt .use{flex:none;display:flex;align-items:center;gap:3px;color:var(--accent-text);font-size:13px;font-weight:600}
+.alt .at{flex:1;min-width:0}
+.comp{display:flex;align-items:center;gap:4px;padding:2px 8px 22px;border-top:1px solid var(--hair);padding-top:8px}
+.draft+.comp{border-top:0}
+.field{flex:1;height:44px;border-radius:22px;box-shadow:inset 0 0 0 1px var(--hair);padding:0 16px;outline:0;font-size:16px}
+.field::placeholder{color:var(--text2)}
+.comp .iconbtn{color:var(--text2)}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.rise{animation:rise 150ms ease-out both}
+@media (prefers-reduced-motion:reduce){.rise{animation:none}}
+
+.app{display:grid;grid-template-columns:400px 1fr;min-height:100vh}
+.app .listpane{border-right:1px solid var(--hair)}
+.app .chead{height:64px;padding-left:20px}
+.app .msgs{width:100%;max-width:760px;margin:0 auto;padding:12px 24px 18px}
+.app .draft,.app .comp{width:100%;max-width:760px;margin-left:auto;margin-right:auto}
+.app .draft{max-width:712px}
+.app .comp{padding-left:20px;padding-right:20px}
+.app .msg{max-width:68%}
+.app .lhead{padding-top:14px}
+.app h1.large{font-size:30px}
+</style>
+<script>(function(){var t=new URLSearchParams(location.search).get('theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;})();</script>
+</head><body><div class="app"><section class="listpane" aria-label="Chats">
+<header class="lhead"><div class="ltop"><button class="iconbtn" aria-label="New chat"><svg class="ic " width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></button></div>
+<h1 class="large">Chats</h1>
+<label class="search"><svg class="ic " width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span class="sr">Search</span><input type="search" placeholder="Search"></label></header>
+<div class="chips" role="group" aria-label="Filter"><button class="chip" aria-pressed="true">All</button><button class="chip" aria-pressed="false">Unread</button><button class="chip" aria-pressed="false">Favourites</button><button class="chip" aria-pressed="false">Groups</button></div>
+<ul class="ls"><li class="row arch" tabindex="0"><div class="av"><svg class="ic " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="4.5" rx="1.2"/><path d="M5 8.5V19a1 1 0 001 1h12a1 1 0 001-1V8.5"/><path d="M10 12.5h4"/></svg></div><div class="body"><span>Archived</span><span class="cnt">14<svg class="ic " width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></div></li><li class="row unread" tabindex="0"><div class="av " aria-hidden="true">AK</div><div class="body"><div class="top"><div class="name"><span class="t">Ana Kovačević</span><svg class="ic " width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8z"/><path d="M18.5 16.5v3M17 18h3"/></svg></div><span class="time">21:14</span></div><div class="bot"><div class="prev">Može, vidimo se u 7 kod Molo Longo 👍</div><div class="badges"><svg class="ic " width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 3 3v1.5H7V12l3-3z"/><path d="M12 13.5V21"/></svg><span class="badge" aria-label="2 unread">2</span></div></div></div></li><li class="row unread" tabindex="0"><div class="av " aria-hidden="true">🏡</div><div class="body"><div class="top"><div class="name"><span class="t">Obitelj 🏡</span></div><span class="time">20:58</span></div><div class="bot"><div class="prev"><b>Mama:</b> 🎤 Glasovna poruka (0:42)</div><div class="badges"><svg class="ic " width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h3.5L12 19V5L7.5 9z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg><svg class="ic " width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 3 3v1.5H7V12l3-3z"/><path d="M12 13.5V21"/></svg><span class="badge muted" aria-label="5 unread">5</span></div></div></div></li><li class="row" tabindex="0"><div class="av " aria-hidden="true">ĐŠ</div><div class="body"><div class="top"><div class="name"><span class="t">Đurđica Šimunović-Petrović (Računovodstvo d.o.o.)</span></div><span class="time">18:30</span></div><div class="bot"><div class="prev">Šaljem vam račun za listopad, molim potvrdu primitka.</div><div class="badges"></div></div></div></li><li class="row unread" tabindex="0"><div class="av " aria-hidden="true"><svg class="ic " width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10v4h3l7 4V6L7 10z"/><path d="M17.500 9.500a4 4 0 010 5"/></svg></div><div class="body"><div class="top"><div class="name"><span class="t">Kvart Trsat · Obavijesti</span></div><span class="time">16:02</span></div><div class="bot"><div class="prev"><b>Admin:</b> Sutra od 8 do 12 nema vode u ulicama Strossmayerova i Slavka Krautzeka.</div><div class="badges"><span class="badge" aria-label="1 unread">1</span></div></div></div></li><li class="row" tabindex="0"><div class="av " aria-hidden="true">LB</div><div class="body"><div class="top"><div class="name"><span class="t">Lukas Brenner</span><svg class="ic " width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8z"/><path d="M18.5 16.5v3M17 18h3"/></svg></div><span class="time">14:47</span></div><div class="bot"><div class="prev"><svg class="ic tick" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.500 12.500l4 4 8-9"/><path d="M11 15.500l1.500 1 8-9"/></svg>Danke! Ich schick dir die Unterlagen morgen früh.</div><div class="badges"></div></div></div></li><li class="row" tabindex="0"><div class="av " aria-hidden="true">N</div><div class="body"><div class="top"><div class="name"><span class="t">Nikola</span></div><span class="time">Jučer</span></div><div class="bot"><div class="prev">📷 Fotografija</div><div class="badges"></div></div></div></li><li class="row unread" tabindex="0"><div class="av " aria-hidden="true">SF</div><div class="body"><div class="top"><div class="name"><span class="t">Studij FIDIT 2. god.</span></div><span class="time">Jučer</span></div><div class="bot"><div class="prev"><b>Petra:</b> 📊 Anketa: Kad idemo na kolokvij pripreme?</div><div class="badges"><span class="badge" aria-label="12 unread">12</span></div></div></div></li><li class="row" tabindex="0"><div class="av " aria-hidden="true"><svg class="ic " width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="9" r="3.5"/><path d="M5 20c.8-3.800 3.500-5.500 7-5.500s6.200 1.700 7 5.500"/></svg></div><div class="body"><div class="top"><div class="name"><span class="t">+385 91 000 0000</span></div><span class="time">Ponedjeljak</span></div><div class="bot"><div class="prev del"><svg class="ic " width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M6.3 6.3l11.4 11.4"/></svg>Poruka je obrisana</div><div class="badges"></div></div></div></li><li class="row" tabindex="0"><div class="av " aria-hidden="true">I</div><div class="body"><div class="top"><div class="name"><span class="t">Ivana</span></div><span class="time">Ponedjeljak</span></div><div class="bot"><div class="prev">Haha ne mogu vjerovat 😂😂 jesi vidio što je napisao u grupi?? ja sam mislila da se šali ali očito ne</div><div class="badges"></div></div></div></li><li class="row" tabindex="0"><div class="av " aria-hidden="true">TK</div><div class="body"><div class="top"><div class="name"><span class="t">Teretana Kantrida</span></div><span class="time">12.11.</span></div><div class="bot"><div class="prev">Sticker</div><div class="badges"></div></div></div></li></ul>
+<nav class="tabs" aria-label="Main"><a class="tab" href="#" aria-current=page><svg class="ic " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5h14a2 2 0 012 2v8a2 2 0 01-2 2h-6l-4.5 3.5V17H5a2 2 0 01-2-2V7a2 2 0 012-2z"/></svg><span>Chats</span></a><a class="tab" href="#" ><svg class="ic " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="3"/><circle cx="17" cy="10" r="2.3"/><path d="M3.5 19c.5-3 2.7-4.7 5.5-4.7s5 1.7 5.5 4.7"/><path d="M15.5 14.6c2.6-.3 4.6 1 5 3.8"/></svg><span>Communities</span></a><a class="tab" href="#" ><svg class="ic " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 4h3l1.5 4-2 1.5a11 11 0 005.5 5.5L16 13l4 1.5v3a2 2 0 01-2 2C10.8 19.5 4.5 13.2 4.5 6a2 2 0 012-2z"/></svg><span>Calls</span></a><a class="tab" href="#" ><svg class="ic " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></svg><span>Settings</span></a></nav></section><section class="chatpane" aria-label="Ekipa za vikend">
+<header class="chead"><div class="av sm" aria-hidden="true">EV</div><div class="who"><div class="gname">Ekipa za vikend</div><div class="mem">Ana, Ivana, Nikola, Petra, ti</div></div><button class="iconbtn" aria-label="Search in chat"><svg class="ic " width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></button></header>
+<div class="msgs"><div class="day">Jučer</div><div class="msg them tail"><div class="bubble"><div class="sender">Nikola</div><div class="txt">Tko vozi u subotu? Ja mogu uzet 4 ljudi max</div><div class="meta"><span>19:02</span></div></div></div><div class="msg me tail"><div class="bubble"><div class="txt">Ja mogu drugi auto, krećemo oko 9?</div><div class="meta"><span>Edited</span><span>19:05</span><svg class="ic tick" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.500 12.500l4 4 8-9"/><path d="M11 15.500l1.500 1 8-9"/></svg></div></div></div><div class="msg them tail"><div class="bubble"><div class="sender">Petra</div><div class="fwd"><svg class="ic " width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l6 5.5-6 5.5v-3.5c-4.5 0-7.5 1-9.5 4.5.5-5 3.5-8.500 9.500-9z"/></svg>Forwarded</div><div class="txt">Prognoza za Učku: subota sunčano, 14°C, vjetar slab.</div><div class="meta"><span>19:11</span></div></div><div class="react"><span class="rx">☀️<span>3</span></span></div></div><div class="msg them tail"><div class="bubble deleted"><div class="del"><svg class="ic " width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M6.3 6.3l11.4 11.4"/></svg>Poruka je obrisana</div><div class="meta"><span>19:20</span></div></div></div><div class="day">Danas</div><div class="msg them tail"><div class="bubble media"><div class="sender" style="padding:4px 8px 0">Ana</div><div class="photo"><svg class="ic " width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.500" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10.500" r="1.500"/><path d="M4 17.500l5-4.500 4 3.500 3-2.500 4 3.500"/></svg><span>photo</span></div><div class="txt">Ovo je ruta, 11 km, cca 4h s pauzama</div><div class="meta"><span>20:31</span></div></div><div class="react"><span class="rx">🔥<span>2</span></span><span class="rx">👍<span>1</span></span></div></div><div class="msg them tail"><div class="bubble"><div class="sender">Nikola</div><div class="poll"><div class="pq">Ručak poslije?</div><div class="opt"><i style="width:75%"></i><span>Konoba kod Mate</span><span>3</span></div><div class="opt"><i style="width:25%"></i><span>Nosimo sendviče</span><span>1</span></div><div class="opt"><i style="width:0%"></i><span>Vidjet ćemo</span><span>0</span></div><div class="v">4 votes</div></div><div class="meta"><span>20:40</span></div></div></div><div class="msg them tail"><div class="bubble"><div class="sender">Petra</div><div class="voice"><div class="vp"><button class="play" aria-label="Play"><svg class="ic " width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></svg></button><div class="wave" aria-hidden="true"><i style="height:6px"></i><i style="height:10px"></i><i style="height:16px"></i><i style="height:22px"></i><i style="height:14px"></i><i style="height:8px"></i><i style="height:18px"></i><i style="height:26px"></i><i style="height:20px"></i><i style="height:12px"></i><i style="height:7px"></i><i style="height:15px"></i><i style="height:24px"></i><i style="height:28px"></i><i style="height:17px"></i><i style="height:9px"></i><i style="height:13px"></i><i style="height:21px"></i><i style="height:25px"></i><i style="height:16px"></i><i style="height:8px"></i><i style="height:11px"></i><i style="height:19px"></i><i style="height:23px"></i><i style="height:14px"></i><i style="height:9px"></i><i style="height:6px"></i><i style="height:12px"></i><i style="height:17px"></i><i style="height:8px"></i></div><span class="dur">0:37</span></div>
+<div class="tr"><div class="txt">Ej ljudi, ja ću možda kasnit pola sata jer moram prvo odvest sestru na trening, al vi krenite pa vas dostignem kod planinarskog doma. I ako netko ima štapove viška, javite.</div><button class="trt" aria-expanded="true">Hide text<svg class="ic " width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 15l7-7 7 7"/></svg></button></div></div><div class="meta"><span>20:52</span></div></div></div><div class="msg them tail"><div class="bubble"><div class="sender">Ana</div><div class="quote"><b>Petra</b><span>🎤 Glasovna poruka (0:37)</span></div><div class="txt">Ja imam jedne štapove viška, ponijet ću</div><div class="meta"><span>20:55</span></div></div></div><div class="msg them tail rise"><div class="bubble"><div class="sender">Nikola</div><div class="txt">Marko jel ti onda pokupiš Petru?</div><div class="meta"><span>21:03</span></div></div></div></div>
+<div class="dock"><div class="draft rise" role="group" aria-label="Draft reply, not sent">
+<div class="dh"><span class="lab"><svg class="ic " width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8z"/><path d="M18.5 16.5v3M17 18h3"/></svg><span>Draft · replying to Nikola</span></span><button class="iconbtn" aria-label="Dismiss draft" style="color:var(--accent-text)"><svg class="ic " width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+<div class="dq">Nikola: Marko jel ti onda pokupiš Petru?</div><button class="alt"><span class="at">Mogu, Petra javi kad si gotova sa sestrom pa te pokupim 👍</span><span class="use">Use<svg class="ic " width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 7L7 17M7 9v8h8"/></svg></span></button><button class="alt"><span class="at">Ne stignem, krećem ravno iz Opatije. Nikola možeš ti?</span><span class="use">Use<svg class="ic " width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 7L7 17M7 9v8h8"/></svg></span></button></div>
+<div class="comp"><button class="iconbtn" aria-label="Attach"><svg class="ic " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><input class="field" placeholder="Message" aria-label="Message"><button class="iconbtn" aria-label="Voice message"><svg class="ic " width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v3"/></svg></button></div></div></section></div></body></html>

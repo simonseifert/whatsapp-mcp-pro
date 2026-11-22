@@ -18,6 +18,9 @@ and counts as done only after the maintainer has used it on his real data and ph
   fill on the live store.
 
 ## M1: the chat app, read and reply
+- **Bridge:** contact cards keep their number and details as searchable text, not
+  only `[Contact: name]`, so the app can show them as a card (idea from
+  verygoodplugins/whatsapp-mcp; Simon, 2026-11-22).
 - **Server:** login, a read-only store reader, live updates over SSE, read state and
   unread counts, the avatar cache, media and thumbnails.
 - **Screens:**
@@ -48,6 +51,9 @@ and counts as done only after the maintainer has used it on his real data and ph
   document).
 - **Search:** keyword search plus search by meaning, from the chats list and inside a
   chat.
+- **Private reply:** reply privately to a group message, quoting it in the sender's
+  own chat (idea from GOWA; Simon, 2026-11-22). Needs a bridge change to quote across
+  chats.
 - **Contacts and groups:** contact and group info from the directory, a Communities
   tab, a call log tab, and a polls UI.
 - **Done when:** the maintainer goes a week without needing WhatsApp on the phone for

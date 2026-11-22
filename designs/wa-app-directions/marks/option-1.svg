@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><title>Option 1: calm bubble, draft edge</title>
+<rect width="1024" height="1024" fill="#0b0b0c"/>
+<g fill="none" stroke="#f0a94a" stroke-width="84" stroke-linejoin="round">
+<path d="M668 670A180 180 0 0 0 848 490V374A180 180 0 0 0 668 194H356A180 180 0 0 0 176 374V490"/>
+<path d="M176 490A180 180 0 0 0 356 670H590" stroke-dasharray="105 86"/>
+</g><polygon points="572,660 696,660 734,836" fill="#f0a94a" stroke="#f0a94a" stroke-width="44" stroke-linejoin="round"/></svg>
