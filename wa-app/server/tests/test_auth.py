@@ -181,3 +181,33 @@ def test_forwarded_for_ignored_from_non_loopback_peer(settings: Settings) -> Non
             ).status_code
 
     assert asyncio.run(scenario()) == 429
+
+
+def test_logout_all_deletes_every_session_and_clears_cookie(logged_in: TestClient) -> None:
+    other = logged_in.post("/api/auth/login", json={"passphrase": PASSPHRASE})
+    assert other.status_code == 200
+    token_a = logged_in.cookies.get("wa_session")
+    assert token_a
+    resp = logged_in.post("/api/auth/logout-all")
+    assert resp.status_code == 200
+    assert "wa_session" in resp.headers["set-cookie"]
+    logged_in.cookies.clear()
+    logged_in.cookies.set("wa_session", token_a)
+    assert logged_in.get("/api/chats").status_code == 401
+
+
+def test_logout_all_needs_a_session(client: TestClient) -> None:
+    assert client.post("/api/auth/logout-all").status_code == 401
+
+
+def test_end_all_sessions_counts_rows(settings: Settings) -> None:
+    conn = appdb.connect(settings)
+    auth.new_session(conn, "phone")
+    auth.new_session(conn, "laptop")
+    assert auth.end_all_sessions(conn) == 2
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_about_names_a_version(logged_in: TestClient) -> None:
+    body = logged_in.get("/api/about").json()
+    assert isinstance(body["version"], str) and body["version"]

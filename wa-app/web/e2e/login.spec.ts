@@ -26,7 +26,7 @@ test('setup or login, reload keeps the session, logout returns to login', async 
   await expect(page.getByRole('heading', { name: 'Chats' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Settings' }).click()
-  await page.getByRole('button', { name: 'Log out' }).click()
+  await page.getByRole('button', { name: 'Log out', exact: true }).click()
   await expect(page).toHaveURL(/\/login$/)
   await page.reload()
   await expect(page.getByRole('button', { name: 'Log in' })).toBeVisible()

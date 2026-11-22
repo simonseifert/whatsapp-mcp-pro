@@ -1,5 +1,6 @@
 """JSON API routes."""
 
+import importlib.metadata
 import sqlite3
 import time
 from dataclasses import asdict
@@ -85,6 +86,22 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         response = JSONResponse({"ok": True})
         response.delete_cookie(auth.COOKIE, path="/", secure=settings.secure_cookies, httponly=True, samesite="strict")
         return response
+
+    async def logout_all(request: Request) -> Response:
+        # /api/auth/* is open to the middleware, so this one checks the session itself.
+        if not auth.session_valid(conn, request.cookies.get(auth.COOKIE)):
+            return _error(401, "Not logged in")
+        auth.end_all_sessions(conn)
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(auth.COOKIE, path="/", secure=settings.secure_cookies, httponly=True, samesite="strict")
+        return response
+
+    async def about(request: Request) -> Response:
+        try:
+            version = importlib.metadata.version("wa-app")
+        except importlib.metadata.PackageNotFoundError:
+            version = "dev"
+        return JSONResponse({"version": version})
 
     async def chats(request: Request) -> Response:
         chat_filter = request.query_params.get("filter", "all")
@@ -276,6 +293,8 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         Route("/api/auth/setup", setup, methods=["POST"]),
         Route("/api/auth/login", login, methods=["POST"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
+        Route("/api/auth/logout-all", logout_all, methods=["POST"]),
+        Route("/api/about", about, methods=["GET"]),
         Route("/api/chats", chats, methods=["GET"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),

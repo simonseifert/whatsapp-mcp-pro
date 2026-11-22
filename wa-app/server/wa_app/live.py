@@ -173,6 +173,12 @@ def drop_session(session: str) -> None:
         _hub.drop_session(session)
 
 
+def drop_all_sessions() -> None:
+    """Every session ended at once (log out everywhere): all open streams end now."""
+    if _hub:
+        _hub.close()
+
+
 def visible_clients() -> int:
     """How many connected clients report their page as visible (M2's 'app open')."""
     return _hub.visible_count() if _hub else 0

@@ -58,7 +58,7 @@ test('tab bar: later-version tabs and settings', async ({ page }) => {
   await page.getByRole('link', { name: 'Calls' }).click()
   await expect(page.getByText('Coming in a later version.')).toBeVisible()
   await page.getByRole('link', { name: 'Settings' }).click()
-  await expect(page.getByRole('button', { name: 'Log out' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Log out', exact: true })).toBeVisible()
 })
 
 test('two panes from 900px', async ({ page }) => {

@@ -418,3 +418,17 @@ def test_hello_id_on_a_gap_reproduces_the_gap() -> None:
         assert again.queue.get_nowait().name == "resync"
 
     asyncio.run(run())
+
+
+def test_logout_all_drops_every_open_stream(logged_in: TestClient) -> None:
+    from wa_app import auth
+
+    hub = live.current_hub()
+    token = logged_in.cookies.get(auth.COOKIE)
+    assert token
+    mine = hub.subscribe(session=auth.token_hash(token))
+    elsewhere = hub.subscribe(session="another-device")
+    assert logged_in.post("/api/auth/logout-all").status_code == 200
+    assert mine.dropped
+    assert elsewhere.dropped
+    assert hub.client_count() == 0

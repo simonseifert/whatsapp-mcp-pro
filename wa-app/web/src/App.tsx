@@ -18,8 +18,8 @@ export default function App() {
     void refresh()
   }, [refresh])
 
-  async function logout() {
-    await apiFetch('/api/auth/logout', { method: 'POST' })
+  async function logout(everywhere: boolean) {
+    await apiFetch(everywhere ? '/api/auth/logout-all' : '/api/auth/logout', { method: 'POST' })
     await refresh()
   }
 

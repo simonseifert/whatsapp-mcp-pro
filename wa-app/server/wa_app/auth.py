@@ -81,6 +81,13 @@ def end_session(conn: sqlite3.Connection, token: str | None) -> None:
         live.drop_session(_hash_token(token))  # its open live streams end now
 
 
+def end_all_sessions(conn: sqlite3.Connection) -> int:
+    """Log out everywhere: every session row goes and every open live stream ends. Returns the sessions removed."""
+    removed = conn.execute("DELETE FROM sessions").rowcount
+    live.drop_all_sessions()
+    return removed
+
+
 def login_blocked(conn: sqlite3.Connection, ip: str) -> bool:
     since = int(time.time()) - FAILURE_WINDOW
     (count,) = conn.execute("SELECT COUNT(*) FROM login_failures WHERE ip=? AND at>?", (ip, since)).fetchone()
