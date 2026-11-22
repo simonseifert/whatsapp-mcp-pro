@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fold, formatListTime, initials, isNumberLike } from './format'
+import { fold, formatDayLabel, formatDuration, formatListTime, initials, isNumberLike, linkParts, telHref } from './format'
 
 // Local-time constructors so the cases hold in any timezone the tests run in.
 const at = (y: number, m: number, d: number, h = 0, min = 0) => new Date(y, m - 1, d, h, min)
@@ -62,5 +62,32 @@ describe('initials', () => {
   it('recognises number-only names', () => {
     expect(isNumberLike('+385 91 000 0000')).toBe(true)
     expect(isNumberLike('Ana')).toBe(false)
+  })
+})
+
+describe('chat formatting', () => {
+  const now = new Date(2026, 10, 22, 12, 0)
+  it('labels days', () => {
+    expect(formatDayLabel(new Date(2026, 10, 22, 1, 0).toISOString(), now)).toBe('Today')
+    expect(formatDayLabel(new Date(2026, 10, 21, 23, 0).toISOString(), now)).toBe('Yesterday')
+    expect(formatDayLabel(new Date(2026, 10, 19, 9, 0).toISOString(), now)).toBe('Thursday')
+    expect(formatDayLabel(new Date(2026, 9, 1, 9, 0).toISOString(), now)).toBe('1 Oct 2026')
+  })
+  it('finds links and keeps trailing punctuation out of them', () => {
+    expect(linkParts('see https://example.org/a?b=1. ok')).toEqual([
+      { text: 'see ' },
+      { text: 'https://example.org/a?b=1', href: 'https://example.org/a?b=1' },
+      { text: '. ok' },
+    ])
+    expect(linkParts('(http://x.io)')).toEqual([{ text: '(' }, { text: 'http://x.io', href: 'http://x.io' }, { text: ')' }])
+  })
+  it('never makes a link of markup or other schemes', () => {
+    expect(linkParts('<b>hi</b> javascript:alert(1)')).toEqual([{ text: '<b>hi</b> javascript:alert(1)' }])
+    expect(linkParts('https://')).toEqual([{ text: 'https://' }])
+  })
+  it('formats durations and phone targets', () => {
+    expect(formatDuration(37)).toBe('0:37')
+    expect(formatDuration(605)).toBe('10:05')
+    expect(telHref('+385 (91) 000-0777')).toBe('tel:+385910000777')
   })
 })

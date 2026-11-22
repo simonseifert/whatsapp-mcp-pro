@@ -39,3 +39,58 @@ export function initials(name: string): string {
 export function isNumberLike(name: string): boolean {
   return /^[+\d\s()-]*$/.test(name)
 }
+
+/** Clock time in the viewer's local zone, "19:05". */
+export function formatClock(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : `${two(d.getHours())}:${two(d.getMinutes())}`
+}
+
+/** Day separator: "Today", "Yesterday", the weekday within the last week, else "12 Nov 2026". */
+export function formatDayLabel(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso)
+  if (Number.isNaN(then.getTime())) return ''
+  const days = Math.round((startOfDay(now) - startOfDay(then)) / DAY_MS)
+  if (days <= 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days < 7) return then.toLocaleDateString('en-GB', { weekday: 'long' })
+  return then.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+/** Local calendar day key, to start a new separator when it changes. */
+export function dayKey(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
+
+export type TextPart = { text: string; href?: string }
+
+const URL_RE = /https?:\/\/[^\s<>]+/g
+const TRAILING = /[.,;:!?)\]}'"]+$/
+
+/** Splits message text into plain parts and http(s) links. The result is rendered as React text nodes and
+ *  anchors only; the text is never parsed as HTML. */
+export function linkParts(text: string): TextPart[] {
+  const parts: TextPart[] = []
+  let last = 0
+  for (const match of text.matchAll(URL_RE)) {
+    const start = match.index
+    const url = match[0].replace(TRAILING, '')
+    if (!/^https?:\/\/[^/?#]+/.test(url)) continue
+    if (start > last) parts.push({ text: text.slice(last, start) })
+    parts.push({ text: url, href: url })
+    last = start + url.length
+  }
+  if (last < text.length) parts.push({ text: text.slice(last) })
+  return parts
+}
+
+/** "7:42" from seconds. */
+export function formatDuration(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${two(seconds % 60)}`
+}
+
+/** A tel: target with only digits and a leading plus. */
+export function telHref(phone: string): string {
+  return `tel:${phone.replace(/[^\d+]/g, '')}`
+}

@@ -1,5 +1,6 @@
 """Shared fixtures: a tiny fictional bridge store and an app client."""
 
+import json
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -43,6 +44,15 @@ CREATE TABLE message_reactions (
     chat_jid TEXT NOT NULL, message_id TEXT NOT NULL, sender TEXT NOT NULL, emoji TEXT NOT NULL,
     reacted_at TIMESTAMP NOT NULL, PRIMARY KEY (chat_jid, message_id, sender)
 );
+CREATE TABLE poll_options (
+    message_id TEXT NOT NULL, chat_jid TEXT NOT NULL, option_index INTEGER NOT NULL, option_name TEXT NOT NULL,
+    PRIMARY KEY (message_id, chat_jid, option_index)
+);
+CREATE TABLE poll_current_votes (
+    poll_message_id TEXT NOT NULL, chat_jid TEXT NOT NULL, voter_jid TEXT NOT NULL, selected_options TEXT NOT NULL,
+    vote_timestamp_ms INTEGER NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (poll_message_id, chat_jid, voter_jid)
+);
 CREATE TABLE chat_state (
     chat_jid TEXT PRIMARY KEY,
     pinned INTEGER NOT NULL DEFAULT 0, pinned_changed_at TIMESTAMP,
@@ -84,6 +94,9 @@ OLD_ARCHIVED = "385910000012@s.whatsapp.net"
 OLD_ARCHIVED_GROUP = "120363000000000013@g.us"
 ACCOUNTANT_NAME = "Đurđica Šimunović-Petrović (Računovodstvo d.o.o.)"
 VOICE_SECONDS = 42
+EKIPA = "120363000000000014@g.us"
+ME = "385910000099@s.whatsapp.net"
+ME_LID = "999@lid"
 
 
 def fake_ogg_opus(seconds: int, pre_skip: int = 312) -> bytes:
@@ -101,6 +114,11 @@ def make_store(tmp_path: Path) -> Path:
     """Create a fictional bridge store dir (real schema, fictional chats); return the dir."""
     store = tmp_path / "store"
     store.mkdir(parents=True, exist_ok=True)
+    wa = sqlite3.connect(store / "whatsapp.db")  # whatsmeow's own file: it knows our JID and LID
+    wa.execute("CREATE TABLE whatsmeow_device (jid TEXT PRIMARY KEY, lid TEXT)")
+    wa.execute("INSERT INTO whatsmeow_device VALUES (?, ?)", (f"{ME.split('@')[0]}:7@s.whatsapp.net", ME_LID))
+    wa.commit()
+    wa.close()
     conn = sqlite3.connect(store / "messages.db")
     conn.executescript(_SCHEMA)
     _fill(conn, store)
@@ -124,14 +142,17 @@ def _fill(conn: sqlite3.Connection, store: Path) -> None:
     counter = iter(range(1, 10_000))
 
     def msg(chat_jid: str, minutes_ago: float, content: str | None = "", **kw: object) -> str:
-        mid = f"M{next(counter):04d}"
+        mid = str(kw["mid"]) if kw.get("mid") else f"M{next(counter):04d}"
         conn.execute(
             "INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type,"
-            " filename, is_system_message, deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " filename, is_system_message, deleted_at, quoted_message_id, quoted_sender_name, quoted_text_preview,"
+            " is_edited, is_forwarded) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid, chat_jid, kw.get("sender"), kw.get("sender_name"), content, ts(minutes_ago),
                 1 if kw.get("from_me") else 0, kw.get("media_type"), kw.get("filename"),
                 1 if kw.get("system") else 0, ts(minutes_ago - 1) if kw.get("deleted") else None,
+                kw.get("quoted_id"), kw.get("quoted_name"), kw.get("quoted_text"),
+                1 if kw.get("edited") else 0, 1 if kw.get("forwarded") else 0,
             ),
         )  # fmt: skip
         return mid
@@ -189,6 +210,7 @@ def _fill(conn: sqlite3.Connection, store: Path) -> None:
     chat(LUKAS, "Lukas Brenner", 400)
     identity(LUKAS, phone="4915100000005", phone_jid=LUKAS, full_name="Lukas Brenner", display_name="Lukas Brenner")
     msg(LUKAS, 400, "Danke! Ich schick dir die Unterlagen morgen früh.", from_me=True)
+    msg(LUKAS, 401, "Lang: " + "x" * 5000, sender=LUKAS, sender_name="Lukas Brenner")  # one unbroken 5,000-char word
 
     # Nikola: photo, marked unread on the phone.
     chat(NIKOLA, "Nikola", 1500)
@@ -239,6 +261,8 @@ def _fill(conn: sqlite3.Connection, store: Path) -> None:
     identity(CHANNEL, kind="newsletter", display_name="Lučka uprava · vijesti")
     msg(CHANNEL, 9000, "Nova linija u petak.", sender=CHANNEL)
 
+    _ekipa(conn, msg, chat, identity, state, ts)
+
     # Two archived chats.
     chat(OLD_ARCHIVED, "Stara Kolegica", 20000)
     identity(OLD_ARCHIVED, phone="385910000012", phone_jid=OLD_ARCHIVED, full_name="Stara Kolegica",
@@ -249,6 +273,50 @@ def _fill(conn: sqlite3.Connection, store: Path) -> None:
     identity(OLD_ARCHIVED_GROUP, kind="group", display_name="Stari tim")
     msg(OLD_ARCHIVED_GROUP, 21000, "Hvala svima", sender="385910000024@s.whatsapp.net", sender_name="Marin")
     state(OLD_ARCHIVED_GROUP, archived=1)
+
+
+def _ekipa(conn: sqlite3.Connection, msg, chat, identity, state, ts) -> None:  # noqa: ANN001
+    """The 'Ekipa za vikend' group from designs/wa-app-directions/sample-data.json: every message kind."""
+    nikola, ana, petra, ivana = NIKOLA, ANA, "385910000026@s.whatsapp.net", IVANA
+    chat(EKIPA, "Ekipa za vikend", 90)
+    identity(EKIPA, kind="group", display_name="Ekipa za vikend", chat_name="Ekipa za vikend")
+    msg(EKIPA, 1500, "Tko vozi u subotu? Ja mogu uzet 4 ljudi max", sender=nikola, sender_name="Nikola", mid="E01")
+    msg(EKIPA, 1490, "Ja mogu drugi auto, krećemo oko 9?", from_me=True, sender=ME, edited=True, mid="E02")
+    msg(EKIPA, 1480, "Prognoza za Učku: subota sunčano, 14°C, vjetar slab.", sender=petra, sender_name="Petra",
+        forwarded=True, mid="E03")  # fmt: skip
+    msg(EKIPA, 1470, "gone", sender=ivana, sender_name="Ivana", deleted=True, mid="E04")
+    msg(EKIPA, 150, "Ovo je ruta, 11 km, cca 4h s pauzama", sender=ana, sender_name="Ana", media_type="image",
+        filename="image_route.jpg", mid="E05")  # fmt: skip
+    msg(EKIPA, 140, "[Poll: Ručak poslije?]", sender=nikola, sender_name="Nikola", mid="E06")
+    for i, name in enumerate(["Konoba kod Mate", "Nosimo sendviče", "Vidjet ćemo"]):
+        conn.execute("INSERT INTO poll_options VALUES (?,?,?,?)", ("E06", EKIPA, i, name))
+    for voter, picked in [(ana, ["Konoba kod Mate"]), (petra, ["Konoba kod Mate"]), (ivana, ["Konoba kod Mate"]),
+                          (ME, ["Nosimo sendviče"]), (nikola, [])]:  # fmt: skip
+        conn.execute(
+            "INSERT INTO poll_current_votes (poll_message_id, chat_jid, voter_jid, selected_options,"
+            " vote_timestamp_ms) VALUES (?,?,?,?,?)",
+            ("E06", EKIPA, voter, json.dumps(picked), 1),
+        )
+    msg(EKIPA, 128, "", sender=petra, sender_name="Petra", media_type="ptt", filename="audio_petra.ogg", mid="E07")
+    (conn_store := Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent / EKIPA).mkdir(exist_ok=True)
+    (conn_store / "audio_petra.ogg").write_bytes(fake_ogg_opus(37))
+    msg(EKIPA, 125, "Ja imam jedne štapove viška, ponijet ću", sender=ana, sender_name="Ana", mid="E08",
+        quoted_id="E07", quoted_name="Petra", quoted_text="stale preview")  # fmt: skip
+    msg(EKIPA, 120, "Marko jel ti onda pokupiš Petru?", sender=nikola, sender_name="Nikola", mid="E09")
+    msg(EKIPA, 118, "Ivana, što si ono napisala?", sender=nikola, sender_name="Nikola", mid="E10",
+        quoted_id="E04", quoted_name="Ivana", quoted_text="old quoted text")  # fmt: skip
+    msg(EKIPA, 115, "<b>hi</b> <script>alert(1)</script>", sender=ana, sender_name="Ana", mid="E11")
+    msg(EKIPA, 110, "[Contact: Ivo Horvat]\n📞 +385 91 000 0777\n📞 +385 51 000 777", sender=petra,
+        sender_name="Petra", mid="E12")  # fmt: skip
+    msg(EKIPA, 100, "Pogledaj https://example.org/ruta?x=1.", sender=nikola, sender_name="Nikola", mid="E13")
+    msg(EKIPA, 95, "Evo me", from_me=True, sender=ME_LID, mid="E14")
+    msg(EKIPA, 90, "Petra je promijenila naziv grupe", system=True, mid="E15")
+    for who, emoji in [(ana, "☀️"), (petra, "☀️"), (ME, "☀️"), (ivana, "")]:
+        conn.execute("INSERT INTO message_reactions VALUES (?,?,?,?,?)", (EKIPA, "E03", who, emoji, ts(1400)))
+    conn.execute("INSERT INTO message_reactions VALUES (?,?,?,?,?)", (EKIPA, "E05", ana, "🔥", ts(100)))
+    conn.execute("INSERT INTO message_reactions VALUES (?,?,?,?,?)", (EKIPA, "E05", petra, "🔥", ts(99)))
+    conn.execute("INSERT INTO message_reactions VALUES (?,?,?,?,?)", (EKIPA, "E05", nikola, "👍", ts(98)))
+    conn.execute("INSERT INTO message_reactions VALUES (?,?,?,?,?)", (EKIPA, "E13", ME_LID, "👍", ts(90)))
 
 
 @pytest.fixture

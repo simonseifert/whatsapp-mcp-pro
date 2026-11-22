@@ -27,6 +27,36 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M10 12.5h4" />
     </>
   ),
+  forward: <path d="M14 6l6 5.5-6 5.5v-3.5c-4.5 0-7.5 1-9.5 4.5.5-5 3.5-8.5 9.5-9z" />,
+  image: (
+    <>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <circle cx="9" cy="10.5" r="1.5" />
+      <path d="M4 17.5l5-4.5 4 3.5 3-2.5 4 3.5" />
+    </>
+  ),
+  video: (
+    <>
+      <rect x="3" y="6" width="13" height="12" rx="2" />
+      <path d="M16 10.5l5-3v9l-5-3" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M6 3h8l4 4v13a1 1 0 01-1 1H6a1 1 0 01-1-1V4a1 1 0 011-1z" />
+      <path d="M14 3v4h4" />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v3" />
+    </>
+  ),
+  chart: <path d="M5 20V10M12 20V4M19 20v-7" />,
+  phone: (
+    <path d="M6.5 4h3l1.5 4-2 1.5a11 11 0 005.5 5.5L16 13l4 1.5v3a2 2 0 01-2 2C10.8 19.5 4.5 13.2 4.5 6a2 2 0 012-2z" />
+  ),
   chevron: <path d="M9 5l7 7-7 7" />,
   back: <path d="M15 5l-7 7 7 7" />,
   megaphone: (

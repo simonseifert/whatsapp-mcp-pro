@@ -105,6 +105,41 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         finally:
             ro.close()
 
+    def with_store(work):  # noqa: ANN001, ANN202
+        try:
+            ro = store.open_ro(settings)
+        except sqlite3.OperationalError:
+            return _error(503, "Message store unavailable")
+        try:
+            return work(ro)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        finally:
+            ro.close()
+
+    async def chat_detail(request: Request) -> Response:
+        jid = request.path_params["jid"]
+
+        def work(ro: sqlite3.Connection) -> Response:
+            chat = store.get_chat(ro, conn, jid)
+            if chat is None:
+                return _error(404, "Chat not found")
+            return JSONResponse({"chat": asdict(chat), "members_line": store.members_line(ro, chat.jid)})
+
+        return with_store(work)
+
+    async def chat_messages(request: Request) -> Response:
+        jid = request.path_params["jid"]
+        before = request.query_params.get("before")
+        if before is not None and store.parse_ts(before) is None:
+            return _error(400, "Bad 'before' timestamp")
+
+        def work(ro: sqlite3.Connection) -> Response:
+            messages, has_more = store.list_messages_page(ro, jid, before_ts=before)
+            return JSONResponse({"messages": [asdict(m) for m in messages], "has_more": has_more})
+
+        return with_store(work)
+
     return [
         Route("/api/health", health, methods=["GET"]),
         Route("/api/auth/state", state, methods=["GET"]),
@@ -112,4 +147,6 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         Route("/api/auth/login", login, methods=["POST"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/chats", chats, methods=["GET"]),
+        Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
+        Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
     ]

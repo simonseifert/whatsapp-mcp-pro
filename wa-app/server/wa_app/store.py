@@ -1,5 +1,6 @@
 """Read-only reader over the bridge's messages.db: the chat list now; chat view, media and state later."""
 
+import json
 import re
 import sqlite3
 import time
@@ -352,15 +353,21 @@ def list_chats_with_count(
     appconn: sqlite3.Connection,
     *,
     filter: ChatFilter = "all",  # noqa: A002 - the API's parameter name
-    archived: bool = False,
+    archived: bool | None = False,
     query: str | None = None,
     limit: int = 200,
+    only_jid: str | None = None,
 ) -> tuple[list[ChatSummary], int]:
-    """The chat list and, from the same pass, how many chats are archived."""
+    """The chat list and, from the same pass, how many chats are archived.
+
+    `archived=None` lists both; `only_jid` (any JID form of the chat) narrows the pass to that one conversation.
+    """
     convs = _conversations(conn)
     states = _states(conn, convs)
     archived_count = sum(1 for c in convs if states.get(c.jid, _State()).archived)
-    convs = [c for c in convs if states.get(c.jid, _State()).archived == archived]
+    convs = [c for c in convs if archived is None or states.get(c.jid, _State()).archived == archived]
+    if only_jid is not None:
+        convs = [c for c in convs if only_jid == c.jid or only_jid in c.forms]
 
     deleted_sql = "deleted_at" if "deleted_at" in _columns(conn, "messages") else "NULL"
     store_dir = _db_dir(conn)
@@ -465,3 +472,384 @@ def list_chats_with_count(
 def _sort_key(iso: str) -> float:
     parsed = parse_ts(iso)
     return parsed.timestamp() if parsed else 0.0
+
+
+def get_chat(conn: sqlite3.Connection, appconn: sqlite3.Connection, jid: str) -> ChatSummary | None:
+    """One chat (archived or not) by any of its JID forms; None when it is unknown or has no messages."""
+    found = list_chats_with_count(conn, appconn, archived=None, only_jid=jid, limit=1)[0]
+    return found[0] if found else None
+
+
+# --- chat view ----------------------------------------------------------------------------------------------------
+
+PAGE_SIZE = 60
+IMPORT_PREFIX = "import-"  # database.IsImportedMessageID: synthetic ids from chat exports
+
+
+@dataclass
+class MediaView:
+    type: str
+    filename: str | None
+    duration_s: int | None
+    has_file: bool
+
+
+@dataclass
+class QuoteView:
+    id: str
+    sender_name: str | None
+    preview: str
+
+
+@dataclass
+class ReactionView:
+    emoji: str
+    count: int
+    mine: bool
+
+
+@dataclass
+class PollOption:
+    text: str
+    votes: int
+
+
+@dataclass
+class PollView:
+    question: str
+    options: list[PollOption]
+    total: int
+
+
+@dataclass
+class ContactCard:
+    name: str
+    phones: list[str]
+
+
+@dataclass
+class MessageView:
+    id: str
+    chat_jid: str
+    sender_jid: str | None
+    sender_name: str | None
+    from_me: bool
+    timestamp_iso: str
+    text: str | None
+    media: MediaView | None
+    reply_to: QuoteView | None
+    forwarded: bool
+    edited: bool
+    deleted: bool
+    system: bool
+    reactions: list[ReactionView]
+    poll: PollView | None
+    contact_cards: list[ContactCard] | None
+    # Rows that came from a chat export have no WhatsApp message key: no reply, reaction or read receipt.
+    actionable: bool
+    # No delivery receipts are stored, so there is nothing to tick.
+    ticks: Literal["sent", "delivered", "read"] | None = None
+
+
+_CONTACT_HEAD = re.compile(r"\[Contact: (.*)\]")
+_PHONE_MARK = "📞 "
+
+
+def parse_contact_cards(content: str) -> list[ContactCard] | None:
+    """The bridge writes '[Contact: Name]' plus one '📞 number' line per phone; several contacts are separated by a
+    blank line. Anything that is not exactly that stays ordinary text (None)."""
+    cards: list[ContactCard] = []
+    for block in content.strip().split("\n\n"):
+        lines = block.split("\n")
+        head = _CONTACT_HEAD.fullmatch(lines[0])
+        if not head or not all(line.startswith(_PHONE_MARK) for line in lines[1:]):
+            return None
+        cards.append(ContactCard(head.group(1), [line[len(_PHONE_MARK) :].strip() for line in lines[1:]]))
+    return cards or None
+
+
+def _own_ids(conn: sqlite3.Connection, store_dir: Path | None, forms: list[str]) -> set[str]:
+    """Bare phone and LID ids of our own account: whatsmeow's device row, plus senders of our own messages here."""
+    own: set[str] = set()
+    if store_dir is not None and (store_dir / "whatsapp.db").exists():
+        try:
+            wa = sqlite3.connect(f"{(store_dir / 'whatsapp.db').resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                for jid, lid in wa.execute("SELECT jid, lid FROM whatsmeow_device"):
+                    own.update(_bare(v) for v in (jid, lid) if v)
+            finally:
+                wa.close()
+        except sqlite3.Error:
+            pass
+    for (sender,) in conn.execute(
+        f"SELECT DISTINCT sender FROM messages WHERE is_from_me = 1 AND chat_jid IN ({_marks(forms)})", forms
+    ):
+        if sender:
+            own.add(_bare(sender))
+    return own
+
+
+def _forms_of(conn: sqlite3.Connection, chat_jid: str) -> list[str]:
+    for conv in _conversations(conn):
+        if chat_jid == conv.jid or chat_jid in conv.forms:
+            return conv.forms
+    return [chat_jid]
+
+
+def _has_file(store_dir: Path | None, forms: list[str], msg_id: str, filename: str | None) -> bool:
+    """Auto-download keeps store/<jid>/<filename>; later downloads keep store/media/<jid>/<msgid><ext>."""
+    if store_dir is None:
+        return False
+    bad = ("/", "\\")
+    for jid in forms:
+        if jid.startswith(".") or any(c in jid for c in bad):
+            continue
+        if (
+            filename
+            and not any(c in Path(filename).name for c in bad)
+            and (store_dir / jid / Path(filename).name).is_file()
+        ):
+            return True
+        if not any(c in msg_id for c in bad):
+            folder = store_dir / "media" / jid
+            if folder.is_dir() and any(folder.glob(f"{glob_escape(msg_id)}.*")):
+                return True
+    return False
+
+
+def glob_escape(text: str) -> str:
+    return re.sub(r"([\[\]*?])", r"[\1]", text)
+
+
+def _sender_label(sender: str | None, stored: str | None, names: dict) -> str | None:
+    if sender and sender in names:
+        return names[sender].name
+    if sender and sender.startswith("import:"):
+        return sender[7:] or None
+    return stored or None
+
+
+def list_messages_page(
+    conn: sqlite3.Connection, chat_jid: str, *, before_ts: str | None = None, limit: int = PAGE_SIZE
+) -> tuple[list[MessageView], bool]:
+    """The newest `limit` messages older than `before_ts` over every JID form of the chat, oldest first, and
+    whether anything older exists. Time order is by instant (SQLite julianday), so mixed UTC offsets sort right;
+    rows sharing the oldest instant are kept together so a page boundary never splits them."""
+    forms = _forms_of(conn, chat_jid)
+    cols = _columns(conn, "messages")
+
+    def col(name: str, default: str = "NULL") -> str:
+        return name if name in cols else default
+
+    select = f"""
+        SELECT id, chat_jid, sender, sender_name, content, timestamp, COALESCE(is_from_me, 0), media_type, filename,
+               {col("deleted_at")}, COALESCE({col("quoted_message_id")}, {col("reply_to_message_id")}),
+               {col("quoted_sender_name")}, {col("quoted_text_preview")},
+               COALESCE({col("is_edited", "0")}, 0) OR COALESCE({col("edit_count", "0")}, 0) > 0,
+               COALESCE({col("is_forwarded", "0")}, 0), COALESCE({col("is_system_message", "0")}, 0),
+               julianday(timestamp)
+        FROM messages
+        WHERE chat_jid IN ({_marks(forms)}) AND julianday(timestamp) IS NOT NULL
+          AND (content IS NULL OR content NOT LIKE '[Poll Vote:%')"""
+    select_base = select
+    args: list[object] = list(forms)
+    if before_ts is not None:
+        parsed = parse_ts(before_ts)
+        if parsed is None:
+            raise ValueError("bad timestamp")
+        select += " AND julianday(timestamp) < julianday(?)"
+        args.append(parsed.isoformat(sep=" "))
+    rows = conn.execute(select + " ORDER BY julianday(timestamp) DESC LIMIT ?", [*args, limit]).fetchall()
+    has_more = False
+    if rows:
+        oldest = rows[-1][16]
+        seen = {(r[0], r[1]) for r in rows}
+        ties = conn.execute(select_base + " AND julianday(timestamp) = ?", [*forms, oldest]).fetchall()
+        rows.extend(r for r in ties if (r[0], r[1]) not in seen)
+        has_more = (
+            conn.execute(select_base + " AND julianday(timestamp) < ? LIMIT 1", [*forms, oldest]).fetchone() is not None
+        )
+    rows.sort(key=lambda r: (r[16], r[0]))
+    return _build(conn, forms, rows), has_more
+
+
+def list_messages(
+    conn: sqlite3.Connection, chat_jid: str, *, before_ts: str | None = None, limit: int = PAGE_SIZE
+) -> list[MessageView]:
+    return list_messages_page(conn, chat_jid, before_ts=before_ts, limit=limit)[0]
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return bool(_columns(conn, table))
+
+
+def _quotes(
+    conn: sqlite3.Connection, forms: list[str], rows: list[tuple], store_dir: Path | None
+) -> dict[str, QuoteView]:
+    """Reply quotes. The quoted message is looked up in the store so that a quoted message deleted later shows
+    'Message deleted' and never the preview text that was stored when the reply arrived."""
+    wanted = {r[10]: r for r in rows if r[10]}
+    if not wanted:
+        return {}
+    found: dict[str, tuple] = {}
+    ids = list(wanted)
+    for chunk in _chunks(ids):
+        for q in conn.execute(
+            f"SELECT id, sender, sender_name, content, media_type, filename, COALESCE(is_from_me, 0), chat_jid,"
+            f" {'deleted_at' if 'deleted_at' in _columns(conn, 'messages') else 'NULL'}"
+            f" FROM messages WHERE id IN ({_marks(chunk)}) AND chat_jid IN ({_marks(forms)})",
+            [*chunk, *forms],
+        ):
+            found[q[0]] = q
+    senders = {q[1] for q in found.values() if q[1] and not q[6]}
+    names = resolve_display_names(conn, senders) if senders else {}
+    out: dict[str, QuoteView] = {}
+    for qid, row in wanted.items():
+        q = found.get(qid)
+        if q is None:
+            stored_name, stored_text = row[11], row[12]
+            preview = " ".join((stored_text or "").split())[:PREVIEW_MAX] or "Original message unavailable"
+            out[row[0]] = QuoteView(qid, stored_name or None, preview)
+            continue
+        voice = _voice_seconds(store_dir, forms, q[7], q[5]) if q[4] in ("audio", "ptt") else None
+        preview = _preview(q[3], q[4], q[5], bool(q[8]), voice)
+        who = "You" if q[6] else (row[11] or _sender_label(q[1], q[2], names))
+        out[row[0]] = QuoteView(qid, who, preview)
+    return out
+
+
+def _polls(conn: sqlite3.Connection, forms: list[str], poll_ids: list[str]) -> dict[str, PollView]:
+    """Poll options and live tally straight from the store (poll_options, poll_current_votes): no bridge call."""
+    if not poll_ids or not _table_exists(conn, "poll_options"):
+        return {}
+    options: dict[str, list[str]] = {}
+    for row in conn.execute(
+        f"SELECT message_id, option_name FROM poll_options WHERE message_id IN ({_marks(poll_ids)})"
+        f" AND chat_jid IN ({_marks(forms)}) ORDER BY option_index",
+        [*poll_ids, *forms],
+    ):
+        options.setdefault(row[0], []).append(row[1])
+    tallies: dict[str, dict[str, int]] = {}
+    voters: dict[str, int] = {}
+    if _table_exists(conn, "poll_current_votes"):
+        for pid, encoded in conn.execute(
+            f"SELECT poll_message_id, selected_options FROM poll_current_votes"
+            f" WHERE poll_message_id IN ({_marks(poll_ids)}) AND chat_jid IN ({_marks(forms)})",
+            [*poll_ids, *forms],
+        ):
+            try:
+                picked = json.loads(encoded)
+            except ValueError:
+                continue
+            if not isinstance(picked, list) or not picked:
+                continue  # a retracted vote
+            voters[pid] = voters.get(pid, 0) + 1
+            for name in picked:
+                tallies.setdefault(pid, {})[str(name)] = tallies.get(pid, {}).get(str(name), 0) + 1
+    return {
+        pid: PollView(
+            "", [PollOption(o, tallies.get(pid, {}).get(o, 0)) for o in options.get(pid, [])], voters.get(pid, 0)
+        )
+        for pid in poll_ids
+    }
+
+
+def _reactions(
+    conn: sqlite3.Connection, forms: list[str], ids: list[str], own: set[str]
+) -> dict[str, list[ReactionView]]:
+    """Per message: one entry per emoji with its count. An empty emoji is a removal tombstone and is left out."""
+    if not ids or not _table_exists(conn, "message_reactions"):
+        return {}
+    counts: dict[str, dict[str, list]] = {}
+    for chunk in _chunks(ids):
+        for mid, sender, emoji in conn.execute(
+            f"SELECT message_id, sender, emoji FROM message_reactions WHERE message_id IN ({_marks(chunk)})"
+            f" AND chat_jid IN ({_marks(forms)}) AND emoji <> '' ORDER BY reacted_at, sender",
+            [*chunk, *forms],
+        ):
+            entry = counts.setdefault(mid, {}).setdefault(emoji, [0, False])
+            entry[0] += 1
+            entry[1] = entry[1] or _bare(sender) in own
+    return {
+        mid: [ReactionView(e, c, m) for e, (c, m) in sorted(per.items(), key=lambda kv: -kv[1][0])]
+        for mid, per in counts.items()
+    }
+
+
+def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> list[MessageView]:
+    store_dir = _db_dir(conn)
+    own = _own_ids(conn, store_dir, forms)
+    senders = {r[2] for r in rows if r[2] and not r[6]}
+    names = resolve_display_names(conn, senders) if senders else {}
+    quotes = _quotes(conn, forms, rows, store_dir)
+    live = [r for r in rows if not r[9]]
+    polls = _polls(
+        conn,
+        forms,
+        [r[0] for r in live if not r[7] and (r[4] or "").startswith("[Poll: ") and (r[4] or "").endswith("]")],
+    )
+    reactions = _reactions(conn, forms, [r[0] for r in live], own)
+    out: list[MessageView] = []
+    for r in rows:
+        (mid, chat, sender, sender_name, content, stamp, from_me, media_type, filename, deleted_at) = r[:10]
+        deleted = bool(deleted_at)
+        stamped = parse_ts(stamp)
+        text: str | None = content or None
+        media = poll = cards = None
+        if deleted:
+            text = None  # the stored text of a deleted message is never sent to the client
+        elif media_type:
+            voice = _voice_seconds(store_dir, forms, chat, filename) if media_type in ("audio", "ptt") else None
+            media = MediaView(media_type, filename or None, voice, _has_file(store_dir, forms, mid, filename))
+        elif content and mid in polls:
+            poll = polls[mid]
+            poll.question = content[7:-1]
+            text = None
+        elif content and (parsed := parse_contact_cards(content)):
+            cards, text = parsed, None
+        out.append(
+            MessageView(
+                id=mid,
+                chat_jid=chat,
+                sender_jid=sender or None,
+                sender_name=None if from_me else _sender_label(sender, sender_name, names),
+                from_me=bool(from_me),
+                timestamp_iso=stamped.isoformat() if stamped else str(stamp),
+                text=text,
+                media=media,
+                reply_to=None if deleted else quotes.get(mid),
+                forwarded=bool(r[14]) and not deleted,
+                edited=bool(r[13]) and not deleted,
+                deleted=deleted,
+                system=bool(r[15]),
+                reactions=[] if deleted else reactions.get(mid, []),
+                poll=poll,
+                contact_cards=cards,
+                actionable=not mid.startswith(IMPORT_PREFIX),
+            )
+        )
+    return out
+
+
+def members_line(conn: sqlite3.Connection, chat_jid: str) -> str | None:
+    """'Ana, Nikola, you' for a group, from who has written here lately (the store keeps no member list)."""
+    if not chat_jid.endswith("@g.us"):
+        return None
+    forms = _forms_of(conn, chat_jid)
+    rows = conn.execute(
+        f"SELECT sender, sender_name FROM messages WHERE chat_jid IN ({_marks(forms)}) AND COALESCE(is_from_me, 0) = 0"
+        " AND sender IS NOT NULL AND COALESCE(is_system_message, 0) = 0 ORDER BY julianday(timestamp) DESC LIMIT 300",
+        forms,
+    ).fetchall()
+    senders = {s for s, _ in rows}
+    names = resolve_display_names(conn, senders) if senders else {}
+    seen: dict[str, None] = {}
+    for sender, stored in rows:
+        label = _sender_label(sender, stored, names)
+        if label and not _is_number_like(label):
+            seen.setdefault(label)
+    ordered = sorted(seen, key=fold)[:8]
+    mine = conn.execute(
+        f"SELECT 1 FROM messages WHERE chat_jid IN ({_marks(forms)}) AND is_from_me = 1 LIMIT 1", forms
+    ).fetchone()
+    return ", ".join([*ordered, "you"]) if mine or ordered else None

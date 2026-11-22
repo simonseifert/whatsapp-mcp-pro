@@ -73,7 +73,7 @@ def test_filters(conns) -> None:
     unread = store.list_chats(*conns, filter="unread")
     assert set(jids(unread)) == {fx.ANA, fx.FAMILY, fx.NEIGHBOURHOOD, fx.STUDY, fx.NIKOLA}
     groups = store.list_chats(*conns, filter="groups")
-    assert set(jids(groups)) == {fx.FAMILY, fx.NEIGHBOURHOOD, fx.STUDY}
+    assert set(jids(groups)) == {fx.FAMILY, fx.NEIGHBOURHOOD, fx.STUDY, fx.EKIPA}
     favourites = store.list_chats(*conns, filter="favourites")
     assert jids(favourites) == [fx.FAMILY, fx.ANA]
 
