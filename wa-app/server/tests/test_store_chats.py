@@ -242,3 +242,11 @@ def _app_db() -> sqlite3.Connection:
     db = sqlite3.connect(":memory:")
     db.executescript(appdb.SCHEMA)
     return db
+
+
+def test_contact_preview_with_phones_and_array() -> None:
+    one = "[Contact: Ana]\n📞 +385 91 000 0000\n📞 +385 51 000 000"
+    assert store._preview(one, None, None, False, None) == "👤 Ana"
+    two = "[Contact: Ana]\n📞 +385 91 000 0000\n\n[Contact: Bo]\n📞 4915112345678"
+    assert store._preview(two, None, None, False, None) == "👤 Ana +1"
+    assert store._preview("[Contact: Old]", None, None, False, None) == "👤 Old"

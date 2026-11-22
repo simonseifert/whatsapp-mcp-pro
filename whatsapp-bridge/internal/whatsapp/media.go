@@ -66,6 +66,9 @@ func ExtractTextContent(msg *waE2E.Message) string {
 	if arr := msg.GetContactsArrayMessage(); arr != nil {
 		var blocks []string
 		for _, c := range arr.GetContacts() {
+			if len(blocks) >= maxContactCards {
+				break // the wa-app parser takes no trailer line, so extra cards are simply dropped
+			}
 			if c != nil {
 				blocks = append(blocks, contactCardContent(c))
 			}
@@ -350,6 +353,9 @@ func placeholderWaveform(duration uint32) []byte {
 
 // maxContactPhones caps the phone numbers kept per contact card, so a hostile vCard cannot bloat a stored message.
 const maxContactPhones = 20
+
+// maxContactCards caps the cards kept from one contacts array message.
+const maxContactCards = 10
 
 // contactCardContent renders a shared contact as "[Contact: <name>]" followed by one "\n📞 <number>" line per
 // TEL entry of its vCard. The wa-app chat view parses exactly this format.

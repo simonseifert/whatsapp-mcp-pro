@@ -168,8 +168,10 @@ def _preview(
         return f"📄 {text or filename or 'Document'}"[:PREVIEW_MAX]
     if text.startswith("[Poll: ") and text.endswith("]"):
         return f"📊 Poll: {text[7:-1]}"[:PREVIEW_MAX]
-    if text.startswith("[Contact: ") and text.endswith("]"):
-        return f"👤 {text[10:-1]}"[:PREVIEW_MAX]
+    cards = parse_contact_cards(content or "")
+    if cards:
+        extra = f" +{len(cards) - 1}" if len(cards) > 1 else ""
+        return f"👤 {cards[0].name}{extra}"[:PREVIEW_MAX]
     return text[:PREVIEW_MAX]
 
 

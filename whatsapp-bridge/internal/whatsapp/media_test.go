@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -310,5 +311,19 @@ func TestContactCardContent(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestContactsArrayCappedAtTenCards(t *testing.T) {
+	var cs []*waE2E.ContactMessage
+	for i := 0; i < 15; i++ {
+		cs = append(cs, &waE2E.ContactMessage{DisplayName: proto.String(fmt.Sprintf("C%d", i))})
+	}
+	got := ExtractTextContent(&waE2E.Message{ContactsArrayMessage: &waE2E.ContactsArrayMessage{Contacts: cs}})
+	if n := strings.Count(got, "[Contact: "); n != 10 {
+		t.Errorf("got %d cards, want 10", n)
+	}
+	if strings.Contains(got, "C10") {
+		t.Errorf("card 11 kept: %q", got)
 	}
 }
