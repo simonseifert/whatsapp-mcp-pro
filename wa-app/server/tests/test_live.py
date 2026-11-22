@@ -379,9 +379,10 @@ def test_hello_id_is_the_resume_point_not_the_latest_cursor() -> None:
         assert hello.split("\n")[0] != f"id: {hub.cursor}"
         replay = await anext(stream)
         await stream.aclose()
+        assert replay.startswith(f"id: {events[1].cursor}\nevent: chat\n")  # the first one after the resume point
         return replay
 
-    assert asyncio.run(run()).startswith("id: ")
+    assert '"n": 1' in asyncio.run(run())
 
 
 def test_absent_table_is_looked_up_again(settings: Settings) -> None:
@@ -400,3 +401,20 @@ def test_absent_table_is_looked_up_again(settings: Settings) -> None:
             (fx.EKIPA, now()),
         )
     assert [e.name for e in p.poll_once()] == ["message_changed", "chat"]
+
+
+def test_hello_id_on_a_gap_reproduces_the_gap() -> None:
+    async def run() -> None:
+        hub = live.Hub(history=3)
+        events = [hub.publish("chat", {"n": n}) for n in range(6)]
+        stale = events[0].cursor  # aged out of the 3 kept
+        stream = live.sse_stream(hub, stale)
+        await anext(stream)
+        hello = await anext(stream)
+        assert hello.startswith(f"id: {stale}\n")  # not the cursor: a drop now must still look like a gap
+        assert (await anext(stream)).startswith(f"id: {hub.cursor}\nevent: resync\n")
+        await stream.aclose()
+        again = hub.subscribe(last_event_id=stale)
+        assert again.queue.get_nowait().name == "resync"
+
+    asyncio.run(run())

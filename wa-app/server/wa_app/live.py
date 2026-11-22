@@ -135,6 +135,7 @@ class Hub:
         if last_event_id is not None:
             gap = last_event_id < self._base or (bool(self._history) and self._history[0].cursor > last_event_id + 1)
             if gap:
+                client.resume_point = last_event_id  # a drop before the resync flushes reproduces the gap
                 client.queue.put_nowait(Event("resync", {}, self._cursor))
             else:
                 client.resume_point = last_event_id  # the replay below is queued after the hello
