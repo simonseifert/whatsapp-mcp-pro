@@ -1,8 +1,11 @@
+import asyncio
+
 from starlette.testclient import TestClient
 
 from tests.conftest import PASSPHRASE
 from wa_app import appdb, auth
 from wa_app.config import Settings
+from wa_app.main import create_app
 
 
 def test_setup_only_once(client: TestClient) -> None:
@@ -86,3 +89,95 @@ def test_expired_session_invalid(settings: Settings) -> None:
     token = auth.new_session(conn, "ua")
     conn.execute("UPDATE sessions SET expires_at = 1")
     assert not auth.session_valid(conn, token)
+
+
+def _async_client(settings: Settings, peer: tuple[str, int] = ("127.0.0.1", 50000)):
+    import httpx2
+
+    transport = httpx2.ASGITransport(app=create_app(settings), client=peer)
+    return httpx2.AsyncClient(transport=transport, base_url="https://testserver")
+
+
+def test_parallel_wrong_logins_cannot_outrun_the_limit(settings: Settings, monkeypatch) -> None:
+    verified = 0
+    real = auth.check_passphrase
+
+    def counting(conn, passphrase):
+        nonlocal verified
+        verified += 1
+        return real(conn, passphrase)
+
+    monkeypatch.setattr(auth, "check_passphrase", counting)
+
+    async def scenario() -> int:
+        async with _async_client(settings) as c:
+            await c.post("/api/auth/setup", json={"passphrase": PASSPHRASE})
+            await asyncio.gather(
+                *[c.post("/api/auth/login", json={"passphrase": "wrong wrong wrong"}) for _ in range(10)]
+            )
+            return (await c.post("/api/auth/login", json={"passphrase": PASSPHRASE})).status_code
+
+    assert asyncio.run(scenario()) == 429
+    assert verified <= 5
+
+
+def test_concurrent_setups_yield_one_winner(settings: Settings) -> None:
+    async def scenario():
+        async with _async_client(settings) as c:
+            first, second = await asyncio.gather(
+                c.post("/api/auth/setup", json={"passphrase": PASSPHRASE}),
+                c.post("/api/auth/setup", json={"passphrase": "a different passphrase"}),
+            )
+            login = await c.post("/api/auth/login", json={"passphrase": PASSPHRASE})
+            return sorted([first.status_code, second.status_code]), login.status_code
+
+    statuses, login = asyncio.run(scenario())
+    assert statuses == [200, 409]
+    assert login == 200
+
+
+def test_set_passphrase_never_overwrites(settings: Settings) -> None:
+    conn = appdb.connect(settings)
+    assert auth.set_passphrase(conn, PASSPHRASE) is True
+    assert auth.set_passphrase(conn, "a different passphrase") is False
+    assert auth.check_passphrase(conn, PASSPHRASE)
+
+
+def test_rate_limit_buckets_per_forwarded_client_behind_loopback(settings: Settings) -> None:
+    async def scenario():
+        async with _async_client(settings) as c:
+            await c.post("/api/auth/setup", json={"passphrase": PASSPHRASE})
+            for _ in range(5):
+                await c.post(
+                    "/api/auth/login",
+                    json={"passphrase": "wrong wrong wrong"},
+                    headers={"X-Forwarded-For": "100.64.0.1"},
+                )
+            blocked = await c.post(
+                "/api/auth/login", json={"passphrase": PASSPHRASE}, headers={"X-Forwarded-For": "100.64.0.1, 10.0.0.1"}
+            )
+            other = await c.post(
+                "/api/auth/login", json={"passphrase": PASSPHRASE}, headers={"X-Forwarded-For": "100.64.0.2"}
+            )
+            return blocked.status_code, other.status_code
+
+    assert asyncio.run(scenario()) == (429, 200)
+
+
+def test_forwarded_for_ignored_from_non_loopback_peer(settings: Settings) -> None:
+    async def scenario():
+        async with _async_client(settings, peer=("203.0.113.9", 50000)) as c:
+            await c.post("/api/auth/setup", json={"passphrase": PASSPHRASE})
+            for i in range(5):
+                await c.post(
+                    "/api/auth/login",
+                    json={"passphrase": "wrong wrong wrong"},
+                    headers={"X-Forwarded-For": f"198.51.100.{i}"},
+                )
+            return (
+                await c.post(
+                    "/api/auth/login", json={"passphrase": PASSPHRASE}, headers={"X-Forwarded-For": "198.51.100.99"}
+                )
+            ).status_code
+
+    assert asyncio.run(scenario()) == 429

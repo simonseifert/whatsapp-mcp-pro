@@ -50,22 +50,25 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         )
 
     async def setup(request: Request) -> Response:
+        passphrase = await _passphrase(request)
+        # No await below: the check and the insert run atomically on the event loop.
         if auth.passphrase_is_set(conn):
             return _error(409, "Already set up")
-        passphrase = await _passphrase(request)
         if passphrase is None:
             return _error(400, "Passphrase required")
         try:
-            auth.set_passphrase(conn, passphrase)
+            inserted = auth.set_passphrase(conn, passphrase)
         except ValueError as exc:
             return _error(400, str(exc))
-        return JSONResponse({"ok": True})
+        return JSONResponse({"ok": True}) if inserted else _error(409, "Already set up")
 
     async def login(request: Request) -> Response:
+        passphrase = await _passphrase(request)
+        # No await below: limit check, verification and failure record are atomic on the event loop,
+        # so parallel requests cannot all slip past the limit before any failure is recorded.
         ip = auth.client_ip(request)
         if auth.login_blocked(conn, ip):
             return _error(429, "Too many attempts, try again later")
-        passphrase = await _passphrase(request)
         if passphrase is None or not auth.check_passphrase(conn, passphrase):
             auth.record_failure(conn, ip)
             return _error(401, "Wrong passphrase")

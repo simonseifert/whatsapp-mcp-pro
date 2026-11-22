@@ -20,6 +20,8 @@ Status: first slice (server, login, empty shell). The chat list, chat view, medi
 | `WA_STORE_PATH` | same rule as `whatsapp-mcp-server` | Bridge store dir holding `messages.db` |
 | `WA_APP_INSECURE_COOKIES` | unset | `1` drops the `Secure` cookie flag, for local http development only |
 
+The login rate limit keys on the client address; behind a loopback proxy (tailscale serve) it uses the first `X-Forwarded-For` hop, trusted only from a loopback peer.
+
 Expose it with `tailscale serve` (never Funnel by default). Session cookies are `Secure`, so they need https.
 
 ## Develop

@@ -30,13 +30,15 @@ def passphrase_is_set(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT 1 FROM meta WHERE key='passphrase_hash'").fetchone() is not None
 
 
-def set_passphrase(conn: sqlite3.Connection, passphrase: str) -> None:
+def set_passphrase(conn: sqlite3.Connection, passphrase: str) -> bool:
+    """Store the first passphrase. Returns False (changing nothing) when one is already set."""
     if len(passphrase) < MIN_PASSPHRASE:
         raise ValueError(f"Passphrase must be at least {MIN_PASSPHRASE} characters")
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES ('passphrase_hash', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    cursor = conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('passphrase_hash', ?) ON CONFLICT(key) DO NOTHING",
         (_hasher.hash(passphrase),),
     )
+    return cursor.rowcount == 1
 
 
 def check_passphrase(conn: sqlite3.Connection, passphrase: str) -> bool:
@@ -92,8 +94,20 @@ def origin_ok(request: Request) -> bool:
     return urlsplit(origin).netloc == request.headers.get("host")
 
 
+_LOOPBACK = {"127.0.0.1", "::1"}
+
+
 def client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    """Peer address; behind a loopback reverse proxy (tailscale serve) the first X-Forwarded-For hop.
+
+    The header is trusted only when the direct peer is loopback, so a remote client cannot spoof it.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if peer in _LOOPBACK:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    return peer
 
 
 def _error(status: int, message: str) -> Response:
