@@ -143,21 +143,21 @@ def test_set_passphrase_never_overwrites(settings: Settings) -> None:
     assert auth.check_passphrase(conn, PASSPHRASE)
 
 
-def test_rate_limit_buckets_per_forwarded_client_behind_loopback(settings: Settings) -> None:
+def test_rate_limit_keys_on_last_forwarded_hop_behind_loopback(settings: Settings) -> None:
     async def scenario():
         async with _async_client(settings) as c:
             await c.post("/api/auth/setup", json={"passphrase": PASSPHRASE})
-            for _ in range(5):
+            for i in range(5):  # forged, rotating first hop; the proxy-appended last hop is the same
                 await c.post(
                     "/api/auth/login",
                     json={"passphrase": "wrong wrong wrong"},
-                    headers={"X-Forwarded-For": "100.64.0.1"},
+                    headers={"X-Forwarded-For": f"1.1.1.{i}, 100.64.0.5"},
                 )
             blocked = await c.post(
-                "/api/auth/login", json={"passphrase": PASSPHRASE}, headers={"X-Forwarded-For": "100.64.0.1, 10.0.0.1"}
+                "/api/auth/login", json={"passphrase": PASSPHRASE}, headers={"X-Forwarded-For": "1.1.1.1, 100.64.0.5"}
             )
             other = await c.post(
-                "/api/auth/login", json={"passphrase": PASSPHRASE}, headers={"X-Forwarded-For": "100.64.0.2"}
+                "/api/auth/login", json={"passphrase": PASSPHRASE}, headers={"X-Forwarded-For": "1.1.1.1, 100.64.0.6"}
             )
             return blocked.status_code, other.status_code
 

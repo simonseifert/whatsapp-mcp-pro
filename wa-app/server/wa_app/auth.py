@@ -98,13 +98,14 @@ _LOOPBACK = {"127.0.0.1", "::1"}
 
 
 def client_ip(request: Request) -> str:
-    """Peer address; behind a loopback reverse proxy (tailscale serve) the first X-Forwarded-For hop.
+    """Peer address; behind a loopback reverse proxy (tailscale serve) the last X-Forwarded-For hop.
 
-    The header is trusted only when the direct peer is loopback, so a remote client cannot spoof it.
+    The proxy appends the real client address, so only the last hop is trustworthy; earlier hops are
+    client-supplied. The header is trusted only when the direct peer is loopback.
     """
     peer = request.client.host if request.client else "unknown"
     if peer in _LOOPBACK:
-        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
         if forwarded:
             return forwarded
     return peer
