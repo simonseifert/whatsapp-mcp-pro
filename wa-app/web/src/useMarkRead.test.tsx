@@ -7,7 +7,7 @@ function Probe(props: Parameters<typeof useMarkRead>[0]) {
   useMarkRead(props)
   return null
 }
-const base = { jid: 'a@s.whatsapp.net', ready: true, newestKey: 'a/1', unread: 2, atBottom: true }
+const base = { jid: 'a@s.whatsapp.net', ready: true, newestKey: 'a/1', unread: 2, markedUnread: false, atBottom: true }
 
 describe('useMarkRead', () => {
   let spy: ReturnType<typeof vi.spyOn>
@@ -66,5 +66,42 @@ describe('useMarkRead', () => {
       await vi.advanceTimersByTimeAsync(10)
     })
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useMarkRead (review fixes)', () => {
+  let spy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    vi.useFakeTimers()
+    spy = vi.spyOn(api, 'markRead').mockResolvedValue({ unread: 0, receipts_sent: 0 })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+  const open = { jid: 'a@s.whatsapp.net', ready: true, newestKey: 'a/1', atBottom: true, markedUnread: false }
+
+  it('waits for the chat detail: messages first, unread 2 afterwards', async () => {
+    const { rerender } = render(<Probe {...open} unread={undefined} />)
+    await act(() => vi.advanceTimersByTimeAsync(3000))
+    expect(spy).not.toHaveBeenCalled()
+    rerender(<Probe {...open} unread={2} />)
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks a chat with the phone dot even with nothing unread', async () => {
+    render(<Probe {...open} unread={0} markedUnread />)
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('rechecks visibility when the debounce timer fires', async () => {
+    const { rerender } = render(<Probe {...open} unread={0} />)
+    rerender(<Probe {...open} unread={0} newestKey="a/2" />)
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(() => vi.advanceTimersByTimeAsync(READ_DEBOUNCE_MS + 100))
+    expect(spy).not.toHaveBeenCalled()
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   })
 })

@@ -10,8 +10,10 @@ type Input = {
   ready: boolean
   /** Identifies the newest message; it changes only when something new arrived. */
   newestKey: string | undefined
-  /** Unread count the server reported when the chat was opened. */
-  unread: number
+  /** Unread count the server reported for the chat; undefined until the chat detail has loaded. */
+  unread: number | undefined
+  /** The phone's "marked unread" dot is showing: opening the chat clears it even with nothing unread. */
+  markedUnread: boolean
   /** The newest message is on screen (the reader is at the bottom). */
   atBottom: boolean
 }
@@ -25,7 +27,7 @@ function pageVisible(): boolean {
  * arrives while that stays true. Never repeats for the same newest message. A chat opened with nothing unread is not
  * marked: nothing changes on the phone side, so there is nothing to send.
  */
-export function useMarkRead({ jid, ready, newestKey, unread, atBottom }: Input): void {
+export function useMarkRead({ jid, ready, newestKey, unread, markedUnread, atBottom }: Input): void {
   const done = useRef<string | null>(null) // the newest message already marked (or needing no marking)
   const visible = useRef(pageVisible())
   const wake = useRef<(() => void) | null>(null)
@@ -40,17 +42,22 @@ export function useMarkRead({ jid, ready, newestKey, unread, atBottom }: Input):
   }, [])
 
   useEffect(() => {
-    if (!ready || !newestKey || !atBottom) return
+    done.current = null
+  }, [jid])
+
+  useEffect(() => {
+    if (!ready || !newestKey || !atBottom || unread === undefined) return
     let timer: ReturnType<typeof setTimeout> | null = null
     const attempt = () => {
       if (!visible.current || done.current === newestKey) return
       const first = done.current === null
-      if (first && unread === 0) {
+      if (first && unread === 0 && !markedUnread) {
         done.current = newestKey
         return
       }
       timer = setTimeout(
         () => {
+          if (!pageVisible()) return // hidden meanwhile: the return to the page tries again
           const previous = done.current
           done.current = newestKey
           markRead(jid).catch(() => {
@@ -67,5 +74,5 @@ export function useMarkRead({ jid, ready, newestKey, unread, atBottom }: Input):
       wake.current = null
       if (timer) clearTimeout(timer)
     }
-  }, [jid, ready, newestKey, unread, atBottom])
+  }, [jid, ready, newestKey, unread, markedUnread, atBottom])
 }

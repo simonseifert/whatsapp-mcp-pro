@@ -7,6 +7,7 @@ marker get one: incoming, not system, not deleted, never an `import-` id, at mos
 import logging
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 
 from . import appdb, mcp_lib, store, unread
@@ -15,6 +16,7 @@ from .config import Settings
 logger = logging.getLogger("wa_app.sending")
 
 RECEIPT_BATCH = 50
+RECEIPT_CAP = 200  # per read: only the newest this many get a receipt (a long-unread chat is not a flood)
 _RECEIPT_SUFFIXES = ("@s.whatsapp.net", "@lid", "@g.us")  # no receipts for newsletters or status
 
 # Held while a read is decided and recorded, so two quick calls cannot claim the same messages twice.
@@ -26,8 +28,9 @@ Batch = tuple[str, str | None, list[str]]
 
 @dataclass
 class ReadResult:
-    chat: store.ChatSummary | None  # None: no such chat
+    chat: store.ChatSummary | None  # None: no such chat, or it vanished right after the read
     receipts_sent: int = 0
+    found: bool = True
 
 
 def _unread_rows(
@@ -66,7 +69,7 @@ def _batches(rows: list[tuple[str, str, str | None]]) -> list[Batch]:
             if not sender:
                 logger.info("no receipt for %s: group message without a sender", mid)
                 continue
-            key = (chat, sender)
+            key: tuple[str, str | None] = (chat, sender)
         else:
             key = (chat, None)
         grouped.setdefault(key, []).append(mid)
@@ -80,9 +83,10 @@ def _batches(rows: list[tuple[str, str, str | None]]) -> list[Batch]:
 def _claim(ro: sqlite3.Connection, appconn: sqlite3.Connection, jid: str) -> list[Batch] | None:
     """Record the chat as read in app.db and return the receipts to send; None when the chat is unknown."""
     with _claim_lock, appdb.db_lock:
-        conv, state = unread.conversation(ro, jid)
-        if conv is None:
+        found = unread.conversation(ro, jid)
+        if found is None:
             return None
+        conv, state = found
         forms = [conv.jid, *conv.forms]
         newest = ro.execute(
             f"SELECT MAX(CAST(strftime('%s', timestamp) AS INTEGER)) FROM messages"
@@ -95,10 +99,14 @@ def _claim(ro: sqlite3.Connection, appconn: sqlite3.Connection, jid: str) -> lis
         rows = _unread_rows(ro, conv.forms, marker.isoformat(sep=" ") if marker else None, state.history_unread)
         # Local state first: a bridge that is down must not keep the chat unread.
         appconn.execute(
-            "INSERT INTO read_state (chat_jid, read_at) VALUES (?, ?)"
-            " ON CONFLICT(chat_jid) DO UPDATE SET read_at = MAX(COALESCE(read_at, 0), excluded.read_at)",
-            (conv.jid, int(newest)),
+            "INSERT INTO read_state (chat_jid, read_at, opened_at) VALUES (?, ?, ?)"
+            " ON CONFLICT(chat_jid) DO UPDATE SET read_at = MAX(COALESCE(read_at, 0), excluded.read_at),"
+            " opened_at = excluded.opened_at",
+            (conv.jid, int(newest), int(time.time())),
         )
+        if len(rows) > RECEIPT_CAP:
+            logger.info("read of %s: %d unread, receipts for the newest %d only", conv.jid, len(rows), RECEIPT_CAP)
+            rows = rows[-RECEIPT_CAP:]
         return _batches(rows)
 
 
@@ -123,7 +131,7 @@ def mark_read(settings: Settings, appconn: sqlite3.Connection, jid: str) -> Read
     try:
         batches = _claim(ro, appconn, jid)
         if batches is None:
-            return ReadResult(None)
+            return ReadResult(None, found=False)
         sent = _send(batches)
         with appdb.db_lock:
             return ReadResult(store.get_chat(ro, appconn, jid), sent)

@@ -186,7 +186,7 @@ def test_store_without_optional_tables(tmp_path: Path) -> None:
     db.commit()
     db.close()
     ro = sqlite3.connect(f"file:{path / 'messages.db'}?mode=ro", uri=True)
-    chats = store.list_chats(ro, sqlite3.connect(":memory:"))
+    chats = store.list_chats(ro, _app_db())
     assert [(c.name, c.unread) for c in chats] == [("Ana", 0)]
     ro.close()
 
@@ -227,7 +227,7 @@ def test_statement_count_does_not_scan_directory_per_chat(tmp_path: Path) -> Non
         ro = _big_store(tmp_path, n)
         statements: list[str] = []
         ro.set_trace_callback(statements.append)
-        chats = store.list_chats(ro, sqlite3.connect(":memory:"), limit=10_000)
+        chats = store.list_chats(ro, _app_db(), limit=10_000)
         assert len(chats) == n
         directory = [q for q in statements if "identities" in q]
         # Our grouping reads identities once; the rest is lib.naming's name lookup, one query per 200 keys.
@@ -236,3 +236,9 @@ def test_statement_count_does_not_scan_directory_per_chat(tmp_path: Path) -> Non
         counts[n] = len(statements)
         ro.close()
     assert counts[1000] - counts[100] <= 2 * 900 + 10
+
+
+def _app_db() -> sqlite3.Connection:
+    db = sqlite3.connect(":memory:")
+    db.executescript(appdb.SCHEMA)
+    return db

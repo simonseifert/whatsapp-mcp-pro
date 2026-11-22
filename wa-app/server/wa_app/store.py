@@ -253,17 +253,19 @@ class _State:
     marked_unread: bool = False
     muted_until: int = 0
     last_read_at: str | None = None
+    marked_changed_at: str | None = None
     history_unread: int | None = None
 
 
 def _states(conn: sqlite3.Connection, conversations: list[_Conversation]) -> dict[str, _State]:
     if not _columns(conn, "chat_state"):
         return {}
+    changed = "marked_unread_changed_at" if "marked_unread_changed_at" in _columns(conn, "chat_state") else "NULL"
     raw = {
         r[0]: r
         for r in conn.execute(
-            "SELECT chat_jid, pinned, archived, marked_unread, muted_until, last_read_at, history_unread_count"
-            " FROM chat_state"
+            f"SELECT chat_jid, pinned, archived, marked_unread, muted_until, last_read_at, history_unread_count,"
+            f" {changed} FROM chat_state"
         )
     }
     out: dict[str, _State] = {}
@@ -283,6 +285,10 @@ def _states(conn: sqlite3.Connection, conversations: list[_Conversation]) -> dic
                 newest_read, state.last_read_at = read_at, r[5]
             if r[6] is not None:
                 state.history_unread = (state.history_unread or 0) + r[6]
+            if r[3] and (parse_ts(r[7]) or datetime.min.replace(tzinfo=UTC)) >= (
+                parse_ts(state.marked_changed_at) or datetime.min.replace(tzinfo=UTC)
+            ):
+                state.marked_changed_at = r[7]
         out[conv.jid] = state
     return out
 
@@ -447,7 +453,7 @@ def list_chats_with_count(
                     timestamp_iso=stamped.isoformat() if stamped else str(stamp),
                 ),
                 unread=counter.count(conv.forms, state.last_read_at, state.history_unread),
-                marked_unread=state.marked_unread,
+                marked_unread=counter.dot(conv.forms + [conv.jid], state.marked_unread, state.marked_changed_at),
                 pinned=state.pinned,
                 muted=muted,
                 archived=state.archived,

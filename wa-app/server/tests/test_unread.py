@@ -1,7 +1,9 @@
 """Read state that follows the phone: the marker, the counts, and the read receipts."""
 
 import sqlite3
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
@@ -10,9 +12,11 @@ from tests import conftest as fx
 from wa_app import appdb, mcp_lib, store, unread
 from wa_app.config import Settings
 
+Conns = tuple[sqlite3.Connection, sqlite3.Connection]
+
 
 @pytest.fixture
-def conns(settings: Settings):
+def conns(settings: Settings) -> Iterator[Conns]:
     ro = store.open_ro(settings)
     app = appdb.connect(settings)
     yield ro, app
@@ -51,14 +55,14 @@ def receipts(monkeypatch: pytest.MonkeyPatch):
     return calls, answer
 
 
-def test_phone_read_clears_unread(settings: Settings, conns) -> None:
+def test_phone_read_clears_unread(settings: Settings, conns: Conns) -> None:
     assert unread.count(*conns, fx.ANA) == 2
     bridge_write(settings, "UPDATE chat_state SET last_read_at=? WHERE chat_jid=?", stamp(1), fx.ANA)
     assert unread.count(*conns, fx.ANA) == 0
     assert next(c for c in store.list_chats(*conns) if c.jid == fx.ANA).unread == 0
 
 
-def test_app_read_clears_unread(settings: Settings, conns) -> None:
+def test_app_read_clears_unread(settings: Settings, conns: Conns) -> None:
     assert unread.count(*conns, fx.ANA) == 2
     app_read(settings, fx.ANA, 1)
     assert unread.count(*conns, fx.ANA) == 0
@@ -68,7 +72,7 @@ def test_app_read_clears_unread(settings: Settings, conns) -> None:
     assert marker is not None and (datetime.now(UTC) - marker) < timedelta(minutes=2)
 
 
-def test_marker_is_the_later_of_phone_and_app(settings: Settings, conns) -> None:
+def test_marker_is_the_later_of_phone_and_app(settings: Settings, conns: Conns) -> None:
     app_read(settings, fx.ANA, 500)  # older than the phone's marker (100 minutes ago)
     phone = store.parse_ts(stamp(100))
     marker = unread.read_marker(*conns, fx.ANA)
@@ -76,12 +80,12 @@ def test_marker_is_the_later_of_phone_and_app(settings: Settings, conns) -> None
     assert unread.count(*conns, fx.ANA) == 2
 
 
-def test_marked_unread_shows_dot(conns) -> None:
+def test_marked_unread_shows_dot(conns: Conns) -> None:
     nikola = next(c for c in store.list_chats(*conns) if c.jid == fx.NIKOLA)
     assert nikola.marked_unread is True and nikola.unread == 0
 
 
-def test_no_marker_uses_history_count(conns) -> None:
+def test_no_marker_uses_history_count(conns: Conns) -> None:
     assert unread.read_marker(*conns, fx.FAMILY) is None
     assert unread.count(*conns, fx.FAMILY) == 5
     assert unread.count(*conns, fx.IVANA) == 0  # no marker, no history
@@ -221,3 +225,77 @@ def test_concurrent_reads_send_receipts_once(settings: Settings, receipts) -> No
         results = list(pool.map(lambda _: sending.mark_read(settings, app, fx.ANA), range(4)))
     assert sorted(r.receipts_sent for r in results) == [0, 0, 0, 2]
     assert len(calls) == 1
+
+
+# --- review fixes -----------------------------------------------------------------------------------------------
+
+
+def dot(logged_in: TestClient, jid: str) -> bool:
+    chats = logged_in.get("/api/chats").json()["chats"]
+    return next(c for c in chats if c["jid"] == jid)["marked_unread"]
+
+
+def test_marked_unread_dot_clears_after_app_read_and_returns_when_marked_again(
+    logged_in: TestClient, settings: Settings, receipts
+) -> None:
+    bridge_write(settings, "UPDATE chat_state SET marked_unread_changed_at=? WHERE chat_jid=?", stamp(60), fx.NIKOLA)
+    assert dot(logged_in, fx.NIKOLA) is True
+    assert logged_in.post(f"/api/chats/{fx.NIKOLA}/read").json()["unread"] == 0
+    assert dot(logged_in, fx.NIKOLA) is False
+    # The phone marks it unread again, later than the app's read.
+    bridge_write(settings, "UPDATE chat_state SET marked_unread_changed_at=? WHERE chat_jid=?", stamp(-5), fx.NIKOLA)
+    assert dot(logged_in, fx.NIKOLA) is True
+
+
+def test_read_does_not_claim_future_messages(logged_in: TestClient, settings: Settings, receipts) -> None:
+    """The read marker is the newest message time, never 'now': a delayed message stays unread."""
+    logged_in.post(f"/api/chats/{fx.ANA}/read")
+    bridge_write(
+        settings,
+        "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
+        "LATE1", fx.ANA, fx.ANA, "delayed", stamp(3),
+    )  # fmt: skip
+    chats = logged_in.get("/api/chats").json()["chats"]
+    assert next(c for c in chats if c["jid"] == fx.ANA)["unread"] == 1
+
+
+def test_app_db_gains_opened_at_column(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE read_state (chat_jid TEXT PRIMARY KEY, read_at INTEGER)")
+    appdb.migrate(old)
+    assert "opened_at" in {r[1] for r in old.execute("PRAGMA table_info(read_state)")}
+    old.close()
+
+
+def test_receipts_capped_to_newest_200(logged_in: TestClient, settings: Settings, receipts) -> None:
+    calls, _ = receipts
+    conn = sqlite3.connect(settings.store_path / "messages.db")
+    for n in range(260):
+        conn.execute(
+            "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
+            (f"C{n:03d}", fx.GYM, fx.GYM, "x", stamp(300 - n)),
+        )
+    conn.execute("INSERT INTO chat_state (chat_jid, last_read_at) VALUES (?, ?)", (fx.GYM, stamp(9000)))
+    conn.commit()
+    conn.close()
+    response = logged_in.post(f"/api/chats/{fx.GYM}/read")
+    assert response.json()["receipts_sent"] == 200
+    sent = [i for _, ids, _ in calls for i in ids]
+    assert len(sent) == 200 and "C259" in sent and "C060" in sent and "C059" not in sent
+
+
+def test_chat_vanishing_after_claim_still_answers_200(
+    logged_in: TestClient, receipts, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store, "get_chat", lambda *a, **k: None)
+    response = logged_in.post(f"/api/chats/{fx.ANA}/read")
+    assert response.status_code == 200 and response.json() == {"unread": 0, "receipts_sent": 2}
+
+
+def test_counter_raises_on_other_db_errors(conns: Conns) -> None:
+    ro, _ = conns
+    broken = sqlite3.connect(":memory:")
+    broken.execute("CREATE TABLE read_state (chat_jid TEXT PRIMARY KEY)")  # no read_at column
+    with pytest.raises(sqlite3.OperationalError):
+        unread.UnreadCounter(ro, broken)

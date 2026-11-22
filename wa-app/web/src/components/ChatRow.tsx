@@ -39,7 +39,7 @@ export function ChatRow({ chat, now }: { chat: ChatSummary; now?: Date }) {
               {chat.pinned && <Icon name="pin" size={16} />}
               {chat.unread > 0 && (
                 <span className={chat.muted ? 'badge muted' : 'badge'} aria-label={label ?? undefined}>
-                  {chat.unread}
+                  {chat.unread > 99 ? '99+' : chat.unread}
                 </span>
               )}
               {chat.unread === 0 && chat.marked_unread && <span className="dot" role="img" aria-label={label ?? undefined} />}

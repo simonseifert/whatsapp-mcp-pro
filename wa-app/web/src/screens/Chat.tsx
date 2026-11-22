@@ -40,7 +40,8 @@ export function Chat({ jid }: { jid: string }) {
     jid,
     ready: status === 'ready',
     newestKey: last ? `${last.chat_jid}/${last.id}` : undefined,
-    unread: detail?.chat.unread ?? 0,
+    unread: detail?.chat.unread,
+    markedUnread: detail?.chat.marked_unread ?? false,
     atBottom: bottom,
   })
 

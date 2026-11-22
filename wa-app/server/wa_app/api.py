@@ -239,8 +239,10 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             result = await run_in_threadpool(sending.mark_read, settings, conn, jid)
         except sqlite3.Error:
             return _error(503, "Message store unavailable")
-        if result.chat is None:
+        if not result.found:
             return _error(404, "Chat not found")
+        if result.chat is None:  # read and receipts are done; only the summary is missing
+            return JSONResponse({"unread": 0, "receipts_sent": result.receipts_sent})
         live.current_hub().publish("chat", {"chat": asdict(result.chat)})
         return JSONResponse({"unread": result.chat.unread, "receipts_sent": result.receipts_sent})
 
