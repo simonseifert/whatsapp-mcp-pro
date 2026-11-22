@@ -48,3 +48,16 @@ export class FakeBridge {
     this.added = []
   }
 }
+
+const appDbPath = join(process.env.TMPDIR ?? tmpdir(), `wa-app-e2e-${port}`, 'data', 'app.db')
+
+/** Forgets the app's own read marker for a chat, so a spec that read it leaves the fixtures as it found them. */
+export function forgetAppRead(chat: string): void {
+  const db = new DatabaseSync(appDbPath)
+  try {
+    db.exec('PRAGMA busy_timeout = 5000')
+    db.prepare('DELETE FROM read_state WHERE chat_jid = ?').run(chat)
+  } finally {
+    db.close()
+  }
+}

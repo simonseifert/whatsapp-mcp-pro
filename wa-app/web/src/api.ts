@@ -29,3 +29,10 @@ export function mediaUrl(chat: string, id: string, kind: 'file' | 'thumb' | 'ret
   const base = `/api/media/${encodeURIComponent(chat)}/${encodeURIComponent(id)}`
   return kind === 'thumb' ? `${base}/thumb` : kind === 'retry' ? `${base}?retry=1` : base
 }
+
+export type ReadResponse = { unread: number; receipts_sent: number }
+
+/** Marks the chat read here and on the phone's side (the server sends the read receipts). */
+export function markRead(jid: string): Promise<ReadResponse> {
+  return apiFetch<ReadResponse>(`/api/chats/${encodeURIComponent(jid)}/read`, { method: 'POST' })
+}

@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, media, store, transcripts
+from . import appdb, auth, live, media, sending, store, transcripts
 from .config import Settings
 
 MEDIA_RETRY_SECONDS = 6 * 3600
@@ -233,6 +233,17 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             return _error(status, result["error"])
         return JSONResponse(result)
 
+    async def chat_read(request: Request) -> Response:
+        jid = request.path_params["jid"]
+        try:
+            result = await run_in_threadpool(sending.mark_read, settings, conn, jid)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        if result.chat is None:
+            return _error(404, "Chat not found")
+        live.current_hub().publish("chat", {"chat": asdict(result.chat)})
+        return JSONResponse({"unread": result.chat.unread, "receipts_sent": result.receipts_sent})
+
     return [
         Route("/api/media/{chat}/{id}/thumb", media_thumb, methods=["GET"]),
         Route("/api/media/{chat}/{id}", media_file, methods=["GET"]),
@@ -245,6 +256,7 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/chats", chats, methods=["GET"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
+        Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
         Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),
     ]

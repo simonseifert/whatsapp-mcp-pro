@@ -6,6 +6,7 @@ import { Bubble } from '../components/Bubble'
 import { Icon } from '../components/Icon'
 import { toItems } from '../chatItems'
 import { useChat } from '../useChat'
+import { useMarkRead } from '../useMarkRead'
 
 const GROUP_KINDS = ['group', 'community_group', 'announcement']
 const LOAD_OLDER_AT_PX = 160
@@ -17,6 +18,7 @@ export function Chat({ jid }: { jid: string }) {
   const stickToEnd = useRef(false)
   const [riseKey, setRiseKey] = useState<string | null>(null)
   const [unseen, setUnseen] = useState(false)
+  const [bottom, setBottom] = useState(true)
 
   // Only a message that is now the newest of the chat moves the view: it rises in when the reader is at the bottom,
   // otherwise a "New messages" pill offers the jump. History arriving above it, or anywhere older, does neither.
@@ -33,6 +35,14 @@ export function Chat({ jid }: { jid: string }) {
   const lastId = messages[messages.length - 1]?.id
   const settled = useRef(false)
   const prevFirstId = useRef<string | undefined>(undefined)
+  const last = messages[messages.length - 1]
+  useMarkRead({
+    jid,
+    ready: status === 'ready',
+    newestKey: last ? `${last.chat_jid}/${last.id}` : undefined,
+    unread: detail?.chat.unread ?? 0,
+    atBottom: bottom,
+  })
 
   // Open at the newest message. When older messages arrive above (the first id changes), put the reader's view back
   // where it was: Safari has no native scroll anchoring. Not keyed on loadingOlder, which would consume the anchor
@@ -63,6 +73,7 @@ export function Chat({ jid }: { jid: string }) {
     const el = scroller.current
     if (!el) return
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_PX
+    setBottom(atBottom.current)
     if (atBottom.current) setUnseen(false)
     if (!hasMore || loadingOlder || anchor.current || el.scrollTop > LOAD_OLDER_AT_PX) return
     anchor.current = { height: el.scrollHeight, top: el.scrollTop }
@@ -129,6 +140,7 @@ export function Chat({ jid }: { jid: string }) {
             const el = scroller.current
             if (el) el.scrollTop = el.scrollHeight
             atBottom.current = true
+            setBottom(true)
             setUnseen(false)
           }}
         >

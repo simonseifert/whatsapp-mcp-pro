@@ -43,6 +43,13 @@ def get_profile_picture(jid: str, preview: bool = True) -> dict:
     return whatsapp.get_profile_picture(jid, preview=preview)
 
 
+def mark_messages_read(chat_jid: str, message_ids: list[str], sender_jid: str | None = None) -> dict:
+    """Send read receipts through the bridge (blocking HTTP: call from a worker thread). Others see blue ticks."""
+    import whatsapp
+
+    return whatsapp.mark_messages_read(chat_jid, message_ids, sender_jid=sender_jid)
+
+
 def transcribe_file(path: str, language: str | None = None) -> dict:
     from lib.transcribe import transcribe_file as transcribe
 
@@ -54,6 +61,7 @@ __all__ = [
     "chat_forms",
     "download_media",
     "get_profile_picture",
+    "mark_messages_read",
     "resolve_display_names",
     "server_dir",
     "transcribe_file",
