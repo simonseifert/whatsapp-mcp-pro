@@ -463,3 +463,13 @@ def test_poll_ticks_do_not_wait_behind_a_saturated_default_pool(settings: Settin
         return len(ticks)
 
     assert asyncio.run(asyncio.wait_for(run(), 5)) >= 3
+
+
+def test_resume_further_behind_than_the_queue_gets_one_resync() -> None:
+    hub = live.Hub(history=50, queue_size=5)
+    events = [hub.publish("chat", {"n": n}) for n in range(30)]
+    client = hub.subscribe(last_event_id=events[10].cursor)  # in the buffer, but 19 events behind a queue of 5
+    assert hub.client_count() == 1
+    assert client.resume_point == events[10].cursor
+    assert client.queue.get_nowait().name == "resync"
+    assert client.queue.empty()

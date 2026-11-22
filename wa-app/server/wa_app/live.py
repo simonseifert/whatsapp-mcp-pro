@@ -135,14 +135,15 @@ class Hub:
         )
         if last_event_id is not None:
             gap = last_event_id < self._base or (bool(self._history) and self._history[0].cursor > last_event_id + 1)
-            if gap:
+            pending = [] if gap else [e for e in self._history if e.cursor > last_event_id]
+            # A replay that would not fit the queue is treated like a gap: one resync instead of QueueFull.
+            if gap or len(pending) >= self._queue_size:
                 client.resume_point = last_event_id  # a drop before the resync flushes reproduces the gap
                 client.queue.put_nowait(Event("resync", {}, self._cursor))
             else:
                 client.resume_point = last_event_id  # the replay below is queued after the hello
-                for event in self._history:
-                    if event.cursor > last_event_id:
-                        client.queue.put_nowait(event)
+                for event in pending:
+                    client.queue.put_nowait(event)
         self._clients[client.id] = client
         return client
 
