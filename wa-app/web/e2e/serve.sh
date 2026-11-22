@@ -1,7 +1,9 @@
 #!/bin/sh
 # Starts wa-app against a throwaway data dir and a fictional bridge store. Used by playwright.config.ts.
 set -eu
-tmp=$(mktemp -d)
+# A known path, so e2e specs can write to the fictional store the way the bridge would (see e2e/store.ts).
+tmp="${TMPDIR:-/tmp}/wa-app-e2e-${WA_APP_PORT:-18085}"
+rm -rf "$tmp" && mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 cd "$(dirname "$0")/../../server"
 store=$(uv run python -c "import sys; from pathlib import Path; from tests.conftest import make_store; print(make_store(Path(sys.argv[1])))" "$tmp")

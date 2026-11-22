@@ -1,0 +1,280 @@
+"""Live updates: the change poller, the event hub and the SSE stream."""
+
+import asyncio
+import json
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime
+
+import pytest
+from starlette.testclient import TestClient
+
+from tests import conftest as fx
+from wa_app import live, store
+from wa_app.config import Settings
+
+
+@contextmanager
+def bridge(settings: Settings) -> Iterator[sqlite3.Connection]:
+    """Stand-in for the bridge: the one writer of messages.db."""
+    conn = sqlite3.connect(settings.store_path / "messages.db")
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def now() -> str:
+    return datetime.now().astimezone().replace(microsecond=0).isoformat(sep=" ")
+
+
+def add(conn: sqlite3.Connection, chat: str, mid: str, text: str, ts: str | None = None, **kw: object) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,?)",
+        (mid, chat, kw.get("sender", chat), text, ts or now(), 1 if kw.get("from_me") else 0),
+    )
+
+
+@pytest.fixture
+def poller(settings: Settings) -> live.Poller:
+    p = live.Poller(settings)
+    assert p.poll_once() == []  # the baseline: what is already in the store is not news
+    return p
+
+
+def names(events: list[live.Event]) -> list[str]:
+    return [e.name for e in events]
+
+
+def test_new_message_emitted_once(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        add(w, fx.ANA, "NEW1", "Stižem za 5 minuta")
+    events = poller.poll_once()
+    assert names(events) == ["message", "chat"]
+    message, chat = events[0].data, events[1].data
+    assert message["chat_jid"] == fx.ANA
+    assert message["message"]["id"] == "NEW1"
+    assert message["message"]["text"] == "Stižem za 5 minuta"
+    assert chat["chat"]["jid"] == fx.ANA
+    assert chat["chat"]["last_message"]["preview"] == "Stižem za 5 minuta"
+    assert poller.poll_once() == []
+
+
+def test_message_event_uses_the_chat_jid_the_list_uses(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        add(w, fx.TOMO_LID, "NEW2", "Evo me")
+    message = poller.poll_once()[0].data
+    assert message["chat_jid"] == fx.TOMO_PHONE  # the list shows him under the phone form
+    assert message["message"]["chat_jid"] == fx.TOMO_LID  # the row keeps its own, for dedupe by (chat_jid, id)
+
+
+def test_history_message_is_still_emitted_with_its_old_timestamp(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        add(w, fx.ANA, "OLD1", "Stara poruka iz povijesti", ts="2020-01-01 10:00:00+00:00")
+    message = poller.poll_once()[0].data["message"]
+    assert message["timestamp_iso"].startswith("2020-01-01")  # the client places it by time, not at the end
+
+
+def test_replaced_message_is_emitted_again(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        add(w, fx.ANA, "REP1", "first")
+    poller.poll_once()
+    with bridge(settings) as w:
+        add(w, fx.ANA, "REP1", "first, but replaced")  # INSERT OR REPLACE gives the row a new rowid
+    events = poller.poll_once()
+    assert names(events) == ["message", "chat"]
+    assert events[0].data["message"]["text"] == "first, but replaced"
+
+
+def test_edit_and_delete_emitted(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        w.execute(
+            "INSERT INTO message_edits (message_id, chat_jid, edit_id, new_content, edited_at, status)"
+            " VALUES ('E02', ?, 'x1', 'edited', ?, 'applied')",
+            (fx.EKIPA, now()),
+        )
+        w.execute(
+            "INSERT INTO message_edits (message_id, chat_jid, edit_id, new_content, edited_at, status)"
+            " VALUES ('E09', ?, 'x2', 'nope', ?, 'rejected')",
+            (fx.EKIPA, now()),
+        )
+        w.execute(
+            "INSERT INTO message_edits (message_id, chat_jid, edit_id, new_content, edited_at, status)"
+            " VALUES ('E13', ?, 'x3', 'later', ?, 'pending')",
+            (fx.EKIPA, now()),
+        )
+    events = poller.poll_once()
+    changed = [e.data for e in events if e.name == "message_changed"]
+    assert changed == [{"chat_jid": fx.EKIPA, "id": "E02"}]  # applied only
+    assert poller.poll_once() == []
+
+    with bridge(settings) as w:
+        w.execute("UPDATE messages SET deleted_at=? WHERE id='E11' AND chat_jid=?", (now(), fx.EKIPA))
+    events = poller.poll_once()
+    assert [e.data for e in events if e.name == "message_changed"] == [{"chat_jid": fx.EKIPA, "id": "E11"}]
+    assert poller.poll_once() == []
+
+
+def test_reaction_emitted(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        w.execute("INSERT INTO message_reactions VALUES (?,?,?,?,?)", (fx.EKIPA, "E09", fx.ANA, "😂", now()))
+    events = poller.poll_once()
+    assert [e.data for e in events if e.name == "reaction"] == [{"chat_jid": fx.EKIPA, "message_id": "E09"}]
+    assert poller.poll_once() == []
+
+
+def test_chat_state_change_emitted(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        w.execute("UPDATE chat_state SET pinned=0, pinned_changed_at=? WHERE chat_jid=?", (now(), fx.ANA))
+    events = poller.poll_once()
+    assert names(events) == ["chat"]
+    assert events[0].data["chat"]["jid"] == fx.ANA
+    assert events[0].data["chat"]["pinned"] is False
+    assert poller.poll_once() == []
+    with bridge(settings) as w:
+        w.execute("UPDATE chat_state SET last_read_at=? WHERE chat_jid=?", (now(), fx.ANA))
+    events = poller.poll_once()
+    assert events[0].data["chat"]["unread"] == 0
+
+
+def test_poll_survives_store_locked(
+    settings: Settings, poller: live.Poller, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    with bridge(settings) as w:
+        add(w, fx.ANA, "LOCK1", "while locked")
+    real = store.open_ro
+    monkeypatch.setattr(
+        store, "open_ro", lambda s: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked"))
+    )
+    assert poller.poll_once() == []  # logs and gives up for this tick
+    assert "locked" in caplog.text
+    monkeypatch.setattr(store, "open_ro", real)
+    assert names(poller.poll_once()) == ["message", "chat"]  # nothing was lost
+
+
+def test_history_sync_flood_collapses_to_a_resync(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        for n in range(live.MAX_MESSAGES_PER_TICK + 20):
+            add(w, fx.LONG_CHAT, f"FLOOD{n}", "history", ts="2019-01-01 10:00:00+00:00")
+    events = poller.poll_once()
+    assert "resync" in names(events)
+    assert sum(1 for e in events if e.name == "message") <= live.MAX_MESSAGES_PER_TICK
+
+
+def test_rows_removed_rebases_the_cursor_and_resyncs(settings: Settings, poller: live.Poller) -> None:
+    with bridge(settings) as w:
+        add(w, fx.ANA, "GONE1", "soon moved")
+    poller.poll_once()
+    with bridge(settings) as w:
+        w.execute("DELETE FROM messages WHERE id='GONE1'")  # a chat merge moves messages: the newest rowid is gone
+    assert names(poller.poll_once()) == ["resync"]
+    with bridge(settings) as w:
+        add(w, fx.ANA, "AFTER1", "still seen")  # reuses the freed rowid, which is past the rebased cursor
+    assert names(poller.poll_once()) == ["message", "chat"]
+
+
+# --- hub ---------------------------------------------------------------------------------------------------------
+
+
+def test_resume_with_last_event_id_replays_missed() -> None:
+    hub = live.Hub()
+    first = hub.publish("chat", {"n": 1})
+    hub.publish("chat", {"n": 2})
+    hub.publish("chat", {"n": 3})
+    client = hub.subscribe(last_event_id=first.cursor)
+    replay = [client.queue.get_nowait() for _ in range(client.queue.qsize())]
+    assert [e.data["n"] for e in replay] == [2, 3]
+    assert first.cursor < replay[0].cursor < replay[1].cursor  # a monotonic cursor
+
+
+def test_resume_keeps_only_the_last_500_and_asks_for_a_resync_beyond() -> None:
+    hub = live.Hub(queue_size=1000)
+    events = [hub.publish("chat", {"n": n}) for n in range(600)]
+    recent = hub.subscribe(last_event_id=events[300].cursor)  # inside the 500 kept
+    assert recent.queue.qsize() == 299
+    old = hub.subscribe(last_event_id=events[10].cursor)  # fell out of the buffer
+    assert old.queue.get_nowait().name == "resync"
+    assert old.queue.qsize() == 0
+    stale = hub.subscribe(last_event_id=1)  # from before this process started
+    assert stale.queue.get_nowait().name == "resync"
+
+
+def test_slow_client_is_dropped_not_buffered() -> None:
+    hub = live.Hub(queue_size=2)
+    slow = hub.subscribe()
+    fast = hub.subscribe()
+    for n in range(3):
+        hub.publish("chat", {"n": n})
+        while not fast.queue.empty():
+            fast.queue.get_nowait()
+    assert slow.dropped
+    assert not fast.dropped
+    assert hub.client_count() == 1
+    assert slow.queue.qsize() <= 2
+
+
+def test_visible_clients_counts_reported_visibility() -> None:
+    hub = live.Hub()
+    a, b = hub.subscribe(), hub.subscribe()
+    assert live.visible_clients() == 0
+    hub.set_visible(a.id, True)
+    hub.set_visible(b.id, True)
+    assert live.visible_clients() == 2
+    hub.set_visible(a.id, False)
+    assert live.visible_clients() == 1
+    hub.unsubscribe(b)
+    assert live.visible_clients() == 0
+    assert hub.set_visible("nobody", True) is False
+
+
+def test_stream_frames_and_heartbeat() -> None:
+    async def run() -> list[str]:
+        hub = live.Hub()
+        stream = live.sse_stream(hub, None, heartbeat=0.05)
+        out = [await anext(stream)]  # the preamble
+        out.append(await anext(stream))  # the client id event
+        out.append(await anext(stream))  # nothing published: a heartbeat comment
+        event = hub.publish("reaction", {"chat_jid": "c", "message_id": "m"})
+        out.append(await anext(stream))
+        out.append(str(event.cursor))
+        await stream.aclose()
+        assert hub.client_count() == 0
+        return out
+
+    preamble, hello, beat, frame, cursor = asyncio.run(run())
+    assert preamble.startswith("retry: 3000\n")
+    assert hello.startswith("event: hello\n") and '"client"' in hello
+    assert "id:" not in hello  # the hello must not move the resume cursor
+    assert beat.startswith(": ")
+    assert frame == f"id: {cursor}\nevent: reaction\ndata: {json.dumps({'chat_jid': 'c', 'message_id': 'm'})}\n\n"
+
+
+# --- routes ------------------------------------------------------------------------------------------------------
+
+
+def test_live_requires_login(client: TestClient) -> None:
+    assert client.get("/api/live").status_code == 401
+    assert client.post("/api/live/visibility", json={"client": "x", "visible": True}).status_code == 401
+
+
+def test_visibility_post(logged_in: TestClient) -> None:
+    assert logged_in.post("/api/live/visibility", json={"client": "nobody", "visible": True}).status_code == 404
+    assert logged_in.post("/api/live/visibility", json={"visible": "yes"}).status_code == 400
+    hub = live.current_hub()
+    client = hub.subscribe()
+    ok = logged_in.post("/api/live/visibility", json={"client": client.id, "visible": True})
+    assert ok.status_code == 200
+    assert live.visible_clients() == 1
+    bad = logged_in.post(
+        "/api/live/visibility", json={"client": client.id, "visible": False}, headers={"Origin": "https://evil.example"}
+    )
+    assert bad.status_code == 403  # goes through the Origin check
+    assert live.visible_clients() == 1
+
+
+def test_single_message_route(logged_in: TestClient) -> None:
+    body = logged_in.get(f"/api/chats/{fx.EKIPA}/messages/E09").json()
+    assert body["message"]["id"] == "E09"
+    assert logged_in.get(f"/api/chats/{fx.EKIPA}/messages/NOPE").status_code == 404

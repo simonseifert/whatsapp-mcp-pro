@@ -639,19 +639,13 @@ def _sender_label(sender: str | None, stored: str | None, names: dict) -> str | 
     return stored or None
 
 
-def list_messages_page(
-    conn: sqlite3.Connection, chat_jid: str, *, before_ts: str | None = None, limit: int = PAGE_SIZE
-) -> tuple[list[MessageView], bool]:
-    """The newest `limit` messages older than `before_ts` over every JID form of the chat, oldest first, and
-    whether anything older exists. Time order is by instant (SQLite julianday), so mixed UTC offsets sort right;
-    rows sharing the oldest instant are kept together so a page boundary never splits them."""
-    forms = _forms_of(conn, chat_jid)
-    cols = _columns(conn, "messages")
+def _message_select(cols: set[str], forms: list[str]) -> str:
+    """The SELECT shared by the page query and the single-message query; callers append their own conditions."""
 
     def col(name: str, default: str = "NULL") -> str:
         return name if name in cols else default
 
-    select = f"""
+    return f"""
         SELECT id, chat_jid, sender, sender_name, content, timestamp, COALESCE(is_from_me, 0), media_type, filename,
                {col("deleted_at")}, COALESCE({col("quoted_message_id")}, {col("reply_to_message_id")}),
                {col("quoted_sender_name")}, {col("quoted_text_preview")},
@@ -661,6 +655,36 @@ def list_messages_page(
         FROM messages
         WHERE chat_jid IN ({_marks(forms)}) AND julianday(timestamp) IS NOT NULL
           AND (content IS NULL OR content NOT LIKE '[Poll Vote:%')"""
+
+
+def get_message(conn: sqlite3.Connection, chat_jid: str, message_id: str) -> MessageView | None:
+    """One message by (chat jid, id), built exactly like a page row; None when it is unknown or not shown."""
+    forms = _forms_of(conn, chat_jid)
+    rows = conn.execute(
+        _message_select(_columns(conn, "messages"), forms) + " AND id = ? AND chat_jid = ?",
+        [*forms, message_id, chat_jid],
+    ).fetchall()
+    if not rows:  # the caller may name any form of the chat: fall back to the id within the conversation
+        rows = conn.execute(
+            _message_select(_columns(conn, "messages"), forms) + " AND id = ? LIMIT 1", [*forms, message_id]
+        ).fetchall()
+    return _build(conn, forms, rows)[0] if rows else None
+
+
+def conversation_index(conn: sqlite3.Connection) -> dict[str, str]:
+    """Every JID form of every conversation -> the JID the chat list uses for it (its phone form when it has one)."""
+    return {form: conv.jid for conv in _conversations(conn) for form in (*conv.forms, conv.jid)}
+
+
+def list_messages_page(
+    conn: sqlite3.Connection, chat_jid: str, *, before_ts: str | None = None, limit: int = PAGE_SIZE
+) -> tuple[list[MessageView], bool]:
+    """The newest `limit` messages older than `before_ts` over every JID form of the chat, oldest first, and
+    whether anything older exists. Time order is by instant (SQLite julianday), so mixed UTC offsets sort right;
+    rows sharing the oldest instant are kept together so a page boundary never splits them."""
+    forms = _forms_of(conn, chat_jid)
+    cols = _columns(conn, "messages")
+    select = _message_select(cols, forms)
     select_base = select
     args: list[object] = list(forms)
     if before_ts is not None:

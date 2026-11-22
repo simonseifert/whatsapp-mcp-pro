@@ -36,6 +36,12 @@ CREATE TABLE messages (
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
 CREATE INDEX idx_messages_chat_timestamp ON messages(chat_jid, timestamp DESC);
+CREATE TABLE message_edits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL, chat_jid TEXT NOT NULL, edit_id TEXT NOT NULL,
+    old_content TEXT, new_content TEXT NOT NULL, edited_at TIMESTAMP NOT NULL, editor_jid TEXT,
+    source TEXT NOT NULL DEFAULT 'live', status TEXT NOT NULL DEFAULT 'applied',
+    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE (chat_jid, message_id, edit_id)
+);
 CREATE TABLE contact_nicknames (
     jid TEXT PRIMARY KEY, nickname TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

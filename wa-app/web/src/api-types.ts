@@ -63,3 +63,12 @@ export type MessageView = {
 
 export type ChatDetail = { chat: ChatSummary; members_line: string | null }
 export type MessagesResponse = { messages: MessageView[]; has_more: boolean }
+
+/** What /api/live pushes. `resync` means "refetch": the server could not replay what was missed (or the page has
+ *  just come back to the foreground). */
+export type LiveEvent =
+  | { name: 'message'; data: { chat_jid: string; message: MessageView } }
+  | { name: 'message_changed'; data: { chat_jid: string; id: string } }
+  | { name: 'reaction'; data: { chat_jid: string; message_id: string } }
+  | { name: 'chat'; data: { chat: ChatSummary } }
+  | { name: 'resync'; data: Record<string, never> }

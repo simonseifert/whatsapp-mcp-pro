@@ -145,6 +145,17 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
 
         return with_store(work)
 
+    async def chat_message(request: Request) -> Response:
+        jid, mid = request.path_params["jid"], request.path_params["id"]
+
+        def work(ro: sqlite3.Connection) -> Response:
+            message = store.get_message(ro, jid, mid)
+            if message is None:
+                return _error(404, "Message not found")
+            return JSONResponse({"message": asdict(message)})
+
+        return with_store(work)
+
     def served(path: Path) -> Response:
         ctype = media.content_type(path)
         inline = media.is_inline(ctype)
@@ -235,4 +246,5 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         Route("/api/chats", chats, methods=["GET"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
+        Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),
     ]

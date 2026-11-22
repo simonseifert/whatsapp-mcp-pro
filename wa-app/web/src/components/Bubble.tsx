@@ -7,15 +7,15 @@ import { Poll } from './Poll'
 import { ReactionBar } from './ReactionBar'
 import { RichText } from './RichText'
 
-type Props = { message: MessageView; showSender: boolean; tail: boolean }
+type Props = { message: MessageView; showSender: boolean; tail: boolean; rise?: boolean }
 
 /** One message: bubble (tail on the last of a run), and its reactions beneath. */
-export function Bubble({ message: m, showSender, tail }: Props) {
+export function Bubble({ message: m, showSender, tail, rise = false }: Props) {
   const side = m.from_me ? 'me' : 'them'
   const hasMedia = m.media !== null
   const classes = ['bubble', m.deleted ? 'deleted' : '', hasMedia ? 'media' : ''].filter(Boolean).join(' ')
   return (
-    <div className={`msg ${side}${tail ? ' tail' : ' run'}`} data-message-id={m.id}>
+    <div className={`msg ${side}${tail ? ' tail' : ' run'}${rise ? ' rise' : ''}`} data-message-id={m.id}>
       <div className={classes}>
         {showSender && m.sender_name && (
           <div className="sender" dir="auto">

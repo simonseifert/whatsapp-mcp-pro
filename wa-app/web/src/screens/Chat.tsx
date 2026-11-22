@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
+import type { MessageView } from '../api-types'
 import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
 import { Icon } from '../components/Icon'
@@ -8,10 +9,25 @@ import { useChat } from '../useChat'
 
 const GROUP_KINDS = ['group', 'community_group', 'announcement']
 const LOAD_OLDER_AT_PX = 160
+const AT_BOTTOM_PX = 80 // within this of the end counts as "at the bottom"
 
 export function Chat({ jid }: { jid: string }) {
-  const { detail, messages, hasMore, status, loadingOlder, loadOlder, retry } = useChat(jid)
   const scroller = useRef<HTMLDivElement>(null)
+  const atBottom = useRef(true)
+  const stickToEnd = useRef(false)
+  const [riseKey, setRiseKey] = useState<string | null>(null)
+  const [unseen, setUnseen] = useState(false)
+
+  // Only a message that is now the newest of the chat moves the view: it rises in when the reader is at the bottom,
+  // otherwise a "New messages" pill offers the jump. History arriving above it, or anywhere older, does neither.
+  const onArrival = useCallback((message: MessageView, newest: boolean) => {
+    if (!newest) return
+    if (atBottom.current) {
+      stickToEnd.current = true
+      setRiseKey(`${message.chat_jid}/${message.id}`)
+    } else setUnseen(true)
+  }, [])
+  const { detail, messages, hasMore, status, loadingOlder, loadOlder, retry } = useChat(jid, onArrival)
   const anchor = useRef<{ height: number; top: number } | null>(null)
   const firstId = messages[0]?.id
   const lastId = messages[messages.length - 1]?.id
@@ -24,7 +40,10 @@ export function Chat({ jid }: { jid: string }) {
   useLayoutEffect(() => {
     const el = scroller.current
     if (!el) return
-    if (anchor.current && prevFirstId.current && firstId !== prevFirstId.current) {
+    if (stickToEnd.current) {
+      el.scrollTop = el.scrollHeight
+      stickToEnd.current = false
+    } else if (anchor.current && prevFirstId.current && firstId !== prevFirstId.current) {
       el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.height)
       anchor.current = null
     } else if (!settled.current && lastId) {
@@ -42,7 +61,10 @@ export function Chat({ jid }: { jid: string }) {
 
   async function onScroll() {
     const el = scroller.current
-    if (!el || !hasMore || loadingOlder || anchor.current || el.scrollTop > LOAD_OLDER_AT_PX) return
+    if (!el) return
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_PX
+    if (atBottom.current) setUnseen(false)
+    if (!hasMore || loadingOlder || anchor.current || el.scrollTop > LOAD_OLDER_AT_PX) return
     anchor.current = { height: el.scrollHeight, top: el.scrollTop }
     // Nothing started, or the request failed: forget the anchor so the next scroll can try again.
     if (!(await loadOlder())) anchor.current = null
@@ -88,10 +110,30 @@ export function Chat({ jid }: { jid: string }) {
                 {item.message.text}
               </div>
             ) : (
-              <Bubble key={item.key} message={item.message} showSender={item.showSender} tail={item.tail} />
+              <Bubble
+                key={item.key}
+                message={item.message}
+                showSender={item.showSender}
+                tail={item.tail}
+                rise={item.key === riseKey}
+              />
             ),
           )}
         </div>
+      )}
+      {unseen && (
+        <button
+          className="newpill"
+          type="button"
+          onClick={() => {
+            const el = scroller.current
+            if (el) el.scrollTop = el.scrollHeight
+            atBottom.current = true
+            setUnseen(false)
+          }}
+        >
+          New messages
+        </button>
       )}
     </section>
   )

@@ -1,0 +1,50 @@
+import { DatabaseSync } from 'node:sqlite'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+const port = process.env.WA_APP_PORT ?? '18085'
+// e2e/serve.sh builds the fictional store here; the server reads it read-only, the bridge is simulated by these writes.
+const dbPath = join(process.env.TMPDIR ?? tmpdir(), `wa-app-e2e-${port}`, 'store', 'messages.db')
+
+export const LUKAS = '4915100000005@s.whatsapp.net'
+export const MARTA = '385910000015@s.whatsapp.net'
+
+/** "YYYY-MM-DD HH:MM:SS+00:00", `minutesAgo` before now (the format the bridge stores). */
+export function stamp(minutesAgo = 0): string {
+  return new Date(Date.now() - minutesAgo * 60_000).toISOString().slice(0, 19).replace('T', ' ') + '+00:00'
+}
+
+/** Plays the bridge: inserts messages into the fictional store, and takes them out again so specs stay independent. */
+export class FakeBridge {
+  private added: [string, string][] = []
+
+  private run<T>(work: (db: DatabaseSync) => T): T {
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF')
+      return work(db)
+    } finally {
+      db.close()
+    }
+  }
+
+  insert(chat: string, name: string, text: string, minutesAgo = 0): void {
+    const id = `${name}-${Date.now().toString(36)}` // unique per run: moved rows keep their ids
+    this.run((db) =>
+      db
+        .prepare('INSERT OR REPLACE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)')
+        .run(id, chat, chat, text, stamp(minutesAgo)),
+    )
+    this.added.push([chat, id])
+  }
+
+  /** Takes the inserted messages out of their chats. Rows are moved, not deleted: SQLite would hand a deleted newest
+   *  rowid to the next insert, which no real bridge write does. */
+  cleanup(): void {
+    this.run((db) => {
+      for (const [chat, id] of this.added)
+        db.prepare("UPDATE messages SET chat_jid = 'removed@e2e' WHERE chat_jid = ? AND id = ?").run(chat, id)
+    })
+    this.added = []
+  }
+}
