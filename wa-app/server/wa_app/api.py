@@ -1,12 +1,13 @@
 """JSON API routes."""
 
 import sqlite3
+from dataclasses import asdict
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import auth
+from . import auth, store
 from .config import Settings
 
 
@@ -80,10 +81,35 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         response.delete_cookie(auth.COOKIE, path="/", secure=settings.secure_cookies, httponly=True, samesite="strict")
         return response
 
+    async def chats(request: Request) -> Response:
+        chat_filter = request.query_params.get("filter", "all")
+        if chat_filter not in store.FILTERS:
+            return _error(400, "Unknown filter")
+        archived = request.query_params.get("archived", "").lower() in ("1", "true")
+        query = request.query_params.get("q")
+        try:
+            ro = store.open_ro(settings)
+        except sqlite3.OperationalError:
+            return _error(503, "Message store unavailable")
+        try:
+            listed = store.list_chats(
+                ro,
+                conn,
+                filter=chat_filter,  # type: ignore[arg-type]
+                archived=archived,
+                query=query,
+            )
+            return JSONResponse({"chats": [asdict(c) for c in listed], "archived_count": store.count_archived(ro)})
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        finally:
+            ro.close()
+
     return [
         Route("/api/health", health, methods=["GET"]),
         Route("/api/auth/state", state, methods=["GET"]),
         Route("/api/auth/setup", setup, methods=["POST"]),
         Route("/api/auth/login", login, methods=["POST"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
+        Route("/api/chats", chats, methods=["GET"]),
     ]

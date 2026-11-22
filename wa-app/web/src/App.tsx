@@ -1,23 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
 import { apiFetch } from './api'
+import { AppShell } from './screens/AppShell'
 import { Login } from './screens/Login'
 
 type AuthState = { setup_needed: boolean; logged_in: boolean }
-
-function Shell({ onLogout }: { onLogout: () => void }) {
-  return (
-    <main className="page">
-      <header className="shell-header">
-        <h1 className="large-title">Chats</h1>
-        <button className="button-text" type="button" onClick={onLogout}>
-          Log out
-        </button>
-      </header>
-      <p className="empty">No chats yet.</p>
-    </main>
-  )
-}
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null)
@@ -44,8 +31,7 @@ export default function App() {
           path="/login"
           element={auth.logged_in ? <Navigate to="/" replace /> : <Login setupNeeded={auth.setup_needed} onDone={refresh} />}
         />
-        <Route path="/" element={auth.logged_in ? <Shell onLogout={logout} /> : <Navigate to="/login" replace />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={auth.logged_in ? <AppShell onLogout={logout} /> : <Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>
   )

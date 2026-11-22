@@ -1,0 +1,27 @@
+import { Route, Routes } from 'react-router'
+import { TabBar } from '../components/TabBar'
+import { ChatList } from './ChatList'
+import { Placeholder } from './Placeholder'
+import { Settings } from './Settings'
+
+/** Phone: one pane (list, then chat) above the tab bar. From 900 px: the list on the left, the open chat on the right. */
+export function AppShell({ onLogout }: { onLogout: () => void }) {
+  return (
+    <div className="shell">
+      <section className="pane-list" aria-label="Navigation">
+        <Routes>
+          <Route path="/" element={<ChatList />} />
+          <Route path="/archived" element={<ChatList archived />} />
+          <Route path="/communities" element={<Placeholder title="Communities" />} />
+          <Route path="/calls" element={<Placeholder title="Calls" />} />
+          <Route path="/settings" element={<Settings onLogout={onLogout} />} />
+          <Route path="*" element={<ChatList />} />
+        </Routes>
+        <TabBar />
+      </section>
+      <section className="pane-detail" aria-label="Chat">
+        <p>Select a chat</p>
+      </section>
+    </div>
+  )
+}
