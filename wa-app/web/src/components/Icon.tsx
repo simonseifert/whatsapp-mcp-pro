@@ -59,6 +59,15 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M8.5 5.5v13M15.5 5.5v13" strokeWidth={3} />
     </>
   ),
+  send: <path d="M4 12l16-8-6 16-3-7z" />,
+  attach: <path d="M19 11.5l-7 7a4.5 4.5 0 01-6.4-6.4l7.5-7.5a3 3 0 014.2 4.2l-7.4 7.4a1.5 1.5 0 01-2.1-2.1l6.7-6.7" />,
+  reply: <path d="M10 6L4 11.5 10 17v-3.5c4.5 0 7.5 1 9.5 4.5-.5-5-3.5-8.5-9.5-9z" />,
+  copy: (
+    <>
+      <rect x="8" y="8" width="11" height="11" rx="2" />
+      <path d="M16 8V6a1 1 0 00-1-1H6a1 1 0 00-1 1v9a1 1 0 001 1h2" />
+    </>
+  ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
   chart: <path d="M5 20V10M12 20V4M19 20v-7" />,
   phone: (

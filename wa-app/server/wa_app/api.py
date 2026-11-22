@@ -246,6 +246,26 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         live.current_hub().publish("chat", {"chat": asdict(result.chat)})
         return JSONResponse({"unread": result.chat.unread, "receipts_sent": result.receipts_sent})
 
+    async def body_of(request: Request) -> object:
+        try:
+            return await request.json()
+        except ValueError:
+            return None
+
+    async def outward(request: Request, work) -> Response:  # noqa: ANN001
+        body = await body_of(request)
+        try:
+            outcome = await run_in_threadpool(work, settings, conn, request.path_params["jid"], body)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
+    async def chat_send(request: Request) -> Response:
+        return await outward(request, sending.send_text)
+
+    async def chat_react(request: Request) -> Response:
+        return await outward(request, sending.send_reaction)
+
     return [
         Route("/api/media/{chat}/{id}/thumb", media_thumb, methods=["GET"]),
         Route("/api/media/{chat}/{id}", media_file, methods=["GET"]),
@@ -259,6 +279,8 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         Route("/api/chats", chats, methods=["GET"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
+        Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
+        Route("/api/chats/{jid}/react", chat_react, methods=["POST"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
         Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),
     ]

@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -32,7 +33,9 @@ export class FakeBridge {
     const id = `${name}-${Date.now().toString(36)}` // unique per run: moved rows keep their ids
     this.run((db) =>
       db
-        .prepare('INSERT OR REPLACE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)')
+        .prepare(
+          'INSERT OR REPLACE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)',
+        )
         .run(id, chat, chat, text, stamp(minutesAgo)),
     )
     this.added.push([chat, id])
@@ -60,4 +63,43 @@ export function forgetAppRead(chat: string): void {
   } finally {
     db.close()
   }
+}
+
+const stubPortFile = join(process.env.TMPDIR ?? tmpdir(), `wa-app-e2e-${port}`, 'stub.port')
+
+export type StubCall = {
+  path: string
+  recipient?: string
+  message?: string
+  quoted_message_id?: string | null
+  idempotency_key?: string
+  message_id?: string
+  emoji?: string
+}
+
+/** The stand-in bridge that e2e/serve.sh starts (e2e/stub_bridge.py): what it was asked, and what it should do next. */
+export const stub = {
+  async call(path: string, body?: object): Promise<unknown> {
+    const base = `http://127.0.0.1:${readFileSync(stubPortFile, 'utf8').trim()}`
+    const response = await fetch(
+      base + path,
+      body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) },
+    )
+    return response.json()
+  },
+  log: async () => (await stub.call('/__stub/log')) as StubCall[],
+  reset: () => stub.call('/__stub/reset', {}),
+  failNext: (status: number, code: string, error = 'refused') =>
+    stub.call('/__stub/fail', { status, code, error, count: 1 }),
+  delay: (seconds: number) => stub.call('/__stub/delay', { seconds }),
+  /** Takes the messages the stub "sent" out of their chats again (moved, like FakeBridge.cleanup). */
+  cleanup(): void {
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF')
+      db.exec("UPDATE messages SET chat_jid = 'removed@e2e' WHERE id LIKE 'STUB%'")
+    } finally {
+      db.close()
+    }
+  },
 }

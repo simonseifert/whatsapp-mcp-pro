@@ -50,6 +50,24 @@ def mark_messages_read(chat_jid: str, message_ids: list[str], sender_jid: str | 
     return whatsapp.mark_messages_read(chat_jid, message_ids, sender_jid=sender_jid)
 
 
+def send_message(
+    recipient: str, message: str, quoted_message_id: str | None = None, idempotency_key: str | None = None
+) -> dict:
+    """Send a text through the bridge (blocking HTTP: call from a worker thread). Every bridge cap and lock applies."""
+    import whatsapp
+
+    return whatsapp.send_message(
+        recipient, message, quoted_message_id=quoted_message_id, idempotency_key=idempotency_key
+    )
+
+
+def send_reaction(chat_jid: str, message_id: str, emoji: str, idempotency_key: str | None = None) -> dict:
+    """React to a message ("" removes the reaction). Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.send_reaction(chat_jid, message_id, emoji, idempotency_key=idempotency_key)
+
+
 def transcribe_file(path: str, language: str | None = None) -> dict:
     from lib.transcribe import transcribe_file as transcribe
 
@@ -63,6 +81,8 @@ __all__ = [
     "get_profile_picture",
     "mark_messages_read",
     "resolve_display_names",
+    "send_message",
+    "send_reaction",
     "server_dir",
     "transcribe_file",
 ]

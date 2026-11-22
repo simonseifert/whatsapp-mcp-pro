@@ -16,7 +16,7 @@ import secrets
 import sqlite3
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -188,7 +188,7 @@ async def sse_stream(
     heartbeat: float = HEARTBEAT_SECONDS,
     session: str | None = None,
     still_valid: Callable[[str], bool] | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """The SSE body. With `session` and `still_valid`, the session is re-checked (off the event loop) at least every
     `heartbeat` seconds and the stream ends when it is over."""
     client = hub.subscribe(last_event_id, session)

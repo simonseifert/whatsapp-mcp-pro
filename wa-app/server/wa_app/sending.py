@@ -1,4 +1,7 @@
-"""Outward actions through the bridge. Task 6: read receipts. (Task 7 adds sending and reactions here.)
+"""Outward actions through the bridge: read receipts, text sends (with reply quotes) and reactions.
+
+A send never reports success unless the bridge did. Bridge failures are mapped from the structured result
+(http_status / code / retryable) to fixed copy, never by matching English error text where a code exists.
 
 A read receipt is visible to the other person (blue ticks), so only messages that are actually unread by our own
 marker get one: incoming, not system, not deleted, never an `import-` id, at most RECEIPT_BATCH ids per call.
@@ -8,6 +11,7 @@ import logging
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 
 from . import appdb, mcp_lib, store, unread
@@ -137,3 +141,139 @@ def mark_read(settings: Settings, appconn: sqlite3.Connection, jid: str) -> Read
             return ReadResult(store.get_chat(ro, appconn, jid), sent)
     finally:
         ro.close()
+
+
+# --- sending ------------------------------------------------------------------------------------------------------
+
+MAX_TEXT = 4096
+MAX_EMOJI = 16  # code points: room for a ZWJ family or a flag, not for a sentence
+MSG_LIMIT = "Not sent: limit"
+MSG_PAUSED = "Not sent: new chats are paused for now"
+MSG_FORBIDDEN = "Not sent: this chat isn't allowed"
+MSG_NO_ANSWER = "Not sent: bridge didn't answer"
+_SHORT = 120
+
+
+@dataclass
+class Outcome:
+    status: int
+    body: dict
+
+
+def _fail(status: int, message: str, retryable: bool = False) -> Outcome:
+    return Outcome(status, {"ok": False, "error": message, "retryable": retryable})
+
+
+def _bad(message: str, status: int = 422) -> Outcome:
+    return Outcome(status, {"error": message})
+
+
+def valid_key(value: object) -> str | None:
+    """The client's compose-action key if it is a UUID, as a canonical string."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+def _short(result: dict) -> str:
+    text = str(result.get("error") or "unknown error")
+    if text.startswith("HTTP ") and " - " in text:
+        text = text.split(" - ", 1)[1]
+    text = " ".join(text.split())
+    return text if len(text) <= _SHORT else text[: _SHORT - 1] + "\u2026"
+
+
+def map_failure(result: dict) -> Outcome:
+    """A bridge result with success false -> the line the user sees, from the structured fields."""
+    code = result.get("code")
+    http = result.get("http_status")
+    retryable = bool(result.get("retryable", False))
+    if code == "reachout_timelock":
+        return _fail(502, MSG_PAUSED)  # waiting is the only fix; a retry would only poke the lock
+    if code in ("rate_limited", "send_cap") or http == 429:
+        return _fail(502, MSG_LIMIT, retryable)
+    if code == "forbidden" or http == 403:
+        return _fail(502, MSG_FORBIDDEN)
+    if code in ("timeout", "not_connected") or http in (503, 504):
+        return _fail(502, MSG_NO_ANSWER, True)
+    if http is None and retryable and code is None:  # _send_request's timeout / dropped connection result
+        return _fail(502, MSG_NO_ANSWER, True)
+    return _fail(502, f"Not sent: {_short(result)}", retryable)
+
+
+def _call(fn, *args, **kwargs) -> dict:  # noqa: ANN001
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        logger.exception("bridge call failed")
+        return {"success": False, "retryable": True}  # no structured result: shown as "bridge didn't answer"
+
+
+def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: object) -> Outcome:
+    """Blocking: validate, resolve the recipient, send through the bridge with the client's key."""
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    text, reply_to = body.get("text"), body.get("reply_to")
+    key = valid_key(body.get("client_key"))
+    if key is None:
+        return _bad("client_key must be a UUID")
+    if not isinstance(text, str) or not text.strip():
+        return _bad("Message is empty")
+    if len(text) > MAX_TEXT:
+        return _bad("Message too long")
+    if reply_to is not None and not isinstance(reply_to, str):
+        return _bad("Bad reply_to")
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            chat = store.get_chat(ro, appconn, jid)
+            if chat is None:
+                return _bad("Chat not found", 404)
+            quoted = None
+            if reply_to:
+                quoted = store.get_message(ro, chat.jid, reply_to)
+                if quoted is None or not quoted.actionable:
+                    return _bad("That message can't be replied to")
+    finally:
+        ro.close()
+    # The canonical jid the list uses (the phone form when known), never a bare LID that may be unmapped.
+    result = _call(
+        mcp_lib.send_message, chat.jid, text, quoted_message_id=quoted.id if quoted else None, idempotency_key=key
+    )
+    if not result.get("success"):
+        return map_failure(result)
+    return Outcome(200, {"ok": True, "message_id": result.get("message_id")})
+
+
+def send_reaction(settings: Settings, appconn: sqlite3.Connection, jid: str, body: object) -> Outcome:
+    """Blocking: react to (or with "" un-react) a message of this chat."""
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    message_id, emoji = body.get("message_id"), body.get("emoji")
+    key = valid_key(body.get("client_key"))
+    if key is None:
+        return _bad("client_key must be a UUID")
+    if not isinstance(message_id, str) or not message_id:
+        return _bad("message_id required")
+    if not isinstance(emoji, str) or len(emoji) > MAX_EMOJI:
+        return _bad("Bad emoji")
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            chat = store.get_chat(ro, appconn, jid)
+            if chat is None:
+                return _bad("Chat not found", 404)
+            message = store.get_message(ro, chat.jid, message_id)
+    finally:
+        ro.close()
+    if message is None:
+        return _bad("Message not found", 404)
+    if not message.actionable:
+        return _bad("That message can't be reacted to")
+    result = _call(mcp_lib.send_reaction, message.chat_jid, message.id, emoji, idempotency_key=key)
+    if not result.get("success"):
+        return map_failure(result)
+    return Outcome(200, {"ok": True})
