@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     created_at INTEGER,
     PRIMARY KEY (message_id, chat_jid)
 );
+CREATE TABLE IF NOT EXISTS media_retries (message_id TEXT PRIMARY KEY, at INTEGER NOT NULL);
 """
 
 

@@ -492,6 +492,7 @@ class MediaView:
     filename: str | None
     duration_s: int | None
     has_file: bool
+    size_bytes: int | None = None
 
 
 @dataclass
@@ -596,6 +597,15 @@ def _forms_of(conn: sqlite3.Connection, chat_jid: str) -> list[str]:
     return [chat_jid]
 
 
+def message_media_type(conn: sqlite3.Connection, chat_jid: str, message_id: str) -> str | None:
+    """media_type of a message in any JID form of the chat, or None when there is no such message."""
+    forms = _forms_of(conn, chat_jid)
+    row = conn.execute(
+        f"SELECT media_type FROM messages WHERE id=? AND chat_jid IN ({_marks(forms)})", (message_id, *forms)
+    ).fetchone()
+    return (row[0] or None) if row else None
+
+
 def _has_file(store_dir: Path | None, forms: list[str], msg_id: str, filename: str | None) -> bool:
     """Auto-download keeps store/<jid>/<filename>; later downloads keep store/media/<jid>/<msgid><ext>."""
     if store_dir is None:
@@ -647,7 +657,7 @@ def list_messages_page(
                {col("quoted_sender_name")}, {col("quoted_text_preview")},
                COALESCE({col("is_edited", "0")}, 0) OR COALESCE({col("edit_count", "0")}, 0) > 0,
                COALESCE({col("is_forwarded", "0")}, 0), COALESCE({col("is_system_message", "0")}, 0),
-               julianday(timestamp)
+               julianday(timestamp), {col("file_length")}
         FROM messages
         WHERE chat_jid IN ({_marks(forms)}) AND julianday(timestamp) IS NOT NULL
           AND (content IS NULL OR content NOT LIKE '[Poll Vote:%')"""
@@ -800,7 +810,9 @@ def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> lis
             text = None  # the stored text of a deleted message is never sent to the client
         elif media_type:
             voice = _voice_seconds(store_dir, forms, chat, filename) if media_type in ("audio", "ptt") else None
-            media = MediaView(media_type, filename or None, voice, _has_file(store_dir, forms, mid, filename))
+            media = MediaView(
+                media_type, filename or None, voice, _has_file(store_dir, forms, mid, filename), r[17] or None
+            )
         elif content and mid in polls:
             poll = polls[mid]
             poll.question = content[7:-1]

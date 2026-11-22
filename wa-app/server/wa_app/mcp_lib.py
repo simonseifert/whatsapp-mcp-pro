@@ -29,4 +29,32 @@ from lib.changes import chat_forms  # noqa: E402
 from lib.naming import resolve_display_names  # noqa: E402
 from lib.utils import canonical_chat_jid  # noqa: E402
 
-__all__ = ["canonical_chat_jid", "chat_forms", "resolve_display_names", "server_dir"]
+
+def download_media(message_id: str, chat_jid: str, *, no_phone_retry: bool) -> str | None:
+    """The bridge's download (local copy first, then CDN). `no_phone_retry=False` may ping the sender's phone."""
+    import whatsapp
+
+    return whatsapp.download_media(message_id, chat_jid, no_phone_retry=no_phone_retry)
+
+
+def get_profile_picture(jid: str, preview: bool = True) -> dict:
+    import whatsapp
+
+    return whatsapp.get_profile_picture(jid, preview=preview)
+
+
+def transcribe_file(path: str, language: str | None = None) -> dict:
+    from lib.transcribe import transcribe_file as transcribe
+
+    return transcribe(path, language)
+
+
+__all__ = [
+    "canonical_chat_jid",
+    "chat_forms",
+    "download_media",
+    "get_profile_picture",
+    "resolve_display_names",
+    "server_dir",
+    "transcribe_file",
+]

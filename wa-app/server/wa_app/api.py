@@ -1,14 +1,19 @@
 """JSON API routes."""
 
 import sqlite3
+import time
 from dataclasses import asdict
+from pathlib import Path
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import auth, store
+from . import auth, media, store, transcripts
 from .config import Settings
+
+MEDIA_RETRY_SECONDS = 6 * 3600
 
 
 def _error(status: int, message: str) -> Response:
@@ -140,7 +145,85 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
 
         return with_store(work)
 
+    def served(path: Path) -> Response:
+        ctype = media.content_type(path)
+        inline = media.is_inline(ctype)
+        return FileResponse(
+            path,
+            media_type=ctype,
+            filename=path.name,
+            content_disposition_type="inline" if inline else "attachment",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+
+    async def media_file(request: Request) -> Response:
+        chat, mid = request.path_params["chat"], request.path_params["id"]
+        retry = request.query_params.get("retry") == "1"
+        if retry:
+            # One phone ping per message per 6 hours; recorded before asking so a failed ask counts too.
+            now = int(time.time())
+            row = conn.execute("SELECT at FROM media_retries WHERE message_id=?", (mid,)).fetchone()
+            if row and now - row[0] < MEDIA_RETRY_SECONDS:
+                return _error(429, "Already asked recently, try again later")
+            conn.execute("INSERT OR REPLACE INTO media_retries (message_id, at) VALUES (?, ?)", (mid, now))
+        path = await run_in_threadpool(media.file_for, settings, mid, chat, retry=retry)
+        if path is None:
+            return _error(404, "Media not available")
+        return served(path)
+
+    async def media_thumb(request: Request) -> Response:
+        chat, mid = request.path_params["chat"], request.path_params["id"]
+        path = await run_in_threadpool(media.file_for, settings, mid, chat)
+        if path is None:
+            return _error(404, "Media not available")
+        thumb = await run_in_threadpool(media.thumbnail, settings, path)
+        if thumb is None:
+            return _error(404, "No preview")
+        return served(thumb)
+
+    async def avatar_file(request: Request) -> Response:
+        path = await run_in_threadpool(media.avatar, settings, request.path_params["jid"])
+        if path is None:
+            return _error(404, "No picture")
+        return FileResponse(
+            path,
+            media_type="image/jpeg",
+            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=3600"},
+        )
+
+    async def transcript(request: Request) -> Response:
+        chat, mid = request.path_params["chat"], request.path_params["id"]
+
+        try:
+            ro = store.open_ro(settings)
+        except sqlite3.OperationalError:
+            return _error(503, "Message store unavailable")
+        try:
+            media_type = store.message_media_type(ro, chat, mid)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        finally:
+            ro.close()
+        if media_type not in ("audio", "ptt"):
+            return _error(404, "Voice message not found")
+        result = await run_in_threadpool(transcripts.get_or_make, conn, settings, mid, chat)
+        if "error" in result:
+            status = {
+                transcripts.NO_BACKEND: 503,
+                transcripts.NO_AUDIO: 404,
+            }.get(result["error"], 502)
+            return _error(status, result["error"])
+        return JSONResponse(result)
+
     return [
+        Route("/api/media/{chat}/{id}/thumb", media_thumb, methods=["GET"]),
+        Route("/api/media/{chat}/{id}", media_file, methods=["GET"]),
+        Route("/api/avatar/{jid}", avatar_file, methods=["GET"]),
+        Route("/api/transcripts/{chat}/{id}", transcript, methods=["POST"]),
         Route("/api/health", health, methods=["GET"]),
         Route("/api/auth/state", state, methods=["GET"]),
         Route("/api/auth/setup", setup, methods=["POST"]),

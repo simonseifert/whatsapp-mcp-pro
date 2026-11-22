@@ -177,3 +177,14 @@ def test_chat_summary_and_members(ro, settings: Settings) -> None:
     assert line is not None
     assert set(line.split(", ")) == {"Nikola", "Petra", "Ana Kovačević", "Ivana", "you"}
     assert store.members_line(ro, fx.ANA) is None
+
+
+def test_media_size_is_exposed(settings: Settings, ro) -> None:
+    conn = sqlite3.connect(settings.store_path / "messages.db")
+    conn.execute("UPDATE messages SET file_length=? WHERE id='E05'", (734_003,))
+    conn.commit()
+    conn.close()
+    image = by_id(store.list_messages(ro, fx.EKIPA), "E05").media
+    assert image is not None and image.size_bytes == 734_003
+    voice = by_id(store.list_messages(ro, fx.EKIPA), "E07").media
+    assert voice is not None and voice.size_bytes is None
