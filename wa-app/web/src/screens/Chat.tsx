@@ -94,6 +94,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     jid,
     ready: status === 'ready',
     newestKey: last ? `${last.chat_jid}/${last.id}` : undefined,
+    upTo: last?.timestamp_iso,
     unread: detail?.chat.unread,
     markedUnread: detail?.chat.marked_unread ?? false,
     atBottom: bottom,

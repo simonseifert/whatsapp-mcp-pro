@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { ChatRow } from '../components/ChatRow'
 import { FilterChips, type Filter } from '../components/FilterChips'
@@ -12,7 +12,8 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [text, setText] = useState('')
   const [query, setQuery] = useState('')
-  const { data, error, loadedQuery, retry } = useChats(filter, archived, query)
+  const { data, error, loadedQuery, retry, loadMore } = useChats(filter, archived, query)
+  const sentinel = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const id = window.setTimeout(() => setQuery(text.trim()), SEARCH_DEBOUNCE_MS)
@@ -29,6 +30,20 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
     const needle = fold(trimmed)
     return all.filter((c) => fold(c.name).includes(needle))
   }, [data, text, loadedQuery])
+
+  // Older chats load when the end of the list nears the screen. Re-observing after each page also covers a page that
+  // is still too short to fill the screen (the observer reports once on start).
+  const loaded = data?.chats.length ?? 0
+  const hasMore = data?.has_more ?? false
+  useEffect(() => {
+    const el = sentinel.current
+    if (!el || !hasMore || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && loadMore(), {
+      rootMargin: '600px 0px',
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasMore, loaded, loadMore])
 
   const showArchivedRow = !archived && filter === 'all' && text.trim() === '' && (data?.archived_count ?? 0) > 0
 
@@ -87,6 +102,7 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
           ))}
         </ul>
       )}
+      {hasMore && <div ref={sentinel} className="more-sentinel" aria-hidden="true" />}
       {data && chats.length === 0 && (
         <p className="empty-state">{text.trim() ? 'No chats match your search.' : archived ? 'No archived chats.' : 'No chats here.'}</p>
       )}

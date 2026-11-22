@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { signIn } from './helpers.js'
+import { FakeBridge } from './store.js'
 
 const noHorizontalScroll = (page: Page) =>
   page.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth')
@@ -66,4 +67,27 @@ test('two panes from 900px', async ({ page }) => {
   await expect(page.getByText('Select a chat')).toBeVisible()
   await expect(page.locator('.row').first()).toBeVisible()
   expect(await noHorizontalScroll(page)).toBe(true)
+})
+
+test.describe('more than 200 chats', () => {
+  const bridge = new FakeBridge()
+  test.beforeEach(() => bridge.insertFillerChats(230))
+  test.afterEach(() => bridge.cleanup())
+
+  test('older chats load when the list is scrolled to its end', async ({ page }) => {
+    const pages: string[] = []
+    page.on('request', (r) => r.url().includes('/api/chats?') && pages.push(r.url()))
+    await signIn(page)
+    await expect(page.locator('.row').first()).toBeVisible()
+    await expect(page.locator('.row .name', { hasText: 'Obitelj' })).toBeVisible()
+    await expect(page.locator('.row .name', { hasText: 'Filler 229' })).toHaveCount(0) // beyond the first 200
+    const more = page.waitForResponse((r) => r.url().includes('before='))
+    await page.locator('.pane-scroll').evaluate((el) => (el.scrollTop = el.scrollHeight))
+    await more
+    await expect(page.locator('.row .name', { hasText: 'Filler 229' })).toHaveCount(1)
+    const names = await page.locator('.row .name').allTextContents()
+    expect(new Set(names).size).toBe(names.length) // no chat twice
+    expect(names[0]).toBe('Obitelj 🏡') // pinned stay first, on the first page only
+    expect(pages.filter((u) => u.includes('before='))).toHaveLength(1)
+  })
 })

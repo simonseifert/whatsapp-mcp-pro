@@ -19,7 +19,7 @@ test('media with no file shows a placeholder and Try again is rate limited', asy
   await expect(photo.getByRole('status')).toHaveText(/Still not available|Asked recently, try again later/)
   await photo.getByRole('button', { name: 'Try again' }).click()
   await expect(photo.getByRole('status')).toHaveText('Asked recently, try again later')
-  expect(requests.filter((u) => u.includes('retry=1'))).toHaveLength(2)
+  expect(requests.filter((u) => u.endsWith('/retry'))).toHaveLength(2)
 })
 
 test('Show text on a voice note: error line, then the text', async ({ page }) => {

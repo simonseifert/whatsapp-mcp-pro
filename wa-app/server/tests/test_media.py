@@ -98,14 +98,14 @@ def test_automatic_loads_never_ask_the_phone(logged_in: TestClient, settings, do
 
 def test_retry_asks_the_phone_once_per_six_hours(logged_in: TestClient, downloads):
     calls, _ = downloads
-    first = logged_in.get(f"/api/media/{NIKOLA}/M1?retry=1")
+    first = logged_in.post(f"/api/media/{NIKOLA}/M1/retry")
     assert first.status_code == 404
     assert calls[-1] == ("M1", NIKOLA, False)
-    second = logged_in.get(f"/api/media/{NIKOLA}/M1?retry=1")
+    second = logged_in.post(f"/api/media/{NIKOLA}/M1/retry")
     assert second.status_code == 429
     assert len(calls) == 1  # the second tap never reached the bridge
     # Another message is unaffected, and a plain load is still allowed and still silent.
-    assert logged_in.get(f"/api/media/{NIKOLA}/M2?retry=1").status_code == 404
+    assert logged_in.post(f"/api/media/{NIKOLA}/M2/retry").status_code == 404
     logged_in.get(f"/api/media/{NIKOLA}/M1")
     assert calls[-1][2] is True
 
@@ -337,10 +337,29 @@ def test_thumbnail_generation_is_limited_to_three(settings, monkeypatch):
 
 def test_retry_refuses_imported_messages_without_recording(logged_in: TestClient, downloads, settings):
     calls, _ = downloads
-    response = logged_in.get(f"/api/media/{NIKOLA}/import-abc?retry=1")
+    response = logged_in.post(f"/api/media/{NIKOLA}/import-abc/retry")
     assert response.status_code == 400 and "error" in response.json()
     assert calls == []
     from wa_app import appdb
 
     row = appdb.connect(settings).execute("SELECT 1 FROM media_retries WHERE message_id='import-abc'").fetchone()
     assert row is None
+
+
+def test_get_with_retry_flag_no_longer_asks_the_phone(logged_in: TestClient, downloads, settings):
+    """A GET skips the Origin check, so it must never be able to ping the phone."""
+    calls, _ = downloads
+    logged_in.get(f"/api/media/{NIKOLA}/M1?retry=1")
+    assert calls == [("M1", NIKOLA, True)]  # silent: no_phone_retry
+    from wa_app import appdb
+
+    assert appdb.connect(settings).execute("SELECT 1 FROM media_retries").fetchone() is None
+
+
+def test_retry_post_needs_a_matching_origin(logged_in: TestClient, downloads):
+    calls, _ = downloads
+    url = f"/api/media/{NIKOLA}/M1/retry"
+    assert logged_in.post(url, headers={"Origin": "https://evil.example"}).status_code == 403
+    assert calls == []
+    assert logged_in.post(url, headers={"Origin": "https://testserver"}).status_code == 404  # allowed, no file
+    assert calls == [("M1", NIKOLA, False)]

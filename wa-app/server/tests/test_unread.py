@@ -35,6 +35,13 @@ def stamp(minutes_ago: float) -> str:
     return (datetime.now().astimezone() - timedelta(minutes=minutes_ago)).replace(microsecond=0).isoformat(sep=" ")
 
 
+FAR_FUTURE = datetime(2999, 1, 1, tzinfo=UTC)  # "the client showed everything": the cap never bites
+
+
+def read(client: TestClient, path: str, up_to: str = FAR_FUTURE.isoformat()):  # noqa: ANN201
+    return client.post(path, json={"up_to": up_to})
+
+
 def app_read(settings: Settings, jid: str, minutes_ago: float) -> None:
     app = appdb.connect(settings)
     at = int((datetime.now(UTC) - timedelta(minutes=minutes_ago)).timestamp())
@@ -94,7 +101,7 @@ def test_no_marker_uses_history_count(conns: Conns) -> None:
 def test_receipts_grouped_by_sender_in_groups(logged_in: TestClient, settings: Settings, receipts) -> None:
     calls, _ = receipts
     bridge_write(settings, "INSERT INTO chat_state (chat_jid, last_read_at) VALUES (?, ?)", fx.EKIPA, stamp(5000))
-    response = logged_in.post(f"/api/chats/{fx.EKIPA}/read")
+    response = read(logged_in, f"/api/chats/{fx.EKIPA}/read")
     assert response.status_code == 200
     assert response.json() == {"unread": 0, "receipts_sent": 11}
     by_sender = {sender: ids for _, ids, sender in calls}
@@ -111,7 +118,7 @@ def test_receipts_grouped_by_sender_in_groups(logged_in: TestClient, settings: S
 
 def test_private_chat_receipts_have_no_sender(logged_in: TestClient, receipts) -> None:
     calls, _ = receipts
-    response = logged_in.post(f"/api/chats/{fx.ANA}/read")
+    response = read(logged_in, f"/api/chats/{fx.ANA}/read")
     assert response.json() == {"unread": 0, "receipts_sent": 2}
     assert len(calls) == 1 and calls[0][0] == fx.ANA and calls[0][2] is None and len(calls[0][1]) == 2
 
@@ -123,7 +130,7 @@ def test_import_ids_never_get_receipts(logged_in: TestClient, settings: Settings
         "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
         "import-77", fx.ANA, "import:Ana", "old export line", stamp(2),
     )  # fmt: skip
-    response = logged_in.post(f"/api/chats/{fx.ANA}/read")
+    response = read(logged_in, f"/api/chats/{fx.ANA}/read")
     assert response.json()["unread"] == 0
     sent = [i for _, ids, _ in calls for i in ids]
     assert "import-77" not in sent and len(sent) == 2
@@ -131,9 +138,9 @@ def test_import_ids_never_get_receipts(logged_in: TestClient, settings: Settings
 
 def test_read_is_idempotent(logged_in: TestClient, receipts) -> None:
     calls, _ = receipts
-    assert logged_in.post(f"/api/chats/{fx.ANA}/read").json() == {"unread": 0, "receipts_sent": 2}
+    assert read(logged_in, f"/api/chats/{fx.ANA}/read").json() == {"unread": 0, "receipts_sent": 2}
     assert len(calls) == 1
-    assert logged_in.post(f"/api/chats/{fx.ANA}/read").json() == {"unread": 0, "receipts_sent": 0}
+    assert read(logged_in, f"/api/chats/{fx.ANA}/read").json() == {"unread": 0, "receipts_sent": 0}
     assert len(calls) == 1
     chats = logged_in.get("/api/chats").json()["chats"]
     assert next(c for c in chats if c["jid"] == fx.ANA)["unread"] == 0
@@ -142,7 +149,7 @@ def test_read_is_idempotent(logged_in: TestClient, receipts) -> None:
 def test_split_chat_uses_each_messages_own_form(logged_in: TestClient, settings: Settings, receipts) -> None:
     calls, _ = receipts
     bridge_write(settings, "INSERT INTO chat_state (chat_jid, last_read_at) VALUES (?, ?)", fx.TOMO_PHONE, stamp(1000))
-    assert logged_in.post(f"/api/chats/{fx.TOMO_PHONE}/read").json() == {"unread": 0, "receipts_sent": 2}
+    assert read(logged_in, f"/api/chats/{fx.TOMO_PHONE}/read").json() == {"unread": 0, "receipts_sent": 2}
     assert sorted((chat, ids) for chat, ids, _ in calls) == sorted(
         [(fx.TOMO_PHONE, [calls_id(settings, fx.TOMO_PHONE)]), (fx.TOMO_LID, [calls_id(settings, fx.TOMO_LID)])]
     )
@@ -167,7 +174,7 @@ def test_at_most_50_ids_per_call(logged_in: TestClient, settings: Settings, rece
     conn.execute("INSERT INTO chat_state (chat_jid, last_read_at) VALUES (?, ?)", (fx.GYM, stamp(9000)))
     conn.commit()
     conn.close()
-    response = logged_in.post(f"/api/chats/{fx.GYM}/read")
+    response = read(logged_in, f"/api/chats/{fx.GYM}/read")
     assert response.json()["receipts_sent"] == 121  # the 120 plus the old sticker
     assert [len(ids) for _, ids, _ in calls] == [50, 50, 21]
 
@@ -175,7 +182,7 @@ def test_at_most_50_ids_per_call(logged_in: TestClient, settings: Settings, rece
 def test_bridge_failure_still_marks_read_locally(logged_in: TestClient, receipts, caplog) -> None:
     calls, answer = receipts
     answer.update({"success": False, "error": "bridge down"})
-    response = logged_in.post(f"/api/chats/{fx.ANA}/read")
+    response = read(logged_in, f"/api/chats/{fx.ANA}/read")
     assert response.status_code == 200
     assert response.json() == {"unread": 0, "receipts_sent": 0}
     assert len(calls) == 1
@@ -188,7 +195,7 @@ def test_bridge_exception_is_swallowed(logged_in: TestClient, monkeypatch: pytes
         raise ConnectionError("refused")
 
     monkeypatch.setattr(mcp_lib, "mark_messages_read", boom)
-    response = logged_in.post(f"/api/chats/{fx.ANA}/read")
+    response = read(logged_in, f"/api/chats/{fx.ANA}/read")
     assert response.status_code == 200 and response.json() == {"unread": 0, "receipts_sent": 0}
 
 
@@ -197,20 +204,20 @@ def test_read_publishes_a_chat_event(logged_in: TestClient, receipts) -> None:
 
     hub = live.current_hub()
     client = hub.subscribe()
-    logged_in.post(f"/api/chats/{fx.ANA}/read")
+    read(logged_in, f"/api/chats/{fx.ANA}/read")
     event = client.queue.get_nowait()
     assert event.name == "chat" and event.data["chat"]["jid"] == fx.ANA and event.data["chat"]["unread"] == 0
 
 
 def test_read_unknown_chat_404(logged_in: TestClient, receipts) -> None:
     calls, _ = receipts
-    assert logged_in.post("/api/chats/999@s.whatsapp.net/read").status_code == 404
+    assert read(logged_in, "/api/chats/999@s.whatsapp.net/read").status_code == 404
     assert calls == []
 
 
 def test_no_receipts_for_a_marked_read_chat_without_unread(logged_in: TestClient, receipts) -> None:
     calls, _ = receipts
-    assert logged_in.post(f"/api/chats/{fx.ACCOUNTANT}/read").json() == {"unread": 0, "receipts_sent": 0}
+    assert read(logged_in, f"/api/chats/{fx.ACCOUNTANT}/read").json() == {"unread": 0, "receipts_sent": 0}
     assert calls == []
 
 
@@ -222,7 +229,7 @@ def test_concurrent_reads_send_receipts_once(settings: Settings, receipts) -> No
     calls, _ = receipts
     app = appdb.connect(settings)
     with ThreadPoolExecutor(4) as pool:
-        results = list(pool.map(lambda _: sending.mark_read(settings, app, fx.ANA), range(4)))
+        results = list(pool.map(lambda _: sending.mark_read(settings, app, fx.ANA, FAR_FUTURE), range(4)))
     assert sorted(r.receipts_sent for r in results) == [0, 0, 0, 2]
     assert len(calls) == 1
 
@@ -240,7 +247,7 @@ def test_marked_unread_dot_clears_after_app_read_and_returns_when_marked_again(
 ) -> None:
     bridge_write(settings, "UPDATE chat_state SET marked_unread_changed_at=? WHERE chat_jid=?", stamp(60), fx.NIKOLA)
     assert dot(logged_in, fx.NIKOLA) is True
-    assert logged_in.post(f"/api/chats/{fx.NIKOLA}/read").json()["unread"] == 0
+    assert read(logged_in, f"/api/chats/{fx.NIKOLA}/read").json()["unread"] == 0
     assert dot(logged_in, fx.NIKOLA) is False
     # The phone marks it unread again, later than the app's read.
     bridge_write(settings, "UPDATE chat_state SET marked_unread_changed_at=? WHERE chat_jid=?", stamp(-5), fx.NIKOLA)
@@ -249,7 +256,7 @@ def test_marked_unread_dot_clears_after_app_read_and_returns_when_marked_again(
 
 def test_read_does_not_claim_future_messages(logged_in: TestClient, settings: Settings, receipts) -> None:
     """The read marker is the newest message time, never 'now': a delayed message stays unread."""
-    logged_in.post(f"/api/chats/{fx.ANA}/read")
+    read(logged_in, f"/api/chats/{fx.ANA}/read")
     bridge_write(
         settings,
         "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
@@ -279,7 +286,7 @@ def test_receipts_capped_to_newest_200(logged_in: TestClient, settings: Settings
     conn.execute("INSERT INTO chat_state (chat_jid, last_read_at) VALUES (?, ?)", (fx.GYM, stamp(9000)))
     conn.commit()
     conn.close()
-    response = logged_in.post(f"/api/chats/{fx.GYM}/read")
+    response = read(logged_in, f"/api/chats/{fx.GYM}/read")
     assert response.json()["receipts_sent"] == 200
     sent = [i for _, ids, _ in calls for i in ids]
     assert len(sent) == 200 and "C259" in sent and "C060" in sent and "C059" not in sent
@@ -289,7 +296,7 @@ def test_chat_vanishing_after_claim_still_answers_200(
     logged_in: TestClient, receipts, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(store, "get_chat", lambda *a, **k: None)
-    response = logged_in.post(f"/api/chats/{fx.ANA}/read")
+    response = read(logged_in, f"/api/chats/{fx.ANA}/read")
     assert response.status_code == 200 and response.json() == {"unread": 0, "receipts_sent": 2}
 
 
@@ -299,3 +306,51 @@ def test_counter_raises_on_other_db_errors(conns: Conns) -> None:
     broken.execute("CREATE TABLE read_state (chat_jid TEXT PRIMARY KEY)")  # no read_at column
     with pytest.raises(sqlite3.OperationalError):
         unread.UnreadCounter(ro, broken)
+
+
+def test_trailing_poll_vote_changes_neither_preview_nor_unread(settings: Settings, conns: Conns) -> None:
+    """A poll vote is stored as its own message but never shown, so it must not count or become the preview."""
+    before = store.get_chat(*conns, fx.ANA)
+    assert before is not None
+    bridge_write(
+        settings,
+        "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
+        "VOTE1", fx.ANA, fx.ANA, "[Poll Vote: Friday]", stamp(0),
+    )  # fmt: skip
+    after = store.get_chat(*conns, fx.ANA)
+    assert after is not None
+    assert after.unread == before.unread
+    assert after.last_message.preview == before.last_message.preview
+    assert after.last_message.id == before.last_message.id
+    listed = next(c for c in store.list_chats(*conns) if c.jid == fx.ANA)
+    assert listed.unread == before.unread and listed.last_message.id == before.last_message.id
+    assert unread.count(*conns, fx.ANA) == before.unread
+
+
+def test_read_needs_a_valid_up_to(logged_in: TestClient, receipts) -> None:
+    path = f"/api/chats/{fx.ANA}/read"
+    assert logged_in.post(path).status_code == 422
+    assert logged_in.post(path, json={}).status_code == 422
+    assert logged_in.post(path, json={"up_to": "yesterday-ish"}).status_code == 422
+    assert logged_in.post(path, json={"up_to": 5}).status_code == 422
+    assert not receipts[0]  # nothing was sent, nothing recorded
+    chats = logged_in.get("/api/chats").json()["chats"]
+    assert next(c for c in chats if c["jid"] == fx.ANA)["unread"] == 2
+
+
+def test_read_stops_at_up_to(logged_in: TestClient, settings: Settings, receipts) -> None:
+    """A message newer than what the client showed stays unread and gets no receipt."""
+    calls, _ = receipts
+    bridge_write(
+        settings,
+        "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
+        "NEWER1", fx.ANA, fx.ANA, "not shown yet", stamp(2),
+    )  # fmt: skip
+    response = read(logged_in, f"/api/chats/{fx.ANA}/read", up_to=stamp(20))
+    assert response.status_code == 200
+    sent = [mid for _, ids, _ in calls for mid in ids]
+    assert len(sent) == 1 and "NEWER1" not in sent  # only the 30-minute-old message was shown and unread
+    # The 16-minute-old message and NEWER1 are newer than up_to: still unread.
+    assert response.json()["unread"] == 2
+    chats = logged_in.get("/api/chats").json()["chats"]
+    assert next(c for c in chats if c["jid"] == fx.ANA)["unread"] == 2

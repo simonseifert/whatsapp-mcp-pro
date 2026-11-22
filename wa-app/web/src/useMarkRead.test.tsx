@@ -7,7 +7,7 @@ function Probe(props: Parameters<typeof useMarkRead>[0]) {
   useMarkRead(props)
   return null
 }
-const base = { jid: 'a@s.whatsapp.net', ready: true, newestKey: 'a/1', unread: 2, markedUnread: false, atBottom: true }
+const base = { jid: 'a@s.whatsapp.net', ready: true, newestKey: 'a/1', upTo: '2026-11-22T10:00:00+01:00', unread: 2, markedUnread: false, atBottom: true }
 
 describe('useMarkRead', () => {
   let spy: ReturnType<typeof vi.spyOn>
@@ -27,6 +27,12 @@ describe('useMarkRead', () => {
     rerender(<Probe {...base} unread={0} />)
     await act(() => vi.advanceTimersByTimeAsync(3000))
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells the server the newest message it showed', async () => {
+    render(<Probe {...base} />)
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(spy).toHaveBeenCalledWith('a@s.whatsapp.net', '2026-11-22T10:00:00+01:00')
   })
 
   it('marks nothing while inactive (the pane is sliding away), and cancels a pending mark', async () => {
@@ -91,7 +97,7 @@ describe('useMarkRead (review fixes)', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
-  const open = { jid: 'a@s.whatsapp.net', ready: true, newestKey: 'a/1', atBottom: true, markedUnread: false }
+  const open = { jid: 'a@s.whatsapp.net', ready: true, newestKey: 'a/1', upTo: '2026-11-22T10:00:00+01:00', atBottom: true, markedUnread: false }
 
   it('waits for the chat detail: messages first, unread 2 afterwards', async () => {
     const { rerender } = render(<Probe {...open} unread={undefined} />)

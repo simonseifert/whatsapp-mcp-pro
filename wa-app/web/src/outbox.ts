@@ -192,6 +192,11 @@ function settle(jid: string, id: string, emoji: string): void {
   })
 }
 
+/** The text as the server stores it: leading line breaks and trailing whitespace are trimmed before sending. */
+function sentText(text: string): string {
+  return text.replace(/^[\r\n]+/, '').trimEnd()
+}
+
 /** The chat's loaded messages changed: drop optimistic bubbles whose real message is in, and settle reactions the
  *  messages now show. (Aliases stay, so the real bubble keeps the optimistic one's key.) */
 export function reconcile(jid: string, messages: MessageView[]): void {
@@ -204,7 +209,7 @@ export function reconcile(jid: string, messages: MessageView[]): void {
       (p.status === 'sent' &&
         !p.messageId &&
         messages.some(
-          (m) => m.from_me && m.text === p.text && Date.parse(m.timestamp_iso) >= Date.parse(p.at) - SKEW_MS,
+          (m) => m.from_me && m.text === sentText(p.text) && Date.parse(m.timestamp_iso) >= Date.parse(p.at) - SKEW_MS,
         )),
   )
   const settled = Object.entries(box.reactions).filter(([id, o]) => {

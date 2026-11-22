@@ -1,3 +1,6 @@
+import sqlite3
+from datetime import datetime, timedelta
+
 from starlette.testclient import TestClient
 
 from tests import conftest as fx
@@ -62,3 +65,46 @@ def test_chat_routes_need_login_and_known_chat(client: TestClient, logged_in: Te
     assert logged_in.get(f"/api/chats/{fx.EKIPA}/messages", params={"before": "junk"}).status_code == 400
     client.cookies.clear()
     assert client.get(f"/api/chats/{fx.EKIPA}").status_code == 401
+
+
+def _add_filler_chats(settings, count: int) -> list[str]:
+    """Fictional filler chats, each older than every fixture chat and one minute apart (oldest last)."""
+    db = sqlite3.connect(settings.store_path / "messages.db")
+    jids = []
+    base = datetime.now().astimezone().replace(microsecond=0) - timedelta(days=30)
+    for i in range(count):
+        jid = f"3859700{i:05d}@s.whatsapp.net"
+        stamp = (base - timedelta(minutes=i)).isoformat(sep=" ")
+        db.execute("INSERT INTO chats (jid, name, last_message_time) VALUES (?,?,?)", (jid, f"Filler {i:03d}", stamp))
+        db.execute(
+            "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
+            (f"F{i}", jid, jid, f"filler {i}", stamp),
+        )
+        jids.append(jid)
+    db.commit()
+    db.close()
+    return jids
+
+
+def test_chat_list_pages_past_200(logged_in: TestClient, settings) -> None:
+    fillers = _add_filler_chats(settings, 230)
+    first = logged_in.get("/api/chats").json()
+    assert len(first["chats"]) == 200 and first["has_more"] is True
+    assert first["chats"][0]["jid"] == fx.FAMILY  # pinned first, on the first page only
+    cursor = first["chats"][-1]["last_message"]["timestamp_iso"]
+    second = logged_in.get("/api/chats", params={"before": cursor}).json()
+    assert second["has_more"] is False
+    assert not any(c["pinned"] for c in second["chats"])
+    seen = [c["jid"] for c in first["chats"]] + [c["jid"] for c in second["chats"]]
+    assert len(seen) == len(set(seen))  # no chat twice
+    assert set(fillers) <= set(seen)  # the oldest filler is reachable without searching
+    everything = {c["jid"] for c in logged_in.get("/api/chats", params={"q": "Filler"}).json()["chats"]}
+    assert len(everything) == 200  # search is paged too
+
+
+def test_small_list_has_no_more(logged_in: TestClient) -> None:
+    assert logged_in.get("/api/chats").json()["has_more"] is False
+
+
+def test_bad_before_is_400(logged_in: TestClient) -> None:
+    assert logged_in.get("/api/chats", params={"before": "soon"}).status_code == 400

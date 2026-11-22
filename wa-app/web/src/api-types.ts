@@ -25,7 +25,7 @@ export type ChatSummary = {
   community_name: string | null
 }
 
-export type ChatsResponse = { chats: ChatSummary[]; archived_count: number }
+export type ChatsResponse = { chats: ChatSummary[]; archived_count: number; has_more: boolean }
 
 export type MediaView = {
   type: string

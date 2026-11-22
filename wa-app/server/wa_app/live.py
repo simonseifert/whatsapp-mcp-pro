@@ -17,6 +17,7 @@ import sqlite3
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -288,6 +289,9 @@ class Poller:
         self._appconn: sqlite3.Connection | None = None
         self._failing = False
         self._schema: dict[str, set[str]] = {}
+        # Its own thread: sends (up to ~60 s), avatars, thumbnails and transcription share AnyIO's default pool, and a
+        # burst of them must never make a live tick wait. One thread also keeps the poller's connections in one place.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wa-poller")
 
     # Reads of the bridge's tables. Each returns rows and tolerates a store that lacks the table or column.
 
@@ -451,11 +455,14 @@ class Poller:
                 events.append(Event("chat", {"chat": asdict(summary)}))
         return events, new
 
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
     async def run(self, hub: Hub, interval: float = POLL_SECONDS) -> None:
         """Poll until cancelled; a failing tick never ends the loop."""
         while True:
             try:
-                for event in await run_in_threadpool(self.poll_once):
+                for event in await asyncio.get_running_loop().run_in_executor(self._executor, self.poll_once):
                     hub.publish(event.name, event.data)
             except asyncio.CancelledError:
                 raise
@@ -473,3 +480,4 @@ async def running(poller: Poller, hub: Hub) -> AsyncIterator[None]:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        poller.close()

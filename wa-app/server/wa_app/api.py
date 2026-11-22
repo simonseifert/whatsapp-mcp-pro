@@ -30,6 +30,10 @@ async def _passphrase(request: Request) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _too_long(passphrase: str) -> bool:
+    return len(passphrase.encode()) > auth.MAX_PASSPHRASE_BYTES
+
+
 def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
     def start_session(request: Request) -> Response:
         token = auth.new_session(conn, request.headers.get("user-agent"))
@@ -63,6 +67,8 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             return _error(409, "Already set up")
         if passphrase is None:
             return _error(400, "Passphrase required")
+        if _too_long(passphrase):
+            return _error(422, "Passphrase too long")
         try:
             inserted = auth.set_passphrase(conn, passphrase)
         except ValueError as exc:
@@ -76,6 +82,8 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         ip = auth.client_ip(request)
         if auth.login_blocked(conn, ip):
             return _error(429, "Too many attempts, try again later")
+        if passphrase is not None and _too_long(passphrase):
+            return _error(422, "Passphrase too long")  # before any hashing
         if passphrase is None or not auth.check_passphrase(conn, passphrase):
             auth.record_failure(conn, ip)
             return _error(401, "Wrong passphrase")
@@ -109,19 +117,26 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             return _error(400, "Unknown filter")
         archived = request.query_params.get("archived", "").lower() in ("1", "true")
         query = request.query_params.get("q")
+        before = request.query_params.get("before")
+        if before is not None and store.parse_ts(before) is None:
+            return _error(400, "Bad 'before' timestamp")
         try:
             ro = store.open_ro(settings)
         except sqlite3.OperationalError:
             return _error(503, "Message store unavailable")
         try:
-            listed, archived_count = store.list_chats_with_count(
+            listed, archived_count, has_more = store.list_chats_page(
                 ro,
                 conn,
                 filter=chat_filter,  # type: ignore[arg-type]
                 archived=archived,
                 query=query,
+                before=before,
+                keep_ties=True,
             )
-            return JSONResponse({"chats": [asdict(c) for c in listed], "archived_count": archived_count})
+            return JSONResponse(
+                {"chats": [asdict(c) for c in listed], "archived_count": archived_count, "has_more": has_more}
+            )
         except sqlite3.Error:
             return _error(503, "Message store unavailable")
         finally:
@@ -190,18 +205,24 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
 
     async def media_file(request: Request) -> Response:
         chat, mid = request.path_params["chat"], request.path_params["id"]
-        retry = request.query_params.get("retry") == "1"
-        if retry:
-            # One phone ping per message per 6 hours; recorded before asking so a failed ask counts too.
-            if mid.startswith("import-"):
-                return _error(400, "Imported messages have no media to re-request")
-            now = int(time.time())
-            with appdb.db_lock:
-                row = conn.execute("SELECT at FROM media_retries WHERE message_id=?", (mid,)).fetchone()
-                if row and now - row[0] < MEDIA_RETRY_SECONDS:
-                    return _error(429, "Already asked recently, try again later")
-                conn.execute("INSERT OR REPLACE INTO media_retries (message_id, at) VALUES (?, ?)", (mid, now))
-        path = await run_in_threadpool(media.file_for, settings, mid, chat, retry=retry)
+        path = await run_in_threadpool(media.file_for, settings, mid, chat)
+        if path is None:
+            return _error(404, "Media not available")
+        return served(path)
+
+    async def media_retry(request: Request) -> Response:
+        """The one media request that may ask the sender's phone: a POST, so the Origin check covers it."""
+        chat, mid = request.path_params["chat"], request.path_params["id"]
+        # One phone ping per message per 6 hours; recorded before asking so a failed ask counts too.
+        if mid.startswith("import-"):
+            return _error(400, "Imported messages have no media to re-request")
+        now = int(time.time())
+        with appdb.db_lock:
+            row = conn.execute("SELECT at FROM media_retries WHERE message_id=?", (mid,)).fetchone()
+            if row and now - row[0] < MEDIA_RETRY_SECONDS:
+                return _error(429, "Already asked recently, try again later")
+            conn.execute("INSERT OR REPLACE INTO media_retries (message_id, at) VALUES (?, ?)", (mid, now))
+        path = await run_in_threadpool(media.file_for, settings, mid, chat, retry=True)
         if path is None:
             return _error(404, "Media not available")
         return served(path)
@@ -250,10 +271,21 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             return _error(status, result["error"])
         return JSONResponse(result)
 
+    async def body_of(request: Request) -> object:
+        try:
+            return await request.json()
+        except ValueError:
+            return None
+
     async def chat_read(request: Request) -> Response:
         jid = request.path_params["jid"]
+        body = await body_of(request)
+        raw = body.get("up_to") if isinstance(body, dict) else None
+        up_to = store.parse_ts(raw) if isinstance(raw, str) else None
+        if up_to is None:  # the client must say which message it showed last: a read never goes past it
+            return _error(422, "'up_to' (timestamp of the newest message shown) is required")
         try:
-            result = await run_in_threadpool(sending.mark_read, settings, conn, jid)
+            result = await run_in_threadpool(sending.mark_read, settings, conn, jid, up_to)
         except sqlite3.Error:
             return _error(503, "Message store unavailable")
         if not result.found:
@@ -262,12 +294,6 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             return JSONResponse({"unread": 0, "receipts_sent": result.receipts_sent})
         live.current_hub().publish("chat", {"chat": asdict(result.chat)})
         return JSONResponse({"unread": result.chat.unread, "receipts_sent": result.receipts_sent})
-
-    async def body_of(request: Request) -> object:
-        try:
-            return await request.json()
-        except ValueError:
-            return None
 
     async def outward(request: Request, work) -> Response:  # noqa: ANN001
         body = await body_of(request)
@@ -285,6 +311,7 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
 
     return [
         Route("/api/media/{chat}/{id}/thumb", media_thumb, methods=["GET"]),
+        Route("/api/media/{chat}/{id}/retry", media_retry, methods=["POST"]),
         Route("/api/media/{chat}/{id}", media_file, methods=["GET"]),
         Route("/api/avatar/{jid}", avatar_file, methods=["GET"]),
         Route("/api/transcripts/{chat}/{id}", transcript, methods=["POST"]),

@@ -144,6 +144,14 @@ describe('outbox', () => {
     expect(getBox(JID).pending).toEqual([])
   })
 
+  it('a sent bubble without an id matches the text the server stored (trimmed like the server does)', async () => {
+    send.mockResolvedValueOnce({ ok: true, message_id: null })
+    await sendText(JID, '\n\nBok  \n', null)
+    const at = getBox(JID).pending[0].at
+    reconcile(JID, [msg('NEW', { from_me: true, text: 'Bok', timestamp_iso: at })])
+    expect(getBox(JID).pending).toEqual([])
+  })
+
   it('a sent bubble without an id is dropped after two minutes', async () => {
     vi.useFakeTimers()
     try {

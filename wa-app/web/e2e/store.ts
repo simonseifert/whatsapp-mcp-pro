@@ -41,6 +41,24 @@ export class FakeBridge {
     this.added.push([chat, id])
   }
 
+  /** Adds `count` fictional filler chats (one message each), all older than every fixture chat, `Filler 000` newest. */
+  insertFillerChats(count: number): void {
+    const run = Date.now().toString(36) // unique per run: moved rows keep their ids
+    this.run((db) => {
+      const chat = db.prepare('INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?,?,?)')
+      const message = db.prepare(
+        'INSERT OR REPLACE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)',
+      )
+      for (let i = 0; i < count; i++) {
+        const jid = `3859700${String(i).padStart(5, '0')}@s.whatsapp.net`
+        const at = stamp(60 * 24 * 30 + i) // a month back, one minute apart
+        chat.run(jid, `Filler ${String(i).padStart(3, '0')}`, at)
+        message.run(`FILLER${run}-${i}`, jid, jid, `filler ${i}`, at)
+        this.added.push([jid, `FILLER${run}-${i}`])
+      }
+    })
+  }
+
   /** Takes the inserted messages out of their chats. Rows are moved, not deleted: SQLite would hand a deleted newest
    *  rowid to the next insert, which no real bridge write does. */
   cleanup(): void {

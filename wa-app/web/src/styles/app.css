@@ -1655,3 +1655,7 @@ input {
 .pane-list:has(.update-row.banner) .pane-scroll {
   padding-top: 0;
 }
+
+.more-sentinel {
+  height: 1px;
+}

@@ -12,6 +12,8 @@ type Input = {
   ready: boolean
   /** Identifies the newest message; it changes only when something new arrived. */
   newestKey: string | undefined
+  /** Timestamp of that newest message: what the reader was shown, and the most the server may mark read. */
+  upTo: string | undefined
   /** Unread count the server reported for the chat; undefined until the chat detail has loaded. */
   unread: number | undefined
   /** The phone's "marked unread" dot is showing: opening the chat clears it even with nothing unread. */
@@ -29,7 +31,7 @@ function pageVisible(): boolean {
  * arrives while that stays true. Never repeats for the same newest message. A chat opened with nothing unread is not
  * marked: nothing changes on the phone side, so there is nothing to send.
  */
-export function useMarkRead({ jid, active = true, ready, newestKey, unread, markedUnread, atBottom }: Input): void {
+export function useMarkRead({ jid, active = true, ready, newestKey, upTo, unread, markedUnread, atBottom }: Input): void {
   const done = useRef<string | null>(null) // the newest message already marked (or needing no marking)
   const visible = useRef(pageVisible())
   const wake = useRef<(() => void) | null>(null)
@@ -48,7 +50,7 @@ export function useMarkRead({ jid, active = true, ready, newestKey, unread, mark
   }, [jid])
 
   useEffect(() => {
-    if (!active || !ready || !newestKey || !atBottom || unread === undefined) return
+    if (!active || !ready || !newestKey || !upTo || !atBottom || unread === undefined) return
     let timer: ReturnType<typeof setTimeout> | null = null
     const attempt = () => {
       if (!visible.current || done.current === newestKey) return
@@ -62,7 +64,7 @@ export function useMarkRead({ jid, active = true, ready, newestKey, unread, mark
           if (!pageVisible()) return // hidden meanwhile: the return to the page tries again
           const previous = done.current
           done.current = newestKey
-          markRead(jid).catch(() => {
+          markRead(jid, upTo).catch(() => {
             // Not marked after all: the next arrival or a return to the page tries again.
             if (done.current === newestKey) done.current = previous
           })
@@ -76,5 +78,5 @@ export function useMarkRead({ jid, active = true, ready, newestKey, unread, mark
       wake.current = null
       if (timer) clearTimeout(timer)
     }
-  }, [jid, active, ready, newestKey, unread, markedUnread, atBottom])
+  }, [jid, active, ready, newestKey, upTo, unread, markedUnread, atBottom])
 }

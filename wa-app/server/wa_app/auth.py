@@ -17,6 +17,7 @@ from .tokens import token_hash
 COOKIE = "wa_session"
 SESSION_SECONDS = 30 * 24 * 3600
 MIN_PASSPHRASE = 10
+MAX_PASSPHRASE_BYTES = 1024  # argon2 hashes whatever it is given: bound the work an unauthenticated caller can ask for
 MAX_FAILURES = 5
 FAILURE_WINDOW = 15 * 60
 

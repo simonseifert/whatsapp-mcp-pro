@@ -432,3 +432,34 @@ def test_logout_all_drops_every_open_stream(logged_in: TestClient) -> None:
     assert mine.dropped
     assert elsewhere.dropped
     assert hub.client_count() == 0
+
+
+def test_poll_ticks_do_not_wait_behind_a_saturated_default_pool(settings: Settings) -> None:
+    """Sends, avatars, thumbnails and transcription share AnyIO's default pool: a burst must not stall live ticks."""
+    import threading
+
+    import anyio.to_thread
+
+    async def run() -> int:
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        limiter.total_tokens = 1
+        release = threading.Event()
+        blocker = asyncio.create_task(anyio.to_thread.run_sync(release.wait))  # takes the only token
+        await asyncio.sleep(0.05)
+        poller = live.Poller(settings)
+        ticks: list[int] = []
+        real = poller.poll_once
+
+        def counting() -> list[live.Event]:
+            ticks.append(1)
+            return real()
+
+        poller.poll_once = counting  # type: ignore[method-assign]
+        task = asyncio.create_task(poller.run(live.Hub(), interval=0.01))
+        await asyncio.sleep(0.4)
+        task.cancel()
+        release.set()
+        await blocker
+        return len(ticks)
+
+    assert asyncio.run(asyncio.wait_for(run(), 5)) >= 3

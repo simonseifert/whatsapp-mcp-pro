@@ -27,7 +27,7 @@ function Missing({ chat, id, media, onFound }: Props & { onFound: () => void }) 
     setBusy(true)
     setNote(null)
     try {
-      const response = await fetch(mediaUrl(chat, id, 'retry'), { credentials: 'same-origin' })
+      const response = await fetch(mediaUrl(chat, id, 'retry'), { method: 'POST', credentials: 'same-origin' })
       if (response.ok) return onFound()
       setNote(response.status === 429 ? 'Asked recently, try again later' : 'Still not available')
     } catch {

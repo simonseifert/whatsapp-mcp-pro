@@ -25,7 +25,8 @@ describe('Media', () => {
     render(<Media chat="a@s.whatsapp.net" id="M1" media={{ ...base, type: 'image', has_file: false }} />)
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Asked recently, try again later'))
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/media/a%40s.whatsapp.net/M1?retry=1')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/media/a%40s.whatsapp.net/M1/retry')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' })
   })
 
   it('shows the picture once a retry finds the file, and opens a viewer on tap', async () => {

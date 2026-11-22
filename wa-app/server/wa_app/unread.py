@@ -15,6 +15,11 @@ if TYPE_CHECKING:
     from .store import _Conversation, _State
 
 
+# Poll votes are stored by the bridge as their own messages; the chat view never shows them, so they must not count
+# as unread, be sent a receipt or become a chat's preview either. One definition, used everywhere.
+NOT_POLL_VOTE = "(content IS NULL OR content NOT LIKE '[Poll Vote:%')"
+
+
 def _placeholders(items: Sequence[object]) -> str:
     return ",".join("?" * len(items))
 
@@ -73,6 +78,7 @@ class UnreadCounter:
             SELECT COUNT(*) FROM messages
             WHERE chat_jid IN ({_placeholders(forms)})
               AND COALESCE(is_from_me, 0) = 0 AND COALESCE(is_system_message, 0) = 0 {self._not_deleted}
+              AND {NOT_POLL_VOTE}
               AND timestamp >= date(?, '-1 day') AND datetime(timestamp) > datetime(?)
             """,
             (*forms, bound, bound),

@@ -12,7 +12,7 @@ from typing import Literal
 
 from .config import Settings
 from .mcp_lib import resolve_display_names
-from .unread import UnreadCounter
+from .unread import NOT_POLL_VOTE, UnreadCounter
 
 ChatFilter = Literal["all", "unread", "favourites", "groups"]
 FILTERS: tuple[str, ...] = ("all", "unread", "favourites", "groups")
@@ -302,7 +302,7 @@ def _last_message(conn: sqlite3.Connection, forms: list[str], extra: str) -> tup
         f"""
         SELECT id, chat_jid, sender, sender_name, content, timestamp, COALESCE(is_from_me, 0), media_type, filename,
                {extra}
-        FROM messages WHERE chat_jid IN ({_marks(forms)}) ORDER BY timestamp DESC LIMIT 20
+        FROM messages WHERE chat_jid IN ({_marks(forms)}) AND {NOT_POLL_VOTE} ORDER BY timestamp DESC LIMIT 20
         """,
         forms,
     ).fetchall()
@@ -369,6 +369,30 @@ def list_chats_with_count(
     """The chat list and, from the same pass, how many chats are archived.
 
     `archived=None` lists both; `only_jid` (any JID form of the chat) narrows the pass to that one conversation.
+    """
+    page, archived_count, _ = list_chats_page(
+        conn, appconn, filter=filter, archived=archived, query=query, limit=limit, only_jid=only_jid
+    )
+    return page, archived_count
+
+
+def list_chats_page(
+    conn: sqlite3.Connection,
+    appconn: sqlite3.Connection,
+    *,
+    filter: ChatFilter = "all",  # noqa: A002 - the API's parameter name
+    archived: bool | None = False,
+    query: str | None = None,
+    limit: int = 200,
+    only_jid: str | None = None,
+    before: str | None = None,
+    keep_ties: bool = False,
+) -> tuple[list[ChatSummary], int, bool]:
+    """One page of the chat list, how many chats are archived, and whether older chats remain.
+
+    The first page is pinned chats first, then newest first. With `before` (the last_message timestamp of the last
+    chat the caller has) the next page is the unpinned chats strictly older than it: pinned chats are all on the first
+    page. `keep_ties` keeps chats that share the boundary instant together, so a cursor never skips one.
     """
     convs = _conversations(conn)
     states = _states(conn, convs)
@@ -474,7 +498,19 @@ def list_chats_with_count(
         digits = query.strip().lstrip("+").replace(" ", "")
         summaries = [s for s in summaries if needle in fold(s.name) or (digits.isdigit() and digits in _bare(s.jid))]
     summaries.sort(key=lambda s: (s.pinned, _sort_key(s.last_message.timestamp_iso)), reverse=True)
-    return summaries[:limit], archived_count
+    if before is not None:
+        parsed = parse_ts(before)
+        if parsed is None:
+            raise ValueError("bad timestamp")
+        summaries = [
+            s for s in summaries if not s.pinned and _sort_key(s.last_message.timestamp_iso) < parsed.timestamp()
+        ]
+    end = limit
+    if keep_ties and len(summaries) > limit:
+        edge = _sort_key(summaries[limit - 1].last_message.timestamp_iso)
+        while end < len(summaries) and _sort_key(summaries[end].last_message.timestamp_iso) == edge:
+            end += 1
+    return summaries[:end], archived_count, len(summaries) > end
 
 
 def _sort_key(iso: str) -> float:
@@ -662,7 +698,7 @@ def _message_select(cols: set[str], forms: list[str]) -> str:
                julianday(timestamp), {col("file_length")}
         FROM messages
         WHERE chat_jid IN ({_marks(forms)}) AND julianday(timestamp) IS NOT NULL
-          AND (content IS NULL OR content NOT LIKE '[Poll Vote:%')"""
+          AND {NOT_POLL_VOTE}"""
 
 
 def get_message(conn: sqlite3.Connection, chat_jid: str, message_id: str) -> MessageView | None:

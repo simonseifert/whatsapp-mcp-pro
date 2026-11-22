@@ -12,6 +12,9 @@ type State = {
   loadingOlder: boolean
 }
 
+/** Most live events held during the first load; beyond it the chat refetches once instead. */
+const MAX_BUFFERED = 200
+
 /** Called when a message joined the chat over the live stream. `newest`: it is now the last message. */
 export type OnArrival = (message: MessageView, newest: boolean) => void
 
@@ -32,6 +35,9 @@ export function useChat(jid: string, onArrival?: OnArrival) {
   }, [])
   const [attempt, setAttempt] = useState(0)
   const busy = useRef(false)
+  // Live events that arrive while the first load is still running: applied when it finishes, not dropped.
+  const buffered = useRef<LiveEvent[]>([])
+  const handler = useRef<(event: LiveEvent) => void>(() => {})
   const arrival = useRef(onArrival)
   useEffect(() => {
     arrival.current = onArrival
@@ -40,10 +46,14 @@ export function useChat(jid: string, onArrival?: OnArrival) {
 
   useEffect(() => {
     let current = true
+    buffered.current = []
     Promise.all([apiFetch<ChatDetail>(path), apiFetch<MessagesResponse>(`${path}/messages`)])
       .then(([detail, page]) => {
-        if (current)
-          setState({ detail, messages: page.messages, hasMore: page.has_more, status: 'ready', loadingOlder: false })
+        if (!current) return
+        setState({ detail, messages: page.messages, hasMore: page.has_more, status: 'ready', loadingOlder: false })
+        const waiting = buffered.current
+        buffered.current = []
+        for (const event of waiting) handler.current(event) // a duplicate of a loaded message only replaces it
       })
       .catch((err: unknown) => {
         if (current) setState((s) => ({ ...s, status: err instanceof ApiError && err.status === 404 ? 'missing' : 'error' }))
@@ -84,6 +94,11 @@ export function useChat(jid: string, onArrival?: OnArrival) {
     }
 
     function onEvent(event: LiveEvent) {
+      if (latest.current.status === 'loading') {
+        if (buffered.current.length < MAX_BUFFERED) buffered.current.push(event)
+        else buffered.current = [{ name: 'resync', data: {} }] // too many to replay: refetch once instead
+        return
+      }
       if (latest.current.status !== 'ready') return
       if (event.name === 'message' && mine(event.data.chat_jid)) {
         const placed = placeMessage(latest.current.messages, event.data.message, latest.current.hasMore)
@@ -100,6 +115,7 @@ export function useChat(jid: string, onArrival?: OnArrival) {
         void resync()
       }
     }
+    handler.current = onEvent
     const unsubscribe = subscribeLive(onEvent)
     return () => {
       alive = false

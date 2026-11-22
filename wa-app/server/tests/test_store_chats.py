@@ -250,3 +250,11 @@ def test_contact_preview_with_phones_and_array() -> None:
     two = "[Contact: Ana]\n📞 +385 91 000 0000\n\n[Contact: Bo]\n📞 4915112345678"
     assert store._preview(two, None, None, False, None) == "👤 Ana +1"
     assert store._preview("[Contact: Old]", None, None, False, None) == "👤 Old"
+
+
+def test_page_keeps_chats_sharing_the_boundary_instant_together(tmp_path: Path) -> None:
+    ro = _big_store(tmp_path, 5)  # five chats, all last active at the same instant
+    page, _, more = store.list_chats_page(ro, _app_db(), limit=2, keep_ties=True)
+    assert len(page) == 5 and more is False  # a boundary never splits them: the cursor would skip some
+    page, _, more = store.list_chats_page(ro, _app_db(), limit=2)
+    assert len(page) == 2 and more is True

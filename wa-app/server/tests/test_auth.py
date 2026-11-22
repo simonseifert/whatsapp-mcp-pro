@@ -211,3 +211,31 @@ def test_end_all_sessions_counts_rows(settings: Settings) -> None:
 def test_about_names_a_version(logged_in: TestClient) -> None:
     body = logged_in.get("/api/about").json()
     assert isinstance(body["version"], str) and body["version"]
+
+
+def test_oversize_passphrase_is_refused_before_hashing(client: TestClient, monkeypatch) -> None:
+    hashed: list[str] = []
+
+    class Spy:
+        def __init__(self, inner) -> None:  # noqa: ANN001
+            self.inner = inner
+
+        def hash(self, password: str) -> str:
+            hashed.append(password)
+            return self.inner.hash(password)
+
+        def verify(self, digest: str, password: str) -> bool:
+            hashed.append(password)
+            return self.inner.verify(digest, password)
+
+    monkeypatch.setattr(auth, "_hasher", Spy(auth._hasher))
+    too_long = "a" * (auth.MAX_PASSPHRASE_BYTES + 1)
+    wide = "ž" * 600  # 600 characters but 1200 bytes
+    for value in (too_long, wide):
+        assert client.post("/api/auth/setup", json={"passphrase": value}).status_code == 422
+    assert client.get("/api/auth/state").json()["setup_needed"] is True
+    assert client.post("/api/auth/setup", json={"passphrase": "a" * auth.MAX_PASSPHRASE_BYTES}).status_code == 200
+    hashed.clear()
+    for value in (too_long, wide):
+        assert client.post("/api/auth/login", json={"passphrase": value}).status_code == 422
+    assert hashed == []

@@ -28,18 +28,22 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   return body as T
 }
 
-/** URL of a message's media file, its thumbnail, or (retry) the one that may ask the sender's phone. */
+/** URL of a message's media file, its thumbnail, or (retry, POST only) the one that may ask the sender's phone. */
 export function mediaUrl(chat: string, id: string, kind: 'file' | 'thumb' | 'retry' = 'file'): string {
   const base = `/api/media/${encodeURIComponent(chat)}/${encodeURIComponent(id)}`
-  return kind === 'thumb' ? `${base}/thumb` : kind === 'retry' ? `${base}?retry=1` : base
+  return kind === 'thumb' ? `${base}/thumb` : kind === 'retry' ? `${base}/retry` : base
 }
 
 export type ReadResponse = { unread: number; receipts_sent: number }
 
-/** Marks the chat read here and on the phone's side (the server sends the read receipts). */
-export function markRead(jid: string): Promise<ReadResponse> {
+/**
+ * Marks the chat read here and on the phone's side (the server sends the read receipts). `upTo` is the timestamp of
+ * the newest message the reader was actually shown: the server never marks anything newer.
+ */
+export function markRead(jid: string, upTo: string): Promise<ReadResponse> {
   return apiFetch<ReadResponse>(`/api/chats/${encodeURIComponent(jid)}/read`, {
     method: 'POST',
+    body: JSON.stringify({ up_to: upTo }),
   })
 }
 
