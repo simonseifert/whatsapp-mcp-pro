@@ -92,14 +92,14 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         except sqlite3.OperationalError:
             return _error(503, "Message store unavailable")
         try:
-            listed = store.list_chats(
+            listed, archived_count = store.list_chats_with_count(
                 ro,
                 conn,
                 filter=chat_filter,  # type: ignore[arg-type]
                 archived=archived,
                 query=query,
             )
-            return JSONResponse({"chats": [asdict(c) for c in listed], "archived_count": store.count_archived(ro)})
+            return JSONResponse({"chats": [asdict(c) for c in listed], "archived_count": archived_count})
         except sqlite3.Error:
             return _error(503, "Message store unavailable")
         finally:

@@ -45,6 +45,13 @@ test('filters, search without diacritics, and the archived list', async ({ page 
   await expect(page.getByRole('heading', { name: 'Chats' })).toBeVisible()
 })
 
+test('a search by number keeps the chats the server matched', async ({ page }) => {
+  await page.getByRole('searchbox').fill('4915112345678')
+  await expect(page.locator('.row .name')).toHaveText(['Tomo (posao)'])
+  await page.waitForTimeout(600) // past the debounce: the server answer must not be re-filtered by name
+  await expect(page.locator('.row .name')).toHaveText(['Tomo (posao)'])
+})
+
 test('tab bar: later-version tabs and settings', async ({ page }) => {
   await page.getByRole('link', { name: 'Communities' }).click()
   await expect(page.getByText('Coming in a later version.')).toBeVisible()

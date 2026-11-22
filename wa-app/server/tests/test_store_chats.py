@@ -47,7 +47,8 @@ def test_archived_hidden_and_counted(conns) -> None:
     visible = store.list_chats(*conns)
     assert fx.OLD_ARCHIVED not in jids(visible)
     assert fx.OLD_ARCHIVED_GROUP not in jids(visible)
-    assert store.count_archived(conns[0]) == 2
+    assert store.list_chats_with_count(*conns)[1] == 2
+    assert store.list_chats_with_count(*conns, archived=True)[1] == 2
     archived = store.list_chats(*conns, archived=True)
     assert sorted(jids(archived)) == sorted([fx.OLD_ARCHIVED, fx.OLD_ARCHIVED_GROUP])
     assert all(c.archived for c in archived)
@@ -192,3 +193,46 @@ def test_store_without_optional_tables(tmp_path: Path) -> None:
 
 def test_make_store_is_repeatable(tmp_path: Path) -> None:
     assert make_store(tmp_path / "a") != make_store(tmp_path / "b")
+
+
+def _big_store(tmp_path: Path, chats: int, identities_per_chat: int = 3) -> sqlite3.Connection:
+    path = tmp_path / f"big{chats}"
+    path.mkdir()
+    db = sqlite3.connect(path / "messages.db")
+    db.executescript(fx._SCHEMA)
+    for i in range(chats):
+        jid = f"3859{i:08d}@s.whatsapp.net"
+        db.execute(
+            "INSERT INTO chats (jid, name, last_message_time) VALUES (?,?,?)",
+            (jid, f"Person {i}", "2026-11-22 10:00:00+01:00"),
+        )
+        db.execute(
+            "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?,?,?,?,?,0)",
+            (f"m{i}", jid, jid, "hi", "2026-11-22 10:00:00+01:00"),
+        )
+        for k in range(identities_per_chat):  # one real identity plus unrelated directory rows
+            ident = jid if k == 0 else f"{k}{i:08d}@s.whatsapp.net"
+            db.execute(
+                "INSERT INTO identities (jid, phone_jid, display_name) VALUES (?,?,?)", (ident, ident, f"Person {i}")
+            )
+    db.commit()
+    db.close()
+    return sqlite3.connect(f"file:{path / 'messages.db'}?mode=ro", uri=True)
+
+
+def test_statement_count_does_not_scan_directory_per_chat(tmp_path: Path) -> None:
+    """Grouping must not query identities per chat (it used to scan the table once per chat)."""
+    counts = {}
+    for n in (100, 1000):
+        ro = _big_store(tmp_path, n)
+        statements: list[str] = []
+        ro.set_trace_callback(statements.append)
+        chats = store.list_chats(ro, sqlite3.connect(":memory:"), limit=10_000)
+        assert len(chats) == n
+        directory = [q for q in statements if "identities" in q]
+        # Our grouping reads identities once; the rest is lib.naming's name lookup, one query per 200 keys.
+        assert len(directory) <= 12 + n // 50, len(directory)
+        assert len(statements) <= 2 * n + 50  # per chat only the indexed last-message query (+ unread when marked)
+        counts[n] = len(statements)
+        ro.close()
+    assert counts[1000] - counts[100] <= 2 * 900 + 10

@@ -12,19 +12,23 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [text, setText] = useState('')
   const [query, setQuery] = useState('')
-  const { data, error, retry } = useChats(filter, archived, query)
+  const { data, error, loadedQuery, retry } = useChats(filter, archived, query)
 
   useEffect(() => {
     const id = window.setTimeout(() => setQuery(text.trim()), SEARCH_DEBOUNCE_MS)
     return () => window.clearTimeout(id)
   }, [text])
 
-  // Instant client-side narrowing while the debounced server query catches up.
+  // Instant client-side narrowing, only while the debounced server query for this text is still on its way.
+  // Once the server has answered, its result stands (it also matches by number, which names do not show);
+  // all-digit text is never filtered here for the same reason.
   const chats = useMemo(() => {
-    const needle = fold(text.trim())
+    const trimmed = text.trim()
     const all = data?.chats ?? []
-    return needle ? all.filter((c) => fold(c.name).includes(needle)) : all
-  }, [data, text])
+    if (!trimmed || loadedQuery === trimmed || /^[+\d\s()-]+$/.test(trimmed)) return all
+    const needle = fold(trimmed)
+    return all.filter((c) => fold(c.name).includes(needle))
+  }, [data, text, loadedQuery])
 
   const showArchivedRow = !archived && filter === 'all' && text.trim() === '' && (data?.archived_count ?? 0) > 0
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from .config import Settings
-from .mcp_lib import chat_forms, resolve_display_names
+from .mcp_lib import resolve_display_names
 from .unread import UnreadCounter
 
 ChatFilter = Literal["all", "unread", "favourites", "groups"]
@@ -184,14 +184,39 @@ class _Conversation:
     rows: dict[str, str | None]  # chat jid -> chats.name, for rows that are listed (not merged away)
 
 
+_MAX_MERGE_HOPS = 8
+
+
 def _conversations(conn: sqlite3.Connection) -> list[_Conversation]:
-    has_merge = "merged_into" in _columns(conn, "chats")
-    where = "WHERE COALESCE(merged_into, '') = ''" if has_merge else ""
-    rows = {
-        jid: name
-        for jid, name in conn.execute(f"SELECT jid, name FROM chats {where}")
-        if jid and not jid.endswith("@broadcast")
-    }
+    """Group chat rows into conversations from two table reads, with no per-chat queries.
+
+    Same links as lib.changes.chat_forms: a chat's own JID, the chat it was merged into (merged_into chain, a
+    loop falls back to the chat itself) and the identities row (jid, lid, phone_jid) of that target. Never digits.
+    """
+    chat_cols = _columns(conn, "chats")
+    merge_col = "merged_into" if "merged_into" in chat_cols else "NULL"
+    all_rows = conn.execute(f"SELECT jid, name, {merge_col} FROM chats").fetchall()
+    merged_into = {jid: target for jid, _, target in all_rows if target}
+    rows = {jid: name for jid, name, target in all_rows if jid and not target and not jid.endswith("@broadcast")}
+    identity_forms: dict[str, tuple[str, ...]] = {}
+    if _columns(conn, "identities"):
+        for jid, lid, phone_jid in conn.execute("SELECT jid, lid, phone_jid FROM identities"):
+            row_forms = tuple(f for f in (jid, lid, phone_jid) if f)
+            for form in row_forms:
+                identity_forms.setdefault(form, row_forms)  # first row wins, like LIMIT 1
+
+    def canonical(jid: str) -> str:
+        current, seen = jid, {jid}
+        for _ in range(_MAX_MERGE_HOPS):
+            nxt = merged_into.get(current)
+            if not nxt:
+                return current
+            if nxt in seen:
+                return jid
+            seen.add(nxt)
+            current = nxt
+        return current
+
     parent: dict[str, str] = {}
 
     def find(x: str) -> str:
@@ -202,7 +227,8 @@ def _conversations(conn: sqlite3.Connection) -> list[_Conversation]:
         return x
 
     for jid in rows:
-        for form in chat_forms(conn, jid):
+        target = canonical(jid)
+        for form in (jid, target, *identity_forms.get(target, ())):
             parent[find(form)] = find(jid)
     groups: dict[str, list[str]] = {}
     for form in list(parent):
@@ -258,12 +284,6 @@ def _states(conn: sqlite3.Connection, conversations: list[_Conversation]) -> dic
                 state.history_unread = (state.history_unread or 0) + r[6]
         out[conv.jid] = state
     return out
-
-
-def count_archived(conn: sqlite3.Connection) -> int:
-    convs = _conversations(conn)
-    states = _states(conn, convs)
-    return sum(1 for c in convs if states.get(c.jid, _State()).archived)
 
 
 def _last_message(conn: sqlite3.Connection, forms: list[str], extra: str) -> tuple | None:
@@ -324,8 +344,22 @@ def list_chats(
     query: str | None = None,
     limit: int = 200,
 ) -> list[ChatSummary]:
+    return list_chats_with_count(conn, appconn, filter=filter, archived=archived, query=query, limit=limit)[0]
+
+
+def list_chats_with_count(
+    conn: sqlite3.Connection,
+    appconn: sqlite3.Connection,
+    *,
+    filter: ChatFilter = "all",  # noqa: A002 - the API's parameter name
+    archived: bool = False,
+    query: str | None = None,
+    limit: int = 200,
+) -> tuple[list[ChatSummary], int]:
+    """The chat list and, from the same pass, how many chats are archived."""
     convs = _conversations(conn)
     states = _states(conn, convs)
+    archived_count = sum(1 for c in convs if states.get(c.jid, _State()).archived)
     convs = [c for c in convs if states.get(c.jid, _State()).archived == archived]
 
     deleted_sql = "deleted_at" if "deleted_at" in _columns(conn, "messages") else "NULL"
@@ -425,7 +459,7 @@ def list_chats(
         digits = query.strip().lstrip("+").replace(" ", "")
         summaries = [s for s in summaries if needle in fold(s.name) or (digits.isdigit() and digits in _bare(s.jid))]
     summaries.sort(key=lambda s: (s.pinned, _sort_key(s.last_message.timestamp_iso)), reverse=True)
-    return summaries[:limit]
+    return summaries[:limit], archived_count
 
 
 def _sort_key(iso: str) -> float:

@@ -3,11 +3,11 @@ import { apiFetch } from './api'
 import type { ChatsResponse } from './api-types'
 import type { Filter } from './components/FilterChips'
 
-type State = { data: ChatsResponse | null; error: boolean }
+type State = { data: ChatsResponse | null; error: boolean; loadedQuery: string | null }
 
 /** Loads /api/chats for the given filter, archive flag and (already debounced) search text. */
 export function useChats(filter: Filter, archived: boolean, query: string) {
-  const [state, setState] = useState<State>({ data: null, error: false })
+  const [state, setState] = useState<State>({ data: null, error: false, loadedQuery: null })
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
@@ -16,7 +16,7 @@ export function useChats(filter: Filter, archived: boolean, query: string) {
     if (archived) params.set('archived', '1')
     if (query) params.set('q', query)
     apiFetch<ChatsResponse>(`/api/chats?${params}`)
-      .then((data) => current && setState({ data, error: false }))
+      .then((data) => current && setState({ data, error: false, loadedQuery: query }))
       .catch(() => current && setState((prev) => ({ ...prev, error: true })))
     return () => {
       current = false
