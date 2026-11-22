@@ -1,0 +1,10 @@
+*.md
+**/*.md
+NOTES*
+**/NOTES*
+shots/
+**/shots/
+*.py
+*.sh
+.env*
+*.log

@@ -1,0 +1,35 @@
+{
+  "_note": "SAMPLE DATA. Every name, number and message here is fictional. Do not replace with real chats: this folder is published at a public link.",
+  "me": "Marko",
+  "chats": [
+    {"id":"c1","name":"Ana Kovačević","type":"private","pinned":true,"last":"Može, vidimo se u 7 kod Molo Longo 👍","last_from_me":false,"time":"21:14","unread":2,"drafts_on":true},
+    {"id":"c2","name":"Obitelj 🏡","type":"group","pinned":true,"muted":true,"last_sender":"Mama","last":"🎤 Glasovna poruka (0:42)","time":"20:58","unread":5},
+    {"id":"c3","name":"Đurđica Šimunović-Petrović (Računovodstvo d.o.o.)","type":"private","last":"Šaljem vam račun za listopad, molim potvrdu primitka.","time":"18:30","unread":0,"last_from_me":false,"ticks":null},
+    {"id":"c4","name":"Kvart Trsat · Obavijesti","type":"announcement","community":"Kvart Trsat","last_sender":"Admin","last":"Sutra od 8 do 12 nema vode u ulicama Strossmayerova i Slavka Krautzeka.","time":"16:02","unread":1},
+    {"id":"c5","name":"Lukas Brenner","type":"private","last":"Danke! Ich schick dir die Unterlagen morgen früh.","last_from_me":true,"ticks":"read","time":"14:47","unread":0,"drafts_on":true},
+    {"id":"c6","name":"Nikola","type":"private","last":"📷 Fotografija","last_from_me":false,"time":"Jučer","unread":0},
+    {"id":"c7","name":"Studij FIDIT 2. god.","type":"group","last_sender":"Petra","last":"📊 Anketa: Kad idemo na kolokvij pripreme?","time":"Jučer","unread":12},
+    {"id":"c8","name":"+385 91 000 0000","type":"private","last":"Poruka je obrisana","deleted":true,"time":"Ponedjeljak","unread":0},
+    {"id":"c9","name":"Ivana","type":"private","last":"Haha ne mogu vjerovat 😂😂 jesi vidio što je napisao u grupi?? ja sam mislila da se šali ali očito ne","time":"Ponedjeljak","unread":0,"last_from_me":false},
+    {"id":"c10","name":"Teretana Kantrida","type":"private","last":"Sticker","sticker":true,"time":"12.11.","unread":0}
+  ],
+  "archived_count": 14,
+  "open_chat": {
+    "id":"c2b","name":"Ekipa za vikend","type":"group","members":"Ana, Ivana, Nikola, Petra, ti","drafts_on":true,
+    "messages":[
+      {"day":"Jučer"},
+      {"from":"Nikola","text":"Tko vozi u subotu? Ja mogu uzet 4 ljudi max","time":"19:02"},
+      {"from":"me","text":"Ja mogu drugi auto, krećemo oko 9?","time":"19:05","ticks":"read","edited":true},
+      {"from":"Petra","forwarded":true,"text":"Prognoza za Učku: subota sunčano, 14°C, vjetar slab.","time":"19:11","reactions":[{"e":"☀️","n":3}]},
+      {"from":"Ivana","deleted":true,"time":"19:20"},
+      {"day":"Danas"},
+      {"from":"Ana","image":true,"caption":"Ovo je ruta, 11 km, cca 4h s pauzama","time":"20:31","reactions":[{"e":"🔥","n":2},{"e":"👍","n":1}]},
+      {"from":"Nikola","poll":{"q":"Ručak poslije?","options":[["Konoba kod Mate",3],["Nosimo sendviče",1],["Vidjet ćemo",0]],"votes":4},"time":"20:40"},
+      {"from":"Petra","voice":{"dur":"0:37","transcript":"Ej ljudi, ja ću možda kasnit pola sata jer moram prvo odvest sestru na trening, al vi krenite pa vas dostignem kod planinarskog doma. I ako netko ima štapove viška, javite."},"time":"20:52"},
+      {"from":"Ana","reply_to":{"from":"Petra","text":"🎤 Glasovna poruka (0:37)"},"text":"Ja imam jedne štapove viška, ponijet ću","time":"20:55"},
+      {"from":"Nikola","text":"Marko jel ti onda pokupiš Petru?","time":"21:03"}
+    ],
+    "draft":{"answers":"Nikola: Marko jel ti onda pokupiš Petru?","alternatives":["Mogu, Petra javi kad si gotova sa sestrom pa te pokupim 👍","Ne stignem, krećem ravno iz Opatije. Nikola možeš ti?"]}
+  },
+  "edge_cases_to_show": ["very long name (c3)", "muted pinned group with voice note preview (c2)", "community announcement group (c4)", "unknown number with deleted message (c8)", "long preview truncation (c9)", "attachment-only previews (c6, c10)", "archived row (14)", "edited, forwarded, deleted, reply, reactions, poll, image with caption, voice note with transcript, draft card with 2 alternatives"]
+}

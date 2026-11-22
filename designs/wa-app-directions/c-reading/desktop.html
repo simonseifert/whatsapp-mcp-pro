@@ -1,0 +1,138 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>wa-app</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#17140f;--surface:#1f1b15;--ink:#ece6d9;--muted:#a69e8f;--hair:#3a352c;--accent:#ee6a52;--on-accent:#17140f;--rule:#8a8274; color-scheme:dark}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f6f3ee;--surface:#ece7de;--ink:#1c1915;--muted:#665f54;--hair:#d6cfc2;--accent:#a8281b;--on-accent:#fffaf3;--rule:#7a7366; color-scheme:light}}
+:root[data-theme="light"]{--bg:#f6f3ee;--surface:#ece7de;--ink:#1c1915;--muted:#665f54;--hair:#d6cfc2;--accent:#a8281b;--on-accent:#fffaf3;--rule:#7a7366; color-scheme:light}
+*{box-sizing:border-box;margin:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font:16px/1.4 'Geist',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;min-height:44px;min-width:44px}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.serif{font-family:'Newsreader',Georgia,serif}
+svg{display:block;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.muted{color:var(--muted)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* list */
+.lhead{padding:20px 20px 0}
+.lhead h1{font:400 34px/1.1 'Newsreader',Georgia,serif;letter-spacing:-.01em;display:flex;align-items:baseline;justify-content:space-between}
+.lhead h1 small{font:500 13px 'Geist',sans-serif;color:var(--muted);letter-spacing:0}
+.search{display:flex;align-items:center;gap:10px;margin-top:14px;border-bottom:1px solid var(--hair);min-height:44px;color:var(--muted)}
+.search svg{width:18px;height:18px}
+.search input{flex:1;background:none;border:0;color:var(--ink);font:400 16px 'Geist',sans-serif;min-height:44px;outline:0}
+.search input::placeholder{color:var(--muted)}
+.search:focus-within{border-color:var(--ink)}
+.filters{display:flex;gap:6px;padding:0 12px;overflow-x:auto}
+.filters button{padding:0 8px;font-size:14px;color:var(--muted);position:relative}
+.filters button[aria-current=true]{color:var(--ink);font-weight:500}
+.filters button[aria-current=true]::after{content:"";position:absolute;left:8px;right:8px;bottom:8px;height:1px;background:var(--ink)}
+.archived{display:flex;align-items:center;justify-content:space-between;width:100%;padding:0 20px;min-height:48px;border-top:1px solid var(--hair);font-size:14px;color:var(--muted)}
+.archived b{font-weight:400;color:var(--ink)}
+.rows{list-style:none;padding:0}
+.row{display:grid;grid-template-columns:40px 1fr auto;gap:0 14px;padding:13px 20px;border-top:1px solid var(--hair);min-height:72px;align-items:start;color:inherit;text-decoration:none;position:relative}
+.row[aria-current=true]{background:var(--surface)}
+.av{width:40px;height:40px;border:1px solid var(--hair);border-radius:50%;display:grid;place-items:center;font:400 19px 'Newsreader',serif;color:var(--muted);margin-top:2px}
+.rname{font:500 18px/1.25 'Newsreader',Georgia,serif;display:flex;align-items:center;gap:6px;min-width:0}
+.rname span.t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rname svg{width:13px;height:13px;flex:none;color:var(--muted)}
+.rname svg.dr{color:var(--accent)}
+.prev{font-size:14px;line-height:1.4;color:var(--muted);margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.prev i{font-style:normal;color:var(--ink);opacity:.8}
+.prev.del{font-style:italic}
+.meta{display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-size:12px;color:var(--muted);padding-top:3px;font-variant-numeric:tabular-nums}
+.row.unread .meta .tm{color:var(--accent);font-weight:500}
+.row.unread .rname{font-weight:600}
+.badge{background:var(--accent);color:var(--on-accent);border-radius:99px;min-width:20px;height:20px;padding:0 6px;font:600 12px/20px 'Geist',sans-serif;text-align:center}
+
+.tabs{display:grid;grid-template-columns:repeat(4,1fr);background:var(--bg);border-top:1px solid var(--hair);padding-bottom:env(safe-area-inset-bottom)}
+.tabs a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;font-size:11.5px;color:var(--muted);text-decoration:none;position:relative}
+.tabs a svg{width:21px;height:21px}
+.tabs a[aria-current=true]{color:var(--ink);font-weight:500}
+.tabs a[aria-current=true]::before{content:"";position:absolute;top:-1px;left:30%;right:30%;height:2px;background:var(--ink)}
+
+/* chat */
+.chead{position:sticky;top:0;z-index:2;background:var(--bg);display:flex;align-items:center;gap:4px;padding:6px 12px 6px 4px;border-bottom:1px solid var(--hair)}
+.chead .back{display:grid;place-items:center}
+.chead .back svg{width:22px;height:22px}
+.chead .who{flex:1;min-width:0}
+.chead h1{font:500 19px/1.2 'Newsreader',Georgia,serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chead p{font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chead .tag{font-size:12px;color:var(--accent);display:flex;align-items:center;gap:5px}
+.chead .tag svg{width:13px;height:13px}
+.tr{padding:8px 20px 28px;max-width:68ch;margin:0 auto}
+.day{display:flex;align-items:center;gap:12px;margin:26px 0 10px;font-size:12.5px;color:var(--muted)}
+.day::after{content:"";flex:1;height:1px;background:var(--hair)}
+.msg{margin:0 0 22px;font-family:'Newsreader',Georgia,serif;font-size:18.5px;line-height:1.58;font-variation-settings:"opsz" 16}
+.msg.me{margin-left:18px;padding-left:14px;border-left:2px solid var(--rule)}
+.lab{display:flex;align-items:baseline;gap:10px;font:500 12.5px/1.2 'Geist',sans-serif;margin-bottom:5px;flex-wrap:wrap}
+.lab .tm{font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
+.lab .fl{font-weight:400;color:var(--muted)}
+.fwd{font:400 12.5px 'Geist',sans-serif;color:var(--muted);margin-bottom:3px}
+.rep{font:400 13.5px/1.4 'Geist',sans-serif;color:var(--muted);border-left:1px solid var(--hair);padding-left:10px;margin-bottom:6px}
+.rep b{font-weight:500;color:var(--ink)}
+.gone{font:400 14.5px 'Geist',sans-serif;color:var(--muted)}
+.rx{display:flex;gap:12px;margin-top:6px;font:400 13px 'Geist',sans-serif;color:var(--muted)}
+.rx span{white-space:nowrap}
+.ph{aspect-ratio:16/10;background:var(--surface);border:1px solid var(--hair);display:grid;place-items:center;font:400 13px 'Geist',sans-serif;color:var(--muted);margin-bottom:8px}
+.poll .q{font-weight:500}
+.opt{display:grid;grid-template-columns:1fr auto;gap:0 12px;margin-top:10px;font-size:17px;line-height:1.3}
+.opt em{font:400 13px 'Geist',sans-serif;font-style:normal;color:var(--muted);font-variant-numeric:tabular-nums;align-self:center}
+.opt .bar{grid-column:1/-1;height:2px;background:var(--hair);margin-top:5px}
+.opt .bar i{display:block;height:100%;background:var(--ink)}
+.pv{font:400 12.5px 'Geist',sans-serif;color:var(--muted);margin-top:8px}
+.vq{text-indent:-.42em}
+.vc{display:flex;align-items:center;gap:6px;margin-top:2px;font:400 13px 'Geist',sans-serif;color:var(--muted)}
+.play{width:44px;height:44px;border:1px solid var(--hair);border-radius:50%;display:grid;place-items:center;color:var(--ink);margin-left:-2px}
+.play svg{width:14px;height:14px;fill:currentColor;stroke:none;margin-left:2px}
+.vc .dur{font-variant-numeric:tabular-nums;color:var(--ink)}
+.vc .toggle{margin-left:6px;padding:0 6px;font-size:13px;color:var(--muted);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--hair)}
+
+.dock{background:var(--bg)}
+.draft{background:var(--surface);border-top:1px solid var(--hair);border-left:3px solid var(--accent);padding:6px 8px 4px 17px}
+.dh{display:flex;align-items:center;justify-content:space-between}
+.dh .l{font:500 15px 'Newsreader',serif;font-variant-caps:all-small-caps;letter-spacing:.07em;color:var(--accent)}
+.dh button{font-size:13.5px;color:var(--muted);padding:0 10px}
+.ctx{font:400 12.5px/1.35 'Geist',sans-serif;color:var(--muted);margin:-4px 0 2px}
+.alt{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px;width:100%;text-align:left;border-top:1px solid var(--hair);padding:8px 0;min-height:56px}
+.alt .tx{font:italic 400 17px/1.4 'Newsreader',serif}
+.alt .use{font:500 13.5px 'Geist',sans-serif;color:var(--accent);border:1px solid var(--accent);padding:0 14px;height:36px;line-height:34px;white-space:nowrap}
+.comp{display:flex;align-items:center;gap:2px;padding:4px 8px;border-top:1px solid var(--hair)}
+.comp .in{flex:1;min-height:44px;display:flex;align-items:center;padding:0 12px;color:var(--muted);font:400 17px 'Newsreader',serif;border-bottom:1px solid var(--hair)}
+.comp button{display:grid;place-items:center;color:var(--muted)}
+.comp svg{width:22px;height:22px}
+.comp .send{color:var(--ink)}
+
+/* motion */
+@keyframes rd{from{opacity:0}to{opacity:1}}
+.tr>*{animation:rd .1s ease-out both;animation-delay:calc(var(--i)*14ms)}
+@media (prefers-reduced-motion:reduce){.tr>*{animation:none}}
+
+/* desktop */
+.side .row{min-height:60px;padding:9px 20px}.side .prev{-webkit-line-clamp:1}
+.shell{display:grid;grid-template-columns:400px 1fr;min-height:100vh}
+.side{position:sticky;top:0;height:100vh;overflow-y:auto;border-right:1px solid var(--hair);display:flex;flex-direction:column}
+.side .rows{flex:1}
+.side .tabs{margin-top:auto}
+.main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
+.main .tr{width:100%;flex:1;max-width:784px;padding:12px 32px 40px}.main .ph{aspect-ratio:16/6}
+.main .msg{font-size:20px;line-height:1.6}
+.main .chead{padding:10px 32px}
+.main .chead>div.in{width:100%;max-width:720px;margin:0 auto;display:flex;align-items:center;gap:8px}
+.main .dock>*{}
+.main .dock .wrap{max-width:720px;margin:0 auto}
+.main .draft{border-left:0;border-top:1px solid var(--hair);padding:0}
+.main .draft .wrap{border-left:3px solid var(--accent);padding:8px 0 6px 18px;margin:0 auto}.main .draft{padding:0 32px}.main .dock .comp .wrap{display:flex;align-items:center;gap:2px}
+.main .alt .tx{font-size:19px}
+.main .comp{padding:6px 32px}.main .comp .wrap{width:100%}
+.main .comp .in{font-size:18px}
+</style>
+<script>var t=new URLSearchParams(location.search).get('theme');if(t)document.documentElement.dataset.theme=t;</script>
+</head><body><div class="shell"><aside class="side"><header class="lhead"><h1><span>wa-app</span></h1>
+<label class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><span class="sr">Search</span><input type="search" placeholder="Search chats"></label></header>
+<div class="filters" role="tablist"><button aria-current=true>All</button><button >Unread</button><button >Favourites</button><button >Groups</button></div>
+<button class="archived"><span>Archived</span><b>14</b></button>
+<ul class="rows"><li><a class="row unread" href="chat.html"><div class="av" aria-hidden="true">A</div><div style="min-width:0"><div class="rname"><span class="t">Ana Kovačević</span><svg viewBox="0 0 24 24" aria-label="Pinned"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/></svg><svg class="dr" viewBox="0 0 24 24" aria-label="Drafts on"><path d="M4 20l1-4L16 5l3 3L8 19z"/></svg></div><div class="prev">Može, vidimo se u 7 kod Molo Longo 👍</div></div><div class="meta"><span class="tm">21:14</span><span class="badge" aria-label="2 unread">2</span></div></a></li><li><a class="row unread" href="chat.html"><div class="av" aria-hidden="true">O</div><div style="min-width:0"><div class="rname"><span class="t">Obitelj 🏡</span><svg viewBox="0 0 24 24" aria-label="Muted"><path d="M6 16V11a6 6 0 0 1 9-5M18 11v5l2 2H4M3 3l18 18"/></svg><svg viewBox="0 0 24 24" aria-label="Pinned"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/></svg></div><div class="prev"><i>Mama:</i> 🎤 Glasovna poruka (0:42)</div></div><div class="meta"><span class="tm">20:58</span><span class="badge" aria-label="5 unread">5</span></div></a></li><li><a class="row" href="chat.html"><div class="av" aria-hidden="true">Đ</div><div style="min-width:0"><div class="rname"><span class="t">Đurđica Šimunović-Petrović (Računovodstvo d.o.o.)</span></div><div class="prev">Šaljem vam račun za listopad, molim potvrdu primitka.</div></div><div class="meta"><span class="tm">18:30</span></div></a></li><li><a class="row unread" href="chat.html"><div class="av" aria-hidden="true">K</div><div style="min-width:0"><div class="rname"><span class="t">Kvart Trsat · Obavijesti</span></div><div class="prev"><i>Admin:</i> Sutra od 8 do 12 nema vode u ulicama Strossmayerova i Slavka Krautzeka.</div></div><div class="meta"><span class="tm">16:02</span><span class="badge" aria-label="1 unread">1</span></div></a></li><li><a class="row" href="chat.html"><div class="av" aria-hidden="true">L</div><div style="min-width:0"><div class="rname"><span class="t">Lukas Brenner</span><svg class="dr" viewBox="0 0 24 24" aria-label="Drafts on"><path d="M4 20l1-4L16 5l3 3L8 19z"/></svg></div><div class="prev"><i>You:</i> Danke! Ich schick dir die Unterlagen morgen früh.</div></div><div class="meta"><span class="tm">14:47</span></div></a></li><li><a class="row" href="chat.html"><div class="av" aria-hidden="true">N</div><div style="min-width:0"><div class="rname"><span class="t">Nikola</span></div><div class="prev">📷 Fotografija</div></div><div class="meta"><span class="tm">Jučer</span></div></a></li><li><a class="row unread" href="chat.html"><div class="av" aria-hidden="true">S</div><div style="min-width:0"><div class="rname"><span class="t">Studij FIDIT 2. god.</span></div><div class="prev"><i>Petra:</i> 📊 Anketa: Kad idemo na kolokvij pripreme?</div></div><div class="meta"><span class="tm">Jučer</span><span class="badge" aria-label="12 unread">12</span></div></a></li><li><a class="row" href="chat.html"><div class="av" aria-hidden="true">#</div><div style="min-width:0"><div class="rname"><span class="t">+385 91 000 0000</span></div><div class="prev del">Poruka je obrisana</div></div><div class="meta"><span class="tm">Ponedjeljak</span></div></a></li><li><a class="row" href="chat.html"><div class="av" aria-hidden="true">I</div><div style="min-width:0"><div class="rname"><span class="t">Ivana</span></div><div class="prev">Haha ne mogu vjerovat 😂😂 jesi vidio što je napisao u grupi?? ja sam mislila da se šali ali očito ne</div></div><div class="meta"><span class="tm">Ponedjeljak</span></div></a></li><li><a class="row" href="chat.html"><div class="av" aria-hidden="true">T</div><div style="min-width:0"><div class="rname"><span class="t">Teretana Kantrida</span></div><div class="prev">Sticker</div></div><div class="meta"><span class="tm">12.11.</span></div></a></li></ul><nav class="tabs" aria-label="Main"><a href="#" aria-current=true><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Chats</span></a><a href="#" ><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="3"/><circle cx="17" cy="10" r="2.4"/><path d="M2.5 19c.5-3 2.7-4.5 5.5-4.5s5 1.5 5.5 4.5M15 15c3 0 5 1 5.5 4"/></svg><span>Communities</span></a><a href="#" ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4l3 1 1 4-2 1.5a11 11 0 0 0 5.500 5.500L15 14l4 1 1 3c-1 2-3 2.500-5 2C9 19 5 15 4 9c-.5-2 0-4 2-5z"/></svg><span>Calls</span></a><a href="#" ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span>Settings</span></a></nav></aside><section class="main"><header class="chead"><div class="in"><div class="who"><h1>Ekipa za vikend</h1><p>Ana, Ivana, Nikola, Petra, ti</p></div><span class="tag"><svg class="dr" viewBox="0 0 24 24" aria-label="Drafts on"><path d="M4 20l1-4L16 5l3 3L8 19z"/></svg>Drafts on</span></div></header><main class="tr"><div style="--i:0" class="day"><span>Jučer</span></div><div style="--i:1" class="msg"><div class="lab"><span>Nikola</span><span class="tm">19:02</span></div><p>Tko vozi u subotu? Ja mogu uzet 4 ljudi max</p></div><div style="--i:2" class="msg me"><div class="lab"><span>You</span><span class="tm">19:05</span><span class="fl">edited</span><span class="fl">read</span></div><p>Ja mogu drugi auto, krećemo oko 9?</p></div><div style="--i:3" class="msg"><div class="lab"><span>Petra</span><span class="tm">19:11</span></div><div class="fwd">Forwarded</div><p>Prognoza za Učku: subota sunčano, 14°C, vjetar slab.</p><div class="rx"><span>☀️ 3</span></div></div><div style="--i:4" class="msg"><div class="lab"><span>Ivana</span><span class="tm">19:20</span></div><p class="gone">Message deleted</p></div><div style="--i:5" class="day"><span>Danas</span></div><div style="--i:6" class="msg"><div class="lab"><span>Ana</span><span class="tm">20:31</span></div><div class="ph">photo</div><p>Ovo je ruta, 11 km, cca 4h s pauzama</p><div class="rx"><span>🔥 2</span><span>👍 1</span></div></div><div style="--i:7" class="msg"><div class="lab"><span>Nikola</span><span class="tm">20:40</span></div><div class="poll"><p class="q">Ručak poslije?</p><div class="opt"><span>Konoba kod Mate</span><em>3</em><div class="bar"><i style="width:75%"></i></div></div><div class="opt"><span>Nosimo sendviče</span><em>1</em><div class="bar"><i style="width:25%"></i></div></div><div class="opt"><span>Vidjet ćemo</span><em>0</em><div class="bar"><i style="width:0%"></i></div></div><div class="pv">4 votes</div></div></div><div style="--i:8" class="msg"><div class="lab"><span>Petra</span><span class="tm">20:52</span></div><p class="vq">“Ej ljudi, ja ću možda kasnit pola sata jer moram prvo odvest sestru na trening, al vi krenite pa vas dostignem kod planinarskog doma. I ako netko ima štapove viška, javite.”</p><div class="vc"><button class="play" aria-label="Play voice note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l15 9-15 9z"/></svg></button><span class="dur">0:37</span><button class="toggle">Hide text</button></div></div><div style="--i:9" class="msg"><div class="lab"><span>Ana</span><span class="tm">20:55</span></div><div class="rep"><b>Petra</b> 🎤 Glasovna poruka (0:37)</div><p>Ja imam jedne štapove viška, ponijet ću</p></div><div style="--i:10" class="msg"><div class="lab"><span>Nikola</span><span class="tm">21:03</span></div><p>Marko jel ti onda pokupiš Petru?</p></div></main><div class="dock"><section class="draft" aria-label="Suggested reply"><div class="wrap"><div class="dh"><span class="l">Suggested reply to Nikola</span><button aria-label="Dismiss suggestion">Dismiss</button></div><p class="ctx">Answering “Marko jel ti onda pokupiš Petru?”</p><button class="alt"><span class="tx">Mogu, Petra javi kad si gotova sa sestrom pa te pokupim 👍</span><span class="use">Use</span></button><button class="alt"><span class="tx">Ne stignem, krećem ravno iz Opatije. Nikola možeš ti?</span><span class="use">Use</span></button></div></section><div class="comp"><div class="wrap"><button aria-label="Attach"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 11l-7 7a4.500 4.500 0 0 1-6.500-6.500l8-8a3 3 0 0 1 4.200 4.200l-8 8a1.500 1.500 0 0 1-2.200-2.200l7-7"/></svg></button><div class="in">Message</div><button class="send" aria-label="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button></div></div></div></section></div></body></html>
