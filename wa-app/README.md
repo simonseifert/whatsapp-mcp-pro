@@ -80,7 +80,7 @@ You can also tap Draft in a chat to ask for one.
 
 ### Learning
 
-Your next own message in the chat, within 15 minutes of the draft, is compared with the closest alternative: **used** (about identical), **edited** (close) or **ignored** (different, which teaches nothing). Edited outcomes become examples for later drafts, next to your last 30 replies in the chat. After every 10 new used or edited outcomes, and nightly at 03:30 for chats with new ones, the model distils the chat's rules from them. A thumbs up or down on a draft is optional.
+Your next own message in the chat, within 15 minutes of the draft, is compared with the closest alternative: **used** (about identical), **edited** (close) or **ignored** (different, which teaches nothing). Edited outcomes become examples for later drafts, next to your last 30 replies in the chat. After every 10 new used or edited outcomes, and nightly at 03:30 for chats with new ones, the model distils the chat's rules from them.
 
 ## Develop
 
