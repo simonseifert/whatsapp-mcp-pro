@@ -13,6 +13,7 @@ from starlette.routing import Route
 
 from . import appdb, auth, live, media, sending, store, transcripts
 from .ai import config as ai_config
+from .ai import drafts
 from .config import Settings
 
 MEDIA_RETRY_SECONDS = 6 * 3600
@@ -35,7 +36,7 @@ def _too_long(passphrase: str) -> bool:
     return len(passphrase.encode()) > auth.MAX_PASSPHRASE_BYTES
 
 
-def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
+def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWorker | None = None) -> list[Route]:
     def start_session(request: Request) -> Response:
         token = auth.new_session(conn, request.headers.get("user-agent"))
         response = JSONResponse({"ok": True})
@@ -325,7 +326,8 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         if not isinstance(body, dict):
             return _error(422, "Expected a JSON object")
         try:
-            saved = ai_config.save_backend(conn, settings, body)
+            with appdb.db_lock:
+                saved = ai_config.save_backend(conn, settings, body)
         except (ai_config.ConfigError, ai_config.NotFound) as exc:
             return ai_failure(exc)
         return JSONResponse({"backend": asdict(saved)})
@@ -337,7 +339,8 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             return _error(404, "Backend not found")
         if ai_config.get_backend(conn, backend_id) is None:
             return _error(404, "Backend not found")
-        ai_config.delete_backend(conn, backend_id)
+        with appdb.db_lock:
+            ai_config.delete_backend(conn, backend_id)
         return JSONResponse({"ok": True})
 
     async def ai_default(request: Request) -> Response:
@@ -346,7 +349,8 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         if not isinstance(backend_id, int) or isinstance(backend_id, bool):
             return _error(422, "'backend_id' is required")
         try:
-            ai_config.set_default_backend(conn, backend_id)
+            with appdb.db_lock:
+                ai_config.set_default_backend(conn, backend_id)
         except ai_config.NotFound as exc:
             return ai_failure(exc)
         return JSONResponse({"default_id": backend_id})
@@ -364,18 +368,75 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
             if chat is None:
                 return _error(404, "Chat not found")
             try:
-                current = (
-                    ai_config.save_chat_ai(conn, chat.jid, body)
-                    if body is not None
-                    else ai_config.chat_ai(conn, chat.jid)
-                )
+                with appdb.db_lock:
+                    current = (
+                        ai_config.save_chat_ai(conn, chat.jid, body)
+                        if body is not None
+                        else ai_config.chat_ai(conn, chat.jid)
+                    )
             except ai_config.ConfigError as exc:
                 return ai_failure(exc)
             return JSONResponse({"ai": asdict(current)})
 
         return with_store(work)
 
+    async def chat_draft(request: Request) -> Response:
+        jid = request.path_params["jid"]
+        if request.method == "GET":
+
+            def work(ro: sqlite3.Connection) -> Response:
+                chat = store.get_chat(ro, conn, jid)
+                if chat is None:
+                    return _error(404, "Chat not found")
+                view = drafts.current(conn, chat.jid, ro)
+                return JSONResponse({"draft": asdict(view) if view else None})
+
+            return with_store(work)
+        if worker is None:
+            return _error(503, "Drafts unavailable")
+        body = await body_of(request)
+        trigger = body.get("trigger_id") if isinstance(body, dict) else None
+        if trigger is not None and not isinstance(trigger, str):
+            return _error(422, "'trigger_id' must be text")
+
+        def start(ro: sqlite3.Connection) -> str | Response:
+            chat = store.get_chat(ro, conn, jid)
+            return _error(404, "Chat not found") if chat is None else chat.jid
+
+        try:
+            ro = store.open_ro(settings)
+        except sqlite3.OperationalError:
+            return _error(503, "Message store unavailable")
+        try:
+            canonical = start(ro)
+        finally:
+            ro.close()
+        if isinstance(canonical, Response):
+            return canonical
+        try:
+            view = worker.request(canonical, trigger)
+        except LookupError as exc:
+            return _error(404, str(exc))
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse({"draft": asdict(view)}, status_code=202)
+
+    async def draft_dismiss(request: Request) -> Response:
+        try:
+            draft_id = int(request.path_params["id"])
+        except ValueError:
+            return _error(404, "Draft not found")
+        if drafts.get(conn, draft_id) is None:
+            return _error(404, "Draft not found")
+        if worker is not None:
+            worker.dismiss(draft_id)
+        else:
+            drafts.dismiss(conn, draft_id)
+        return Response(status_code=204)
+
     return [
+        Route("/api/drafts/{id}", draft_dismiss, methods=["DELETE"]),
+        Route("/api/chats/{jid}/draft", chat_draft, methods=["GET", "POST"]),
         Route("/api/media/{chat}/{id}/thumb", media_thumb, methods=["GET"]),
         Route("/api/media/{chat}/{id}/retry", media_retry, methods=["POST"]),
         Route("/api/media/{chat}/{id}", media_file, methods=["GET"]),

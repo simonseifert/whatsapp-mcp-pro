@@ -291,6 +291,9 @@ class Poller:
         self._appconn: sqlite3.Connection | None = None
         self._failing = False
         self._schema: dict[str, set[str]] = {}
+        # Called from the poller thread with each poll's events (the M2 draft worker registers here). They must be
+        # thread-safe and quick; a failing one never stops the poll.
+        self.on_events: list[Callable[[list[Event]], None]] = []
         # Its own thread: sends (up to ~60 s), avatars, thumbnails and transcription share AnyIO's default pool, and a
         # burst of them must never make a live tick wait. One thread also keeps the poller's connections in one place.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wa-poller")
@@ -483,6 +486,16 @@ class Poller:
                 events.append(Event("chat", {"chat": asdict(summary)}))
         return events, new
 
+    def _tick(self) -> list[Event]:
+        events = self.poll_once()
+        if events:
+            for listener in list(self.on_events):
+                try:
+                    listener(events)
+                except Exception:
+                    logger.exception("live event listener failed")
+        return events
+
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
@@ -490,7 +503,7 @@ class Poller:
         """Poll until cancelled; a failing tick never ends the loop."""
         while True:
             try:
-                for event in await asyncio.get_running_loop().run_in_executor(self._executor, self.poll_once):
+                for event in await asyncio.get_running_loop().run_in_executor(self._executor, self._tick):
                     hub.publish(event.name, event.data)
             except asyncio.CancelledError:
                 raise

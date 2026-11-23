@@ -1,5 +1,6 @@
 """App factory and the `wa-app` console entry point."""
 
+import asyncio
 import contextlib
 import logging
 from pathlib import Path
@@ -15,6 +16,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
 from . import api, appdb, auth, config, live
+from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
 
@@ -48,15 +50,24 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
             return auth.session_hash_valid(conn, hashed)
 
     poller = live.Poller(settings)
+    worker = DraftWorker(settings, hub, appconn=conn)
+    poller.on_events.append(worker.on_events)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
-        async with live.running(poller, hub):
-            yield
+        draft_task = asyncio.create_task(worker.run())
+        try:
+            async with live.running(poller, hub):
+                yield
+        finally:
+            draft_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await draft_task
+            worker.close()
         # Under uvicorn the real work is timeout_graceful_shutdown (it waits for streams before lifespan shutdown).
         hub.close()
 
-    routes: list[Route | Mount] = [*live.routes(hub, _session_alive, auth.COOKIE), *api.routes(conn, settings)]
+    routes: list[Route | Mount] = [*live.routes(hub, _session_alive, auth.COOKIE), *api.routes(conn, settings, worker)]
     routes.append(Route("/api/{rest:path}", api_not_found))
     if dist.is_dir():
         routes.append(Mount("/", SpaFiles(directory=dist, html=True)))
