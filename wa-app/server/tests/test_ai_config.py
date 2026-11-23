@@ -48,6 +48,41 @@ def test_omitted_key_kept_empty_clears(settings) -> None:
     assert config.backend_secret(conn, settings, saved.id) is None
 
 
+def test_base_url_change_without_key_clears_key(settings) -> None:
+    conn = _db(settings)
+    saved = config.save_backend(conn, settings, {**OPENAI, "api_key": SECRET})
+    moved = config.save_backend(conn, settings, {**OPENAI, "id": saved.id, "base_url": "https://evil.example/v1"})
+    assert not moved.has_key
+    assert config.backend_secret(conn, settings, saved.id) is None
+
+
+def test_kind_change_without_key_clears_key(settings) -> None:
+    conn = _db(settings)
+    saved = config.save_backend(conn, settings, {**OPENAI, "api_key": SECRET})
+    moved = config.save_backend(conn, settings, {"kind": "anthropic", "label": "A", "model": "m", "id": saved.id})
+    assert not moved.has_key
+    assert config.backend_secret(conn, settings, saved.id) is None
+
+
+def test_base_url_change_with_new_key_keeps_new_key(settings) -> None:
+    conn = _db(settings)
+    saved = config.save_backend(conn, settings, {**OPENAI, "api_key": SECRET})
+    body = {**OPENAI, "id": saved.id, "base_url": "https://other.example/v1", "api_key": "sk-new-FICTIONAL"}
+    moved = config.save_backend(conn, settings, body)
+    assert moved.has_key
+    assert config.backend_secret(conn, settings, saved.id) == "sk-new-FICTIONAL"
+
+
+def test_label_and_model_change_keeps_key(settings) -> None:
+    conn = _db(settings)
+    saved = config.save_backend(conn, settings, {**OPENAI, "api_key": SECRET})
+    # the same address written with stray spaces is not a change
+    body = {**OPENAI, "id": saved.id, "label": "New", "model": "other", "base_url": f"  {OPENAI['base_url']} "}
+    again = config.save_backend(conn, settings, body)
+    assert again.has_key and again.label == "New" and again.model == "other"
+    assert config.backend_secret(conn, settings, saved.id) == SECRET
+
+
 def test_chat_ai_defaults_off(settings) -> None:
     ai = config.chat_ai(_db(settings), fx.ANA)
     assert (ai.enabled, ai.backend_id, ai.local_only, ai.note, ai.rules) == (False, None, False, None, None)

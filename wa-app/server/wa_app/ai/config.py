@@ -79,7 +79,8 @@ def _text(body: dict, field: str, *, required: bool = False, limit: int = 200) -
 
 
 def save_backend(conn: sqlite3.Connection, settings: Settings, body: dict) -> BackendCfg:
-    """Create, or update when `id` is given. `api_key` omitted keeps the stored key, "" clears it."""
+    """Create, or update when `id` is given. `api_key` omitted keeps the stored key, "" clears it.
+    Changing `kind` or `base_url` without a new `api_key` also clears it."""
     kind = body.get("kind")
     if kind not in KINDS:
         raise ConfigError("Unknown backend kind")
@@ -97,7 +98,8 @@ def save_backend(conn: sqlite3.Connection, settings: Settings, body: dict) -> Ba
     if backend_id is not None:
         if not isinstance(backend_id, int) or isinstance(backend_id, bool):
             raise ConfigError("'id' must be a number")
-        if get_backend(conn, backend_id) is None:
+        current = get_backend(conn, backend_id)
+        if current is None:
             raise NotFound("Backend not found")
         conn.execute(
             "UPDATE ai_backends SET kind=?, label=?, base_url=?, model=? WHERE id=?",
@@ -106,6 +108,9 @@ def save_backend(conn: sqlite3.Connection, settings: Settings, body: dict) -> Ba
         if api_key is not None:
             blob = secrets.encrypt(settings, api_key.strip()) if api_key.strip() else None
             conn.execute("UPDATE ai_backends SET key_enc=? WHERE id=?", (blob, backend_id))
+        elif kind != current.kind or base_url != current.base_url:
+            # A saved key must not follow a new address: it would be sent to whoever runs it.
+            conn.execute("UPDATE ai_backends SET key_enc=NULL WHERE id=?", (backend_id,))
     else:
         blob = secrets.encrypt(settings, api_key.strip()) if api_key and api_key.strip() else None
         cur = conn.execute(

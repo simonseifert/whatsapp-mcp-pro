@@ -57,6 +57,9 @@ export function BackendForm({ backend, onSave, onCancel, error, saving }: Props)
 
   const cli = preset.kind === 'claude_cli'
   const hasKey = !!backend?.has_key && !removeKey
+  const moved =
+    !!backend &&
+    (preset.kind !== backend.kind || (preset.kind === 'openai' ? baseUrl.trim() : null) !== (backend.base_url ?? null))
 
   function choose(name: string) {
     const next = PRESETS.find((p) => p.name === name)
@@ -141,6 +144,7 @@ export function BackendForm({ backend, onSave, onCancel, error, saving }: Props)
             placeholder={hasKey ? 'Saved · type to replace' : ''}
             onChange={(e) => setKey(e.target.value)}
           />
+          {hasKey && moved && !key.trim() && <p className="settings-about">Changing the address removes the saved key</p>}
           {hasKey && (
             <button
               className="button-text quiet ai-remove"

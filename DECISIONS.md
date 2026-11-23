@@ -314,6 +314,9 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
 - R8: "Last distilled time" is dropped from the chat AI sheet. The API has no distill
   timestamp, and adding one needs an `app.db` column migration. Cost if wrong: the user
   cannot see when the rules were last updated automatically.
+- Changing a backend's kind or base URL without sending a new API key drops the saved key,
+  so a saved key can never be redirected to a different server. The form says so first.
+  Cost if wrong: the user retypes the key after moving a server.
 - Prompt hardening stopped after the fourth automated security finding (homoglyph brackets
   in message bodies). Rounds one to three closed the real holes: fenced examples, the
   trigger not repeated outside the fence, no marker or label spoofing, bracket look-alikes

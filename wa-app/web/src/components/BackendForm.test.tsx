@@ -111,4 +111,20 @@ describe('BackendForm key', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(onSave.mock.calls[0]![0]).toMatchObject({ id: 7, kind: 'claude_cli', model: 'sonnet', api_key: '' })
   })
+
+  it('says changing the address removes the saved key, only when it changes and no new key is typed', () => {
+    const keyed: BackendCfg = { ...saved, kind: 'openai', base_url: 'https://a.example/v1' }
+    render(<BackendForm backend={keyed} onSave={vi.fn()} onCancel={() => {}} />)
+    const note = 'Changing the address removes the saved key'
+    expect(screen.queryByText(note)).toBeNull()
+    fireEvent.change(field('Base URL'), { target: { value: 'https://b.example/v1' } })
+    expect(screen.getByText(note)).toBeTruthy()
+    fireEvent.change(field('API key'), { target: { value: 'sk-test-FICTIONAL' } })
+    expect(screen.queryByText(note)).toBeNull()
+    fireEvent.change(field('API key'), { target: { value: '' } })
+    fireEvent.change(field('Base URL'), { target: { value: 'https://a.example/v1' } })
+    expect(screen.queryByText(note)).toBeNull()
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'Anthropic API' } })
+    expect(screen.getByText(note)).toBeTruthy()
+  })
 })
