@@ -29,6 +29,18 @@ CREATE TABLE IF NOT EXISTS transcripts (
 );
 CREATE TABLE IF NOT EXISTS send_keys (client_key TEXT PRIMARY KEY, recipient TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS media_retries (message_id TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS ai_backends (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('openai','anthropic','claude_cli')),
+    label TEXT NOT NULL, base_url TEXT, model TEXT NOT NULL, key_enc BLOB);
+CREATE TABLE IF NOT EXISTS chat_ai (chat_jid TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, backend_id INTEGER,
+    local_only INTEGER NOT NULL DEFAULT 0, note TEXT, rules TEXT, rules_edited_at INTEGER,
+    outcomes_since_distill INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS drafts (id INTEGER PRIMARY KEY, chat_jid TEXT NOT NULL, trigger_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending','ready','failed','dismissed','superseded','expired','done')),
+    alternatives TEXT, error TEXT, backend_id INTEGER, created_at INTEGER NOT NULL, ready_at INTEGER);
+CREATE INDEX IF NOT EXISTS drafts_chat ON drafts(chat_jid, created_at);
+CREATE TABLE IF NOT EXISTS draft_outcomes (draft_id INTEGER PRIMARY KEY, chat_jid TEXT NOT NULL, sent_id TEXT NOT NULL,
+    sent_text TEXT NOT NULL, best_alternative TEXT, ratio REAL NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('used','edited','ignored')), thumb INTEGER, feedback TEXT, at INTEGER NOT NULL);
 """
 
 

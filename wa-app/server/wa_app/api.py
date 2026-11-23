@@ -12,6 +12,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from . import appdb, auth, live, media, sending, store, transcripts
+from .ai import config as ai_config
 from .config import Settings
 
 MEDIA_RETRY_SECONDS = 6 * 3600
@@ -309,6 +310,71 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
     async def chat_react(request: Request) -> Response:
         return await outward(request, sending.send_reaction)
 
+    def ai_failure(exc: Exception) -> Response:
+        return _error(404 if isinstance(exc, ai_config.NotFound) else 422, str(exc))
+
+    async def ai_backends(request: Request) -> Response:
+        if request.method == "GET":
+            return JSONResponse(
+                {
+                    "backends": [asdict(b) for b in ai_config.list_backends(conn)],
+                    "default_id": ai_config.default_backend_id(conn),
+                }
+            )
+        body = await body_of(request)
+        if not isinstance(body, dict):
+            return _error(422, "Expected a JSON object")
+        try:
+            saved = ai_config.save_backend(conn, settings, body)
+        except (ai_config.ConfigError, ai_config.NotFound) as exc:
+            return ai_failure(exc)
+        return JSONResponse({"backend": asdict(saved)})
+
+    async def ai_backend_delete(request: Request) -> Response:
+        try:
+            backend_id = int(request.path_params["id"])
+        except ValueError:
+            return _error(404, "Backend not found")
+        if ai_config.get_backend(conn, backend_id) is None:
+            return _error(404, "Backend not found")
+        ai_config.delete_backend(conn, backend_id)
+        return JSONResponse({"ok": True})
+
+    async def ai_default(request: Request) -> Response:
+        body = await body_of(request)
+        backend_id = body.get("backend_id") if isinstance(body, dict) else None
+        if not isinstance(backend_id, int) or isinstance(backend_id, bool):
+            return _error(422, "'backend_id' is required")
+        try:
+            ai_config.set_default_backend(conn, backend_id)
+        except ai_config.NotFound as exc:
+            return ai_failure(exc)
+        return JSONResponse({"default_id": backend_id})
+
+    async def chat_ai_settings(request: Request) -> Response:
+        body: dict | None = None
+        if request.method == "PUT":
+            sent = await body_of(request)
+            if not isinstance(sent, dict):
+                return _error(422, "Expected a JSON object")
+            body = sent
+
+        def work(ro: sqlite3.Connection) -> Response:
+            chat = store.get_chat(ro, conn, request.path_params["jid"])
+            if chat is None:
+                return _error(404, "Chat not found")
+            try:
+                current = (
+                    ai_config.save_chat_ai(conn, chat.jid, body)
+                    if body is not None
+                    else ai_config.chat_ai(conn, chat.jid)
+                )
+            except ai_config.ConfigError as exc:
+                return ai_failure(exc)
+            return JSONResponse({"ai": asdict(current)})
+
+        return with_store(work)
+
     return [
         Route("/api/media/{chat}/{id}/thumb", media_thumb, methods=["GET"]),
         Route("/api/media/{chat}/{id}/retry", media_retry, methods=["POST"]),
@@ -327,6 +393,10 @@ def routes(conn: sqlite3.Connection, settings: Settings) -> list[Route]:
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
         Route("/api/chats/{jid}/react", chat_react, methods=["POST"]),
+        Route("/api/ai/backends", ai_backends, methods=["GET", "PUT"]),
+        Route("/api/ai/backends/{id}", ai_backend_delete, methods=["DELETE"]),
+        Route("/api/ai/default", ai_default, methods=["PUT"]),
+        Route("/api/chats/{jid}/ai", chat_ai_settings, methods=["GET", "PUT"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
         Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),
     ]

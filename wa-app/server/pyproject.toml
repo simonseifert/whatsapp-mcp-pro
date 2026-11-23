@@ -9,6 +9,7 @@ dependencies = [
     "argon2-cffi>=23.1.0",
     "pillow>=13.0.0",
     "requests>=2.34.2",
+    "cryptography>=50.0.2",
 ]
 
 [project.scripts]
