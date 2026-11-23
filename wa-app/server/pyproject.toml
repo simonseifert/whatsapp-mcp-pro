@@ -10,6 +10,7 @@ dependencies = [
     "pillow>=13.0.0",
     "requests>=2.34.2",
     "cryptography>=50.0.2",
+    "httpx2>=2.16.2",
 ]
 
 [project.scripts]
