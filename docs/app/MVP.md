@@ -38,13 +38,17 @@ Built 2026-11-22 (done = code landed, tick marks below). The "Done when" week of
   a week.
 
 ## M2: AI drafts
-- **Per-chat settings:** on, backend, local-only, note.
-- **Three backends:** OpenAI-compatible (incl. Ollama), Anthropic API, `claude` CLI.
-- **The draft card:** debounced when away, instant when the app is open, stale drafts
+
+Built 2026-11-23 (code landed; deploy and the week of real use are still open).
+- [x] **Per-chat settings:** on, backend, local-only, note.
+- [x] **Three backends:** OpenAI-compatible (incl. Ollama), Anthropic API, `claude` CLI.
+- [x] **The draft card:** debounced when away, instant when the app is open, stale drafts
   cleared.
-- **Learning:** past replies as examples, edit outcomes, distilled per-chat rules you
+- [x] **Learning:** past replies as examples, edit outcomes, distilled per-chat rules you
   can read and edit, optional thumbs.
-- **Done when:** more than half of replies in opted-in chats start from a draft for a
+- [ ] **Deploy:** rebuild, restart, set up backends in Settings, switch on a few chats,
+  check one live draft end to end.
+- [ ] **Done when:** more than half of replies in opted-in chats start from a draft for a
   week.
 
 ## M3: the rest of WhatsApp-parity

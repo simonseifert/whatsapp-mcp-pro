@@ -285,3 +285,54 @@ Choices made while building wa-app M1 (the number D20 above covers only the chat
 - Ticks are not shown, because there is no receipt data.
 - The chat pane does not follow the finger yet (the DESIGN.md Motion row). Deferred.
 - Receipts are capped at the newest 200 per read.
+
+## D22 — 2026-11-23 — M2 build rulings
+Choices made while building wa-app M2 (AI drafts), where the plan was silent or unclear:
+- R1: Use the installed `httpx2` package (added to runtime dependencies next to
+  `cryptography`) for async HTTP and `MockTransport`, because the plan named httpx but only
+  `httpx2` was installed. Cost if wrong: a dependency swap.
+- R2: A "local" backend is an `openai` kind whose base URL host passes the same loopback or
+  private check as the local-only gate; everything else is cloud. This keeps one definition
+  of local. Cost if wrong: the wrong worker semaphore (1 for local, 3 for cloud) is chosen.
+- R3: The send route and `sending.send_text` accept an optional `draft_id`, kept as a hint
+  for outcome matching. `ai.drafts` and `ai.learning` never import `sending`, so the
+  "no send path" test stays valid. Cost if wrong: outcomes link by time window only.
+- R4: Task 7 also adds a server test route for a backend (`POST /api/ai/backends/{id}/test`)
+  with a test, because the Settings screen needs it. Cost if wrong: an extra route to remove.
+- R5: The `claude` CLI runs from `<WA_APP_DATA>/claude-cwd`, an empty directory (mode 700),
+  so it picks up no project files or settings. Cost if wrong: a different working
+  directory, and the CLI might load project context.
+- R6: Only eligible triggers restart the debounce. Ineligible incoming messages (stickers,
+  system rows) do not. The spec's "a new message" is read as "a new triggering message".
+  Cost if wrong: a reply is drafted for an earlier message while a sticker followed.
+- R7: Any own message (text or media, from any device) supersedes the chat's live draft
+  (pending, ready or failed). An outcome is recorded only when the message can be linked to
+  a draft. This follows "phone replies first removes the card". Cost if wrong: a draft
+  disappears that the user still wanted; they can tap Draft again.
+- R8: "Last distilled time" is dropped from the chat AI sheet. The API has no distill
+  timestamp, and adding one needs an `app.db` column migration. Cost if wrong: the user
+  cannot see when the rules were last updated automatically.
+- Prompt hardening stopped after the fourth automated security finding (homoglyph brackets
+  in message bodies). Rounds one to three closed the real holes: fenced examples, the
+  trigger not repeated outside the fence, no marker or label spoofing, bracket look-alikes
+  and invisible characters stripped. The rest is bounded: body text always follows the real
+  numbered sender label on its own line, there is no path from a draft to a send, and a
+  draft cannot reach another chat. The worst case is a degraded draft the user can ignore.
+  Cost if wrong: a crafted message steers one draft, never a send.
+- Deferred minors worth knowing:
+  - The 03:30 distillation uses naive local time, so it fires an hour off once at a DST change.
+  - The send hint can be taken by an unrelated phone message within 120 s, and then falls
+    back to the latest ready draft.
+  - The chat name sits outside the prompt fence (flattened, 80 characters), and the
+    note and rules are unfenced in the system prompt. Rules may be model output.
+  - The worker reads whether the app is open once at job start, and the inbox is unbounded
+    with one read-only open per candidate under backfill bursts.
+  - Save is disabled without a message when a chat is local only, the default is a cloud
+    backend and a local one exists.
+  - Missing tests: a trigger that renders to nothing, a deleted trigger, and sheet focus
+    restore with Escape.
+  - AI routes write config in several statements without the app.db lock; the `ai.key`
+    file is created read-before-write; sqlite errors in AI routes map to generic 503/500.
+  - Local-only DNS is checked, then used later, so a DNS change in between is not caught
+    (accepted: local-only hosts are set by the user).
+  - The browser check of the settings screen is left for deploy.
