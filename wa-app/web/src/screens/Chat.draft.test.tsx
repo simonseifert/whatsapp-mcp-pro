@@ -46,6 +46,7 @@ const draft: DraftView = {
   error: null,
   quote: { id: 'M1', sender_name: 'Nikola', preview: 'Gdje si?' },
   created_at_iso: '2026-11-23T10:01:00+00:00',
+  source: 'ai',
 }
 
 describe('Chat with a draft', () => {

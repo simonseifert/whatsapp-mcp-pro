@@ -17,7 +17,7 @@ before you point automation at a real account.
 A Go bridge pairs with your WhatsApp account as a linked device (the same way
 WhatsApp Web does), stores your history in SQLite on your machine, and exposes a
 local REST API. A Python MCP server sits on top and gives any MCP client (Claude
-Code, Claude Desktop, others) 39 tools to read, search, send, and manage chats.
+Code, Claude Desktop, others) 42 tools to read, search, send, and manage chats.
 Nothing goes to a third party unless you choose a hosted transcription backend.
 
 It is a fork of [FelixIsaac/whatsapp-mcp-extended](https://github.com/FelixIsaac/whatsapp-mcp-extended)
@@ -117,7 +117,8 @@ keeps its own state in `WA_APP_DATA` (default `~/.local/share/wa-app/`). Open
 Security notes:
 
 - Login is a passphrase (argon2 hash). The session cookie is `HttpOnly; Secure; SameSite=Strict`, and every
-  state-changing request checks `Origin`. That is why it needs https, which `tailscale serve` provides.
+  state-changing request checks `Origin`. The one exception is `/api/agent/*` (drafts from Claude): it takes a
+  bearer token (`WA_APP_AGENT_TOKEN`, 32+ characters) instead of a cookie, needs no Origin, and is off without the token. That is why it needs https, which `tailscale serve` provides.
 - Login is rate limited to 5 failures per 15 minutes per address. Behind a proxy on loopback it uses the last
   `X-Forwarded-For` hop only, since earlier hops are client-controlled.
 - It opens `messages.db` read-only. Every send goes through the bridge, so the send allowlists, caps and the

@@ -1,7 +1,7 @@
 """Environment -> Settings."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -12,6 +12,9 @@ class Settings:
     data_dir: Path
     store_path: Path
     secure_cookies: bool
+    agent_token: str | None = field(
+        default=None, repr=False
+    )  # bearer token for /api/agent/*; unset = those routes answer 404
 
 
 def _default_store_path() -> Path:
@@ -25,6 +28,18 @@ def _default_store_path() -> Path:
     return project_root / "store"
 
 
+MIN_AGENT_TOKEN = 32
+
+
+def _agent_token() -> str | None:
+    token = (os.getenv("WA_APP_AGENT_TOKEN") or "").strip()
+    if token and len(token) < MIN_AGENT_TOKEN:
+        raise ValueError(
+            f"WA_APP_AGENT_TOKEN is too short: use at least {MIN_AGENT_TOKEN} characters (openssl rand -hex 32)"
+        )
+    return token or None
+
+
 def load() -> Settings:
     store = os.getenv("WA_STORE_PATH")
     data = os.getenv("WA_APP_DATA")
@@ -34,4 +49,5 @@ def load() -> Settings:
         data_dir=Path(data) if data else Path.home() / ".local" / "share" / "wa-app",
         store_path=Path(store) if store else _default_store_path(),
         secure_cookies=os.getenv("WA_APP_INSECURE_COOKIES") != "1",
+        agent_token=_agent_token(),
     )

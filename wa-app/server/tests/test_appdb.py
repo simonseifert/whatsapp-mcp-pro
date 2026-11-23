@@ -19,3 +19,20 @@ def test_connect_creates_data_dir(settings: Settings) -> None:
     conn = appdb.connect(settings)
     assert isinstance(conn, sqlite3.Connection)
     assert (settings.data_dir / "app.db").exists()
+
+
+def test_drafts_source_column_is_added_to_an_older_db(settings: Settings) -> None:
+    settings.data_dir.mkdir(parents=True)
+    old = sqlite3.connect(settings.data_dir / "app.db")
+    old.execute(
+        "CREATE TABLE drafts (id INTEGER PRIMARY KEY, chat_jid TEXT NOT NULL, trigger_id TEXT NOT NULL,"
+        " status TEXT NOT NULL, alternatives TEXT, error TEXT, backend_id INTEGER, created_at INTEGER NOT NULL,"
+        " ready_at INTEGER)"
+    )
+    old.execute("INSERT INTO drafts (chat_jid, trigger_id, status, created_at) VALUES ('a', 'b', 'ready', 1)")
+    old.commit()
+    old.close()
+    for _ in range(2):  # the second connect must not try to add it again
+        conn = appdb.connect(settings)
+        assert conn.execute("SELECT source FROM drafts").fetchall() == [("ai",)]
+        conn.close()

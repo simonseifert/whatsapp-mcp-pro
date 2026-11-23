@@ -64,7 +64,7 @@ Schema changes ship as append-only, idempotent SQL in
 
 ### whatsapp-mcp-server (Python)
 
-An MCP server (mcp 2.x `MCPServer`) exposing about 39 tools, grouped into
+An MCP server (mcp 2.x `MCPServer`) exposing about 42 tools, grouped into
 toolsets (`WHATSAPP_MCP_TOOLSETS`). Every tool carries MCP annotations
 (`readOnlyHint`, `destructiveHint`, ...). It reads `messages.db` directly for
 queries and calls the bridge's REST API for anything that acts on WhatsApp.
@@ -72,7 +72,7 @@ queries and calls the bridge's REST API for anything that acts on WhatsApp.
 Two ways to run it:
 
 - **stdio** (`main.py`): one process per MCP client session. The pro toolsets
-  (recall, audio, inbox) are opt-in here, so the default surface matches
+  (recall, audio, inbox, drafts) are opt-in here, so the default surface matches
   upstream's.
 - **Shared HTTP** (`serve_http.py`, default `:8082`): one always-on process
   for any number of sessions, with every toolset enabled. Optional scoped

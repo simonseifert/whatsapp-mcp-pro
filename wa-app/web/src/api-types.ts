@@ -76,6 +76,8 @@ export type DraftView = {
   error: string | null
   quote: QuoteView | null
   created_at_iso: string
+  /** 'agent' when Claude pushed the text (through the MCP server); 'ai' for the app's own drafts. */
+  source: 'ai' | 'agent'
 }
 
 export type BackendCfg = {

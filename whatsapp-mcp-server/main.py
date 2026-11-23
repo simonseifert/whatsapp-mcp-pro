@@ -24,6 +24,9 @@ from lib.naming import list_unnamed_contacts as naming_list_unnamed_contacts
 from lib.naming import set_contact_names as naming_set_contact_names
 from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
 from lib.utils import logger
+from lib.wa_app import get_auto_drafts as wa_app_get_auto_drafts
+from lib.wa_app import push_draft as wa_app_push_draft
+from lib.wa_app import set_auto_drafts as wa_app_set_auto_drafts
 
 # Phase 2: Group Management
 from whatsapp import add_group_members as whatsapp_add_group_members
@@ -96,9 +99,10 @@ ALL_TOOLSETS = {
     "audio",
     "recall",
     "inbox",
+    "drafts",
 }
 # Pro toolsets are opt-in: default surface matches upstream curated set.
-DEFAULT_TOOLSETS = set(ALL_TOOLSETS) - {"audio", "recall", "inbox"}
+DEFAULT_TOOLSETS = set(ALL_TOOLSETS) - {"audio", "recall", "inbox", "drafts"}
 ENABLED_TOOLSETS = {
     part.strip().lower()
     for part in os.getenv("WHATSAPP_MCP_TOOLSETS", ",".join(sorted(DEFAULT_TOOLSETS))).split(",")
@@ -1429,6 +1433,56 @@ def recall_index_status() -> dict[str, Any]:
     Returns dict with `embedded`, `total`, `remaining`, `status`, `model`.
     """
     return _recall_index_status()
+
+
+# ----- Pro: drafts for the wa-app chat app ---------------------------------
+# These write only to the user's own wa-app (WA_APP_URL, bearer WA_APP_AGENT_TOKEN), never to WhatsApp: a pushed
+# draft waits on the chat's draft card until the user taps it and sends it themselves.
+
+
+@tool("drafts", "Push Draft to wa-app", read_only=False, idempotent=False, open_world=False)
+def push_draft(chat_jid: str, text: str, reply_to: str | None = None) -> str:
+    """Put a draft reply in the user's chat app (wa-app) for them to review and send themselves.
+
+    This never sends anything. The draft shows on that chat's draft card as
+    "Draft · from Claude"; the user taps it, it fills their composer, and they
+    edit and send it if they want to. A new draft replaces the chat's current one.
+
+    Args:
+        chat_jid: the chat's JID. Resolve a name to a JID with the search tools first
+            (`search_contacts`, `search_directory`, `list_chats`).
+        text: the draft text, 1 to 4096 characters.
+        reply_to: optional id of an incoming message in that chat the draft answers.
+            Omit it to answer the chat's latest incoming message.
+
+    Returns a sentence saying where the draft went, or why it did not.
+    """
+    return wa_app_push_draft(chat_jid, text, reply_to)
+
+
+@tool("drafts", "Set Automatic Drafts", read_only=False, idempotent=True, open_world=False)
+def set_auto_drafts(chat_jid: str, enabled: bool) -> str:
+    """Switch the app's automatic AI drafts on or off for one chat.
+
+    The same switch the user has in that chat's AI sheet. When on, wa-app drafts
+    a reply to each new incoming message and shows it for the user to review;
+    it never sends. This only changes that switch, nothing else about the chat.
+
+    Args:
+        chat_jid: the chat's JID (resolve names with the search tools first).
+        enabled: true to turn automatic drafts on, false to turn them off.
+    """
+    return wa_app_set_auto_drafts(chat_jid, enabled)
+
+
+@tool("drafts", "Get Automatic Drafts", read_only=True, idempotent=True, open_world=False)
+def get_auto_drafts(chat_jid: str) -> str:
+    """Say whether the app's automatic AI drafts are on or off for one chat.
+
+    Args:
+        chat_jid: the chat's JID (resolve names with the search tools first).
+    """
+    return wa_app_get_auto_drafts(chat_jid)
 
 
 if __name__ == "__main__":

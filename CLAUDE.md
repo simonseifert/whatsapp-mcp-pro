@@ -36,7 +36,7 @@ our versions of `lib/recall.py` and `lib/transcribe.py` to be supersets.
 | Component | What it is |
 |---|---|
 | `whatsapp-bridge/` | Go daemon on whatsmeow. Pairs as a linked device, stores history in SQLite, exposes REST + webhooks. Packages: `api`, `whatsapp`, `webhook`, `database`, `config`, `antiban`, `security`, `types`. |
-| `whatsapp-mcp-server/` | Python, mcp 2.x `MCPServer` (formerly FastMCP). 39 tools (21 read-only) with every toolset enabled. Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
+| `whatsapp-mcp-server/` | Python, mcp 2.x `MCPServer` (formerly FastMCP). 42 tools (22 read-only) with every toolset enabled. Run per-session via stdio (`main.py`) or as one shared HTTP server (`serve_http.py`). |
 | `wa-app/` | Chat PWA (working name; Starlette server + React front end) riding the bridge's session — costs **zero** extra device slots. Reads `messages.db` read-only, sends through the bridge. Default :8085 (`WA_APP_PORT`). Replaced the deleted wa-client. |
 | `wa-assistant/` | Message your own chat, a persistent Claude Code session replies. Voice both ways. |
 | `wa-dispatch/` | An incoming message from a routed chat opens/wakes a Claude session in that project. Drafts, never sends. macOS + tmux. |

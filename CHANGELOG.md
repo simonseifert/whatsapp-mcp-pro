@@ -8,6 +8,9 @@ All notable changes to this fork are recorded here. The format follows
 
 ### Added
 
+- Drafts from Claude: wa-app's `/api/agent/*` routes (bearer `WA_APP_AGENT_TOKEN`, off without it) and an opt-in
+  `drafts` MCP toolset (`push_draft`, `set_auto_drafts`, `get_auto_drafts`; 42 tools with every toolset). A pushed
+  draft shows on the chat's draft card as "Draft · from Claude"; nothing is ever sent. `drafts.source` column added.
 - `message_receipts` table (migration 014): highest delivered / read / played status per recipient per message,
   recorded from other people's receipts (status only rises). Own-device read receipts still feed `chat_state`.
 - One-time full app-state resync on the first connect (`bridge_state` key `appstate_full_sync_v1`), with
