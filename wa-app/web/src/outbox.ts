@@ -8,6 +8,8 @@ export type Pending = {
   key: string
   text: string
   replyTo: QuoteView | null
+  /** The draft this text started from: sent along as a hint so the server can learn from the outcome. */
+  draftId?: number
   at: string
   status: 'sending' | 'sent' | 'failed'
   error?: string
@@ -76,7 +78,7 @@ async function attempt(jid: string, p: Pending): Promise<void> {
   inflight.add(p.key)
   patch(jid, p.key, { status: 'sending', error: undefined })
   try {
-    const result = await sendMessage(jid, p.text, p.replyTo?.id ?? null, p.key)
+    const result = await sendMessage(jid, p.text, p.replyTo?.id ?? null, p.key, p.draftId)
     if (result.ok) {
       patch(jid, p.key, {
         status: 'sent',
@@ -101,11 +103,12 @@ async function attempt(jid: string, p: Pending): Promise<void> {
 }
 
 /** Puts the text in the chat as sending and sends it. Resolves when the first try has an answer. */
-export function sendText(jid: string, text: string, replyTo: QuoteView | null): Promise<void> {
+export function sendText(jid: string, text: string, replyTo: QuoteView | null, draftId?: number | null): Promise<void> {
   const p: Pending = {
     key: crypto.randomUUID(),
     text,
     replyTo,
+    ...(draftId != null ? { draftId } : {}),
     at: new Date().toISOString(),
     status: 'sending',
   }

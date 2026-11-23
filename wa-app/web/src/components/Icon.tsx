@@ -81,6 +81,19 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M16 8V6a1 1 0 00-1-1H6a1 1 0 00-1 1v9a1 1 0 001 1h2" />
     </>
   ),
+  sparkle: (
+    <>
+      <path d="M10 4l1.8 5.2L17 11l-5.2 1.8L10 18l-1.8-5.2L3 11l5.2-1.8z" />
+      <path d="M18 3.5v4M16 5.5h4" />
+    </>
+  ),
+  more: (
+    <>
+      <circle cx="12" cy="5.5" r="1.2" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+      <circle cx="12" cy="18.5" r="1.2" fill="currentColor" />
+    </>
+  ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
   chart: <path d="M5 20V10M12 20V4M19 20v-7" />,
   phone: (

@@ -16,6 +16,7 @@
   --accent-text: var(--color-primary);
   --danger-ink: var(--color-danger);
   --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --draft: var(--color-draft-surface);
   --them: var(--color-bubble-them);
   --me: var(--color-bubble-me);
   --me-text: var(--color-on-bubble-me);
@@ -35,6 +36,7 @@
     --accent-ink: var(--color-on-primary-light);
     --accent-text: var(--color-primary-text-light);
     --danger-ink: var(--color-danger-light);
+    --draft: var(--color-draft-surface-light);
     --them: var(--color-bubble-them-light);
     --me: var(--color-bubble-me-light);
     --me-text: var(--color-on-bubble-me-light);
@@ -54,6 +56,7 @@
   --accent-ink: var(--color-on-primary-light);
   --accent-text: var(--color-primary-text-light);
   --danger-ink: var(--color-danger-light);
+  --draft: var(--color-draft-surface-light);
   --them: var(--color-bubble-them-light);
   --me: var(--color-bubble-me-light);
   --me-text: var(--color-on-bubble-me-light);
@@ -1726,4 +1729,250 @@ input {
 
 .more-sentinel {
   height: 1px;
+}
+
+/* --- draft card and the chat's AI sheet ------------------------------------------------------------------------ */
+
+.draft-slot {
+  flex: none;
+  padding: var(--spacing-sm) var(--spacing-sm) 0;
+}
+
+/* DESIGN.md draft-card: full width, dashed 1.5 px primary outline on draft-surface, md radius. Never a bubble. */
+.draft-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-md);
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--draft);
+  color: var(--fg);
+  animation: draft-rise 160ms cubic-bezier(0, 0, 0, 1);
+}
+
+@keyframes draft-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+.draft-head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin: calc(var(--spacing-sm) * -1) calc(var(--spacing-xs) * -1) 0 0;
+  color: var(--accent-text);
+}
+
+.draft-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-meta);
+  font-weight: var(--font-weight-meta);
+}
+
+.draft-x {
+  color: var(--muted);
+}
+
+.draft-quote {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body-sm);
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.draft-alt {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  width: 100%;
+  min-height: var(--spacing-touch);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--fg);
+  font-size: var(--text-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.draft-alt:active {
+  background: var(--surface2);
+}
+
+.draft-alt-text {
+  flex: 1;
+  min-width: 0;
+  max-height: 6.5em;
+  overflow: hidden;
+}
+
+.draft-use {
+  flex: none;
+  color: var(--accent-text);
+  font-size: var(--text-meta);
+  font-weight: var(--font-weight-meta);
+}
+
+.draft-pending,
+.draft-failed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  min-height: var(--spacing-touch);
+  margin: 0;
+  font-size: var(--text-body-sm);
+}
+
+.draft-failed {
+  color: var(--danger-ink);
+}
+
+.draft-shimmer {
+  color: var(--muted);
+  background: linear-gradient(90deg, var(--muted) 30%, var(--fg) 50%, var(--muted) 70%) 0 0 / 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: draft-shimmer 1.6s linear infinite;
+}
+
+@keyframes draft-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.draft-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: var(--spacing-xs) 0 0;
+  font-size: var(--text-body-sm);
+}
+
+.draft-confirm span {
+  flex: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .draft-card {
+    animation: draft-fade 160ms linear;
+  }
+
+  .draft-shimmer {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+@keyframes draft-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.draftbtn {
+  color: var(--muted);
+}
+
+.sheet-wrap {
+  place-items: end center;
+}
+
+.sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  width: min(100%, 520px);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: var(--spacing-md) var(--spacing-lg) calc(var(--spacing-lg) + env(safe-area-inset-bottom));
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--hair);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sheet-head h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin: 0;
+  font-size: var(--text-headline);
+  font-weight: var(--font-weight-headline);
+}
+
+.sheet-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  min-height: var(--spacing-touch);
+}
+
+.sheet-row input[type='checkbox'] {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--fg);
+}
+
+.sheet select,
+.sheet textarea {
+  min-height: var(--spacing-touch);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body); /* 16 px: no iOS focus zoom */
+}
+
+.sheet select {
+  max-width: 60%;
+}
+
+.sheet-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.sheet-field span {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.sheet-save {
+  min-height: var(--spacing-touch);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface2);
+  color: var(--fg);
+  font-size: var(--text-body);
+  font-weight: var(--font-weight-title);
+  cursor: pointer;
+}
+
+.sheet-save:disabled {
+  opacity: 0.5;
 }

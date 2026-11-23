@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import type { MessageView } from '../api-types'
+import type { DraftView, MessageView, QuoteView } from '../api-types'
 import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
-import { Composer } from '../components/Composer'
+import { ChatAiSheet } from '../components/ChatAiSheet'
+import { Composer, type ComposerHandle } from '../components/Composer'
+import { DraftCard } from '../components/DraftCard'
 import { MessageMenu } from '../components/MessageMenu'
 import { Icon } from '../components/Icon'
 import { toItems } from '../chatItems'
@@ -23,11 +25,36 @@ import {
   withReactions,
 } from '../outbox'
 import { useChat } from '../useChat'
+import { useDraft } from '../useDraft'
 import { useMarkRead } from '../useMarkRead'
 
 const GROUP_KINDS = ['group', 'community_group', 'announcement']
 const LOAD_OLDER_AT_PX = 160
 const AT_BOTTOM_PX = 80 // within this of the end counts as "at the bottom"
+
+/** A quoted message as a minimal message, so a draft's quote can become the composer's reply-to. */
+function viewFromQuote(q: QuoteView, chatJid: string): MessageView {
+  return {
+    id: q.id,
+    chat_jid: chatJid,
+    sender_jid: null,
+    sender_name: q.sender_name,
+    from_me: false,
+    timestamp_iso: new Date(0).toISOString(),
+    text: q.preview,
+    media: null,
+    reply_to: null,
+    forwarded: false,
+    edited: false,
+    deleted: false,
+    system: false,
+    reactions: [],
+    poll: null,
+    contact_cards: null,
+    actionable: true,
+    ticks: null,
+  }
+}
 
 /** `active` is false while the pane slides out after the URL left the chat: nothing there may be marked read then. */
 export function Chat({ jid, active = true }: { jid: string; active?: boolean }) {
@@ -57,6 +84,14 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const [replyTo, setReplyTo] = useState<MessageView | null>(null)
   const [menuId, setMenuId] = useState<string | null>(null)
   const chatJid = detail?.chat.jid ?? jid
+  const composer = useRef<ComposerHandle>(null)
+  const { draft, error: draftError, request: requestDraft, dismiss: dismissDraft } = useDraft(jid)
+  // The draft whose text went into the composer: its card is gone, and the next send carries its id as a hint.
+  const [usedDraft, setUsedDraft] = useState<number | null>(null)
+  const [replacing, setReplacing] = useState<{ draft: DraftView; text: string } | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [aiOpen, setAiOpen] = useState(false)
+  const card = draft && draft.id !== usedDraft && ['pending', 'ready', 'failed'].includes(draft.status) ? draft : null
   useEffect(() => reconcile(jid, messages), [jid, messages])
   // The loaded messages with my optimistic reactions applied, then the texts still on their way out.
   const shown = useMemo(
@@ -75,12 +110,25 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   function send(text: string) {
     const reply = replyTo
     setReplyTo(null)
-    void sendText(jid, text, reply ? quoteOf(reply) : null)
+    const fromDraft = usedDraft
+    setUsedDraft(null)
+    void sendText(jid, text, reply ? quoteOf(reply) : null, fromDraft)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true
     atBottom.current = true
     setRiseKey(key)
     setUnseen(false)
+  }
+  /** "Use" on a draft row: fills the box (and replies to the quoted message in groups). It never sends. */
+  function applyDraft(d: DraftView, text: string) {
+    setReplacing(null)
+    setUsedDraft(d.id)
+    if (d.quote) setReplyTo(messages.find((m) => m.id === d.quote?.id) ?? viewFromQuote(d.quote, chatJid))
+    composer.current?.fill(text)
+  }
+  function chooseDraft(d: DraftView, text: string) {
+    if ((composer.current?.getText() ?? '').trim()) setReplacing({ draft: d, text })
+    else applyDraft(d, text)
   }
   const anchor = useRef<{ height: number; top: number } | null>(null)
   const firstId = messages[0]?.id
@@ -152,6 +200,17 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           </h1>
           {detail?.members_line && <div className="mem">{detail.members_line}</div>}
         </div>
+        {chat && (
+          <button
+            className="iconbtn"
+            type="button"
+            aria-label="Chat menu"
+            aria-haspopup="dialog"
+            onClick={() => setMenuOpen(true)}
+          >
+            <Icon name="more" size={22} />
+          </button>
+        )}
       </header>
       {loadingOlder && <p className="older">Loading older messages…</p>}
       {status === 'loading' && <p className="empty-state">Loading…</p>}
@@ -202,6 +261,31 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           })}
         </div>
       )}
+      {menuOpen && (
+        <div className="menu-wrap">
+          <button
+            className="menu-backdrop"
+            type="button"
+            aria-label="Close menu"
+            onClick={() => setMenuOpen(false)}
+            tabIndex={-1}
+          />
+          <div className="menu" role="dialog" aria-label="Chat actions">
+            <button
+              className="menu-item"
+              type="button"
+              onClick={() => {
+                setMenuOpen(false)
+                setAiOpen(true)
+              }}
+            >
+              <Icon name="sparkle" size={20} />
+              AI drafts
+            </button>
+          </div>
+        </div>
+      )}
+      {aiOpen && <ChatAiSheet jid={chatJid} onClose={() => setAiOpen(false)} />}
       {menuMessage && (
         <MessageMenu
           message={menuMessage}
@@ -244,7 +328,44 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           </button>
         </p>
       )}
-      {status === 'ready' && <Composer replyTo={replyTo} onCancelReply={() => setReplyTo(null)} onSend={send} />}
+      {status === 'ready' && card && (
+        <div className="draft-slot">
+          <DraftCard
+            key={card.id}
+            draft={card}
+            name={chat?.name ?? ''}
+            onUse={(text) => chooseDraft(card, text)}
+            onDismiss={dismissDraft}
+            onRetry={() => void requestDraft(card.trigger_id)}
+          />
+          {replacing && (
+            <p className="draft-confirm" role="alertdialog" aria-label="Replace your text?">
+              <span>Replace your text?</span>
+              <button className="button-text" type="button" onClick={() => applyDraft(replacing.draft, replacing.text)}>
+                Replace
+              </button>
+              <button className="button-text quiet" type="button" onClick={() => setReplacing(null)}>
+                Keep mine
+              </button>
+            </p>
+          )}
+        </div>
+      )}
+      {draftError && (
+        <p className="notice" role="alert">
+          <span dir="auto">{draftError}</span>
+        </p>
+      )}
+      {status === 'ready' && (
+        <Composer
+          ref={composer}
+          replyTo={replyTo}
+          onCancelReply={() => setReplyTo(null)}
+          onSend={send}
+          onDraft={() => void requestDraft()}
+          drafting={card?.status === 'pending'}
+        />
+      )}
     </section>
   )
 }
