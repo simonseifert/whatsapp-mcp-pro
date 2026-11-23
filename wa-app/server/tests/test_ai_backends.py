@@ -5,6 +5,7 @@ import stat
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pytest
@@ -26,7 +27,7 @@ def _openai() -> BackendCfg:
 
 
 def test_openai_payload_and_parse(settings) -> None:
-    seen = {}
+    seen: dict[str, Any] = {}
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen["url"] = str(request.url)
@@ -49,7 +50,7 @@ def test_openai_payload_and_parse(settings) -> None:
 
 
 def test_openai_without_key_sends_no_auth(settings) -> None:
-    seen = {}
+    seen: dict[str, Any] = {}
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen["auth"] = request.headers.get("authorization")
@@ -61,7 +62,7 @@ def test_openai_without_key_sends_no_auth(settings) -> None:
 
 def test_anthropic_cache_control_and_headers(settings) -> None:
     cfg = BackendCfg(2, "anthropic", "Claude", "http://127.0.0.1:1/ignored", "claude-test", True)
-    seen = {}
+    seen: dict[str, Any] = {}
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen["url"] = str(request.url)

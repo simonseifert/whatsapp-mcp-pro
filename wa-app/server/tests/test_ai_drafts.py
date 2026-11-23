@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -406,6 +407,7 @@ def test_dismiss_publishes_null(settings) -> None:
         await feed(rig, _event(ANA, "N1"))
         draft = drafts.current(rig.appconn, ANA)
         rig.events()
+        assert draft is not None
         rig.worker.dismiss(draft.id)
         assert rig.events() == [{"chat_jid": ANA, "draft": None}]
         assert drafts.current(rig.appconn, ANA) is None
@@ -430,7 +432,11 @@ def test_poller_hands_events_to_listeners(settings) -> None:
     poller = live.Poller(settings)
     got: list = []
     poller.on_events.append(got.extend)
-    poller.on_events.append(lambda e: 1 / 0)  # a failing listener never stops the poll
+
+    def failing(events: list[Any]) -> None:
+        1 / 0
+
+    poller.on_events.append(failing)  # a failing listener never stops the poll
     assert poller._tick() == []
     _insert(settings, ANA, "P1")
     events = poller._tick()
@@ -478,11 +484,11 @@ def test_create_failure_does_not_kill_the_job(settings, caplog) -> None:
         rig.setup()
         _insert(settings, ANA, "N1", "tajni sadržaj")
         orig = drafts._create
-        drafts._create = lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("tajni sadržaj"))  # type: ignore[assignment]
+        drafts._create = lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("tajni sadržaj"))
         try:
             await feed(rig, _event(ANA, "N1"))
         finally:
-            drafts._create = orig  # type: ignore[assignment]
+            drafts._create = orig
         assert rig.rows() == [] and rig.fake.calls == [] and rig.events() == []
         assert "tajni" not in caplog.text
         _insert(settings, ANA, "N2")  # the worker still works
@@ -534,7 +540,7 @@ def test_hanging_backend_times_out_and_frees_slot(settings) -> None:
     from wa_app.ai import backends
 
     real = backends._openai
-    backends._openai = hang  # type: ignore[assignment]
+    backends._openai = hang
     try:
         run(settings, scenario)
     finally:

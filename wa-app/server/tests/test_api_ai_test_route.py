@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -13,7 +15,7 @@ def _make(client: TestClient) -> int:
 
 
 def test_ok_returns_sample_and_ms_without_key(logged_in: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    seen = {}
+    seen: dict[str, Any] = {}
 
     async def fake(cfg, secret, prompt, settings, **kw):  # noqa: ANN001, ANN003
         seen.update(secret=secret, user=prompt.user, timeout=kw.get("timeout"))
