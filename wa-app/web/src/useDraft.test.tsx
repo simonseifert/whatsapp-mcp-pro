@@ -15,6 +15,7 @@ const draft = (id: number, extra: Partial<DraftView> = {}): DraftView => ({
   error: null,
   quote: null,
   created_at_iso: '2026-11-23T10:00:00+00:00',
+  source: 'ai',
   ...extra,
 })
 

@@ -12,6 +12,7 @@ const draft = (extra: Partial<DraftView> = {}): DraftView => ({
   error: null,
   quote: { id: 'M1', sender_name: 'Nikola', preview: 'Gdje si?' },
   created_at_iso: '2026-11-23T10:00:00+00:00',
+  source: 'ai',
   ...extra,
 })
 
@@ -31,6 +32,16 @@ describe('DraftCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /Kasnim malo/ }))
     expect(onUse).toHaveBeenCalledWith('Kasnim malo')
     expect(screen.getAllByText('Use')).toHaveLength(2)
+  })
+
+  it("labels a draft pushed by Claude 'Draft · from Claude' and keeps tap-to-fill", () => {
+    const { onUse } = setup(draft({ source: 'agent', alternatives: ['Vidimo se u 7'] }))
+    expect(screen.getByText('Draft · from Claude')).toBeTruthy()
+    expect(screen.queryByText(/replying to/)).toBeNull()
+    expect(screen.getAllByText('Use')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: /Vidimo se u 7/ }))
+    expect(onUse).toHaveBeenCalledWith('Vidimo se u 7')
+    expect(screen.queryByRole('button', { name: /send/i })).toBeNull()
   })
 
   it('has no Send button', () => {

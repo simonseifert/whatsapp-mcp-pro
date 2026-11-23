@@ -19,7 +19,7 @@ export function DraftCard({ draft, name, onUse, onDismiss, onRetry }: Props) {
       <header className="draft-head">
         <Icon name="sparkle" size={16} />
         <span className="draft-label" dir="auto">
-          Draft · replying to {to}
+          {draft.source === 'agent' ? 'Draft · from Claude' : `Draft · replying to ${to}`}
         </span>
         <button className="iconbtn draft-x" type="button" aria-label="Dismiss draft" onClick={onDismiss}>
           <Icon name="close" size={20} />
