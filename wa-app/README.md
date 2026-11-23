@@ -49,7 +49,7 @@ The AI sheet in a chat header sets, for that chat:
 
 - **Drafts in this chat:** the on switch. Chats start off.
 - **AI:** a backend, or the default.
-- **Local only:** the chat may only use an OpenAI-compatible endpoint whose host is loopback or a private address (every resolved address is checked). Anything else is refused before any request, and the card says "This chat is local only". Chat content never leaves your network.
+- **Local only:** the chat may only use an OpenAI-compatible endpoint on loopback or a private address. A hostname must use `http://`: it is resolved once, every address must be loopback or private, and the call connects to that checked address. A hostname over `https://` is refused (a pinned address would break the certificate check); a private IP address over `https://` is fine. Anything else is refused before any request, and the card says "This chat is local only". Chat content never leaves your network.
 - **Note:** anything the AI should know about the chat.
 - **Rules:** plain text, at most 12 lines, learned from your replies. Edit freely; your edit is the base for the next round.
 

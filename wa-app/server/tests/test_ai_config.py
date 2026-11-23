@@ -29,6 +29,7 @@ def test_key_roundtrip_and_never_in_api(logged_in: TestClient, settings) -> None
     assert put.json()["backend"]["has_key"] is True
     listing = logged_in.get("/api/ai/backends")
     assert listing.json()["backends"][0]["has_key"] is True
+    assert listing.json()["backends"][0]["local"] is True and put.json()["backend"]["local"] is True
     assert SECRET not in put.text + listing.text
     assert "api_key" not in json.dumps(listing.json())
     conn = _db(settings)
@@ -161,3 +162,13 @@ def test_routes_need_login_and_origin(client: TestClient) -> None:
     for method, path in [("put", "/api/ai/backends"), ("delete", "/api/ai/backends/1"), ("put", "/api/ai/default"),
                          ("put", jid)]:  # fmt: skip
         assert client.request(method, path, json={}, headers=bad).status_code == 403, path
+
+
+def test_backend_local_flag_follows_the_policy(logged_in: TestClient, monkeypatch) -> None:
+    from wa_app.ai import policy
+
+    monkeypatch.setattr(policy, "is_local", lambda cfg: cfg.base_url is not None and "ollama.home" in cfg.base_url)
+    logged_in.put("/api/ai/backends", json={**OPENAI, "base_url": "http://ollama.home:11434/v1", "label": "Home"})
+    logged_in.put("/api/ai/backends", json={**OPENAI, "base_url": "https://api.example.com/v1", "label": "Far"})
+    by_label = {b["label"]: b["local"] for b in logged_in.get("/api/ai/backends").json()["backends"]}
+    assert by_label == {"Home": True, "Far": False}

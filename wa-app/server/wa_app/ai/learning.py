@@ -280,9 +280,9 @@ def _gather(settings: Settings, appconn: sqlite3.Connection, chat_jid: str):  # 
             " AND COALESCE(best_alternative, '') <> '' ORDER BY at DESC, draft_id DESC LIMIT ?",
             (chat_jid, PAIRS),
         ).fetchall()
-    policy.check(chat, cfg)  # local-only and no-backend refusals: before any chat content leaves
+    pin = policy.check(chat, cfg)  # local-only and no-backend refusals: before any chat content leaves
     pairs = [(r[0], r[1]) for r in reversed(rows)]
-    return chat, cfg, secret, taken, pairs
+    return chat, cfg, secret, taken, pairs, pin
 
 
 def _store(appconn: sqlite3.Connection, chat_jid: str, old: str | None, new: str, taken: int) -> bool:
@@ -302,10 +302,11 @@ async def distill(
     Returns the new rules, or None when nothing changed: refused by the policy, nothing to learn from, backend
     failure or unusable output. On failure the old rules and the counter stay; only the next trigger tries again."""
     try:
-        chat, cfg, secret, taken, pairs = await asyncio.to_thread(_gather, settings, appconn, chat_jid)
+        chat, cfg, secret, taken, pairs, pin = await asyncio.to_thread(_gather, settings, appconn, chat_jid)
         if cfg is None or not pairs:
             return None
-        raw = await complete(cfg, secret, prompts.build_distill_prompt(chat.rules, pairs), settings)
+        extra = {"pin": pin} if pin else {}
+        raw = await complete(cfg, secret, prompts.build_distill_prompt(chat.rules, pairs), settings, **extra)
         rules = parse_rules(raw)
         if rules is None:
             return None

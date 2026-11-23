@@ -12,6 +12,7 @@ const saved: BackendCfg = {
   base_url: null,
   model: 'claude-sonnet-5-5',
   has_key: true,
+  local: false,
 }
 
 const field = (name: string) => screen.getByLabelText(name) as HTMLInputElement

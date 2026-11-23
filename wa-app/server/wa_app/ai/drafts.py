@@ -179,6 +179,10 @@ def _triggers_draft(message: store.MessageView) -> bool:
     return bool((message.text or "").strip())
 
 
+class _SwitchedOff(Exception):
+    """Drafts were switched off for the chat while an automatic draft waited for a model slot."""
+
+
 @dataclass(eq=False)
 class _Job:
     chat_jid: str
@@ -369,13 +373,14 @@ class DraftWorker:
 
     async def _distill(self, chat_jid: str) -> None:
         async def limited(
-            cfg: ai_config.BackendCfg, secret: str | None, prompt: backends.Prompt, settings: Settings
+            cfg: ai_config.BackendCfg, secret: str | None, prompt: backends.Prompt, settings: Settings, **_: object
         ) -> str:
             local = await asyncio.to_thread(policy.is_local, cfg)
             async with self._local if local else self._cloud:
-                if not await asyncio.to_thread(self._unchanged, chat_jid, cfg):  # raises Refused when now refused
+                same, pin = await asyncio.to_thread(self._unchanged, chat_jid, cfg)  # raises Refused when refused
+                if not same:
                     raise policy.Refused("AI settings changed")
-                return await self._complete(cfg, secret, prompt, settings)
+                return await self._complete(cfg, secret, prompt, settings, **({"pin": pin} if pin else {}))
 
         await learning.distill(self.settings, self._appconn, chat_jid, complete=limited)
 
@@ -500,7 +505,7 @@ class DraftWorker:
                 backend = await asyncio.to_thread(self._backend_id, job.chat_jid)
                 job.draft_id = _create(self._appconn, job.chat_jid, job.trigger_id, backend, self._now())
                 self._publish_draft(job.draft_id)
-            await self._draft(job, job.draft_id)
+            await self._draft(job, job.draft_id, manual)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # never lets a draft take the worker down; content is not logged
@@ -523,10 +528,14 @@ class DraftWorker:
             backend = ai_config.effective_backend(self._appconn, chat_jid)
         return backend.id if backend else None
 
-    async def _draft(self, job: _Job, draft_id: int) -> None:
+    async def _draft(self, job: _Job, draft_id: int, manual: bool) -> None:
         try:
-            raw = await self._complete_in_slot(job)
+            raw = await self._complete_in_slot(job, manual)
             alternatives = backends.parse_alternatives(raw)
+        except _SwitchedOff:
+            if _settle(self._appconn, draft_id, "superseded", now=self._now()):
+                self._publish(job.chat_jid, None)  # the pending card goes away; no backend call was made
+            return
         except policy.Refused as exc:
             self._finish(job, "failed", error=exc.reason)
             return
@@ -535,22 +544,27 @@ class DraftWorker:
             return
         self._finish(job, "ready", alternatives=alternatives)
 
-    async def _complete_in_slot(self, job: _Job) -> str:
+    async def _complete_in_slot(self, job: _Job, manual: bool) -> str:
         """Prepare, wait for a slot, then check again: the chat or backend may have changed while we queued, and
-        a chat that became local only must not reach a cloud backend. A changed backend means preparing again."""
+        a chat that became local only must not reach a cloud backend. A changed backend means preparing again.
+        An automatic draft also stops if the user switched drafts off for the chat while it waited."""
         for _ in range(3):
             cfg, secret, prompt, local = await asyncio.to_thread(self._prepare, job)
             async with self._local if local else self._cloud:
-                if await asyncio.to_thread(self._unchanged, job.chat_jid, cfg):  # raises Refused when now refused
-                    return await self._complete(cfg, secret, prompt, self.settings)
+                if not manual and not await asyncio.to_thread(self._still_enabled, job.chat_jid):
+                    raise _SwitchedOff
+                same, pin = await asyncio.to_thread(self._unchanged, job.chat_jid, cfg)  # raises Refused when refused
+                if same:
+                    return await self._complete(cfg, secret, prompt, self.settings, **({"pin": pin} if pin else {}))
         raise backends.BackendError("AI settings changed, try again")
 
-    def _unchanged(self, chat_jid: str, prepared: ai_config.BackendCfg) -> bool:
+    def _unchanged(self, chat_jid: str, prepared: ai_config.BackendCfg) -> tuple[bool, policy.Pin | None]:
+        """Same backend as prepared, plus the pinned address validated just now (local-only chats)."""
         with appdb.db_lock:
             chat = ai_config.chat_ai(self._appconn, chat_jid)
             cfg = ai_config.effective_backend(self._appconn, chat_jid)
-        policy.check(chat, cfg)
-        return cfg == prepared
+        pin = policy.check(chat, cfg)
+        return cfg == prepared, pin
 
     def _prepare(self, job: _Job) -> tuple[ai_config.BackendCfg, str | None, backends.Prompt, bool]:
         """Policy gate and prompt (blocking: DNS and SQLite)."""

@@ -262,6 +262,26 @@ def test_chat_switched_to_local_only_while_waiting_for_a_slot(settings) -> None:
     run(settings, scenario)
 
 
+def test_chat_switched_off_while_waiting_for_a_slot_makes_no_call(settings) -> None:
+    async def scenario(rig):
+        rig.setup(backend=CLOUD)
+        _insert(settings, ANA, "N1")
+        for _ in range(drafts.CLOUD_SLOTS):
+            await rig.worker._cloud.acquire()  # the cloud is busy
+        rig.worker.on_events([_event(ANA, "N1")])
+        await asyncio.sleep(0.1)
+        assert rig.rows() == [("pending", None)]
+        ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
+        for _ in range(drafts.CLOUD_SLOTS):
+            rig.worker._cloud.release()
+        await rig.worker.idle()
+        assert rig.fake.calls == []
+        assert rig.rows() == [("superseded", None)]  # nothing left pending
+        assert rig.events()[-1]["draft"] is None  # the pending card is withdrawn
+
+    run(settings, scenario)
+
+
 def test_switched_off_during_the_quiet_wait_makes_no_draft(settings) -> None:
     async def scenario(rig):
         rig.setup()

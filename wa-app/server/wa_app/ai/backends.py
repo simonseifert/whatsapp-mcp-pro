@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import httpx2
 
 from ..config import Settings
+from . import policy
 from .config import BackendCfg
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -43,14 +44,16 @@ async def complete(
     *,
     timeout: float = 120,
     transport: httpx2.AsyncBaseTransport | None = None,
+    pin: policy.Pin | None = None,
 ) -> str:
-    """Raw model text. `transport` lets tests swap the network out."""
+    """Raw model text. `transport` lets tests swap the network out. `pin` (local-only chats) is the validated
+    address to connect to instead of the base URL's hostname; only the openai kind uses it."""
     try:
         async with asyncio.timeout(timeout):
             if cfg.kind == "claude_cli":
                 return await _claude_cli(cfg, prompt, settings)
             if cfg.kind == "openai":
-                return await _openai(cfg, secret, prompt, timeout, transport)
+                return await _openai(cfg, secret, prompt, timeout, transport, pin)
             if cfg.kind == "anthropic":
                 return await _anthropic(cfg, secret, prompt, timeout, transport)
     except TimeoutError:
@@ -77,7 +80,9 @@ async def _post(url: str, headers: dict, body: dict, timeout: float, transport) 
     return data
 
 
-async def _openai(cfg: BackendCfg, secret: str | None, prompt: Prompt, timeout: float, transport) -> str:
+async def _openai(
+    cfg: BackendCfg, secret: str | None, prompt: Prompt, timeout: float, transport, pin: policy.Pin | None = None
+) -> str:
     headers = {"content-type": "application/json"}
     if secret:
         headers["authorization"] = f"Bearer {secret}"
@@ -86,7 +91,10 @@ async def _openai(cfg: BackendCfg, secret: str | None, prompt: Prompt, timeout: 
         "messages": [{"role": "system", "content": prompt.system}, {"role": "user", "content": prompt.user}],
         "response_format": {"type": "json_object"},
     }
-    url = (cfg.base_url or "").rstrip("/") + "/chat/completions"
+    base = pin.base_url if pin else cfg.base_url
+    if pin:
+        headers["host"] = pin.host
+    url = (base or "").rstrip("/") + "/chat/completions"
     data = await _post(url, headers, body, timeout, transport)
     try:
         text = data["choices"][0]["message"]["content"]

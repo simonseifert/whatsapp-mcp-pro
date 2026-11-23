@@ -85,6 +85,8 @@ export type BackendCfg = {
   base_url: string | null
   model: string
   has_key: boolean
+  /** Decided by the server: on this machine or network, so a local-only chat may use it. */
+  local: boolean
 }
 export type BackendInput = {
   id?: number

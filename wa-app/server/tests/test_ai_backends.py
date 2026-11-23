@@ -261,3 +261,30 @@ def test_parse_alternatives_variants() -> None:
     for bad in ('[""]', '{"alternatives": []}', "not json", '{"x": 1}', '"just text"', ""):
         with pytest.raises(BackendError, match="No usable draft"):
             backends.parse_alternatives(bad)
+
+
+def test_openai_pinned_connects_to_the_validated_address(settings, monkeypatch) -> None:
+    """A rebinding name answers private first, public second: the request goes to the private address, once."""
+    import socket
+
+    from wa_app.ai import policy
+    from wa_app.ai.config import ChatAi
+
+    answers = iter(["10.0.0.7", "93.184.216.34"])  # the first lookup is private, any later one is public
+
+    def rebinding(host, port, *a, **k):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (next(answers), 0))]
+
+    monkeypatch.setattr(policy.socket, "getaddrinfo", rebinding)
+    cfg = BackendCfg(1, "openai", "Home", "http://ollama.home:11434/v1", "llama-test", False)
+    pin = policy.check(ChatAi("111@s.whatsapp.net", True, None, True, None, None), cfg)
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen["url"] = str(request.url)
+        seen["host"] = request.headers.get("host")
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    _run(backends.complete(cfg, None, PROMPT, settings, transport=httpx2.MockTransport(handler), pin=pin))
+    assert seen["url"] == "http://10.0.0.7:11434/v1/chat/completions"
+    assert seen["host"] == "ollama.home:11434"

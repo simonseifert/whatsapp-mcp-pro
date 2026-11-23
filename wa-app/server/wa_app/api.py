@@ -14,7 +14,7 @@ from starlette.routing import Route
 from . import appdb, auth, live, media, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
-from .ai import drafts, learning
+from .ai import drafts, learning, policy
 from .config import Settings
 
 MEDIA_RETRY_SECONDS = 6 * 3600
@@ -327,11 +327,15 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
     def ai_failure(exc: Exception) -> Response:
         return _error(404 if isinstance(exc, ai_config.NotFound) else 422, str(exc))
 
+    async def backend_json(cfg: ai_config.BackendCfg) -> dict:
+        """The server decides what counts as local (it may resolve a name): off the event loop."""
+        return {**asdict(cfg), "local": await run_in_threadpool(policy.is_local, cfg)}
+
     async def ai_backends(request: Request) -> Response:
         if request.method == "GET":
             return JSONResponse(
                 {
-                    "backends": [asdict(b) for b in ai_config.list_backends(conn)],
+                    "backends": [await backend_json(b) for b in ai_config.list_backends(conn)],
                     "default_id": ai_config.default_backend_id(conn),
                 }
             )
@@ -343,7 +347,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
                 saved = ai_config.save_backend(conn, settings, body)
         except (ai_config.ConfigError, ai_config.NotFound) as exc:
             return ai_failure(exc)
-        return JSONResponse({"backend": asdict(saved)})
+        return JSONResponse({"backend": await backend_json(saved)})
 
     async def ai_backend_delete(request: Request) -> Response:
         try:

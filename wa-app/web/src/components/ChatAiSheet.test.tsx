@@ -2,16 +2,17 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../api'
 import type { ChatAi } from '../api-types'
-import { ChatAiSheet, isCloud } from './ChatAiSheet'
+import { ChatAiSheet } from './ChatAiSheet'
 
 const JID = 'a@s.whatsapp.net'
 const ai: ChatAi = { chat_jid: JID, enabled: false, backend_id: null, local_only: false, note: null, rules: null }
 const backends = {
   default_id: 1,
   backends: [
-    { id: 1, kind: 'openai', label: 'Ollama', base_url: 'http://127.0.0.1:11434/v1', model: 'q', has_key: false },
-    { id: 2, kind: 'anthropic', label: 'Claude API', base_url: null, model: 'c', has_key: true },
-    { id: 3, kind: 'openai', label: 'Remote', base_url: 'https://my-ollama.example.com/v1', model: 'q', has_key: true },
+    { id: 1, kind: 'openai', label: 'Ollama', base_url: 'http://127.0.0.1:11434/v1', model: 'q', has_key: false, local: true },
+    { id: 2, kind: 'anthropic', label: 'Claude API', base_url: null, model: 'c', has_key: true, local: false },
+    { id: 3, kind: 'openai', label: 'Remote', base_url: 'https://my-ollama.example.com/v1', model: 'q', has_key: true, local: false },
+    { id: 4, kind: 'openai', label: 'Home', base_url: 'http://ollama.home:11434/v1', model: 'q', has_key: false, local: true },
   ],
 }
 
@@ -22,17 +23,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
-})
-
-describe('isCloud', () => {
-  it('treats non-openai and non-private hosts as cloud', () => {
-    expect(isCloud(backends.backends[0] as never)).toBe(false)
-    expect(isCloud({ ...backends.backends[0], base_url: 'http://192.168.1.5:11434' } as never)).toBe(false)
-    expect(isCloud({ ...backends.backends[0], base_url: 'http://172.20.0.2' } as never)).toBe(false)
-    expect(isCloud({ ...backends.backends[0], base_url: 'http://172.32.0.2' } as never)).toBe(true)
-    expect(isCloud(backends.backends[1] as never)).toBe(true)
-    expect(isCloud(backends.backends[2] as never)).toBe(true)
-  })
 })
 
 describe('ChatAiSheet', () => {
@@ -46,6 +36,8 @@ describe('ChatAiSheet', () => {
     expect(screen.getByRole('option', { name: /Claude API · Not local/ })).toBeTruthy()
     expect((screen.getByRole('option', { name: /Remote/ }) as HTMLOptionElement).disabled).toBe(true)
     expect((screen.getByRole('option', { name: /^Ollama$/ }) as HTMLOptionElement).disabled).toBe(false)
+    // a private DNS name the server calls local can be chosen, whatever its spelling
+    expect((screen.getByRole('option', { name: /^Home$/ }) as HTMLOptionElement).disabled).toBe(false)
   })
 
   it('says so and blocks Save when Local only has no local backend', async () => {

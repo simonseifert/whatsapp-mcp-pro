@@ -338,8 +338,14 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
     restore with Escape.
   - AI routes now take `db_lock` and `ai.key` is created with `O_EXCL`; what remains is
     that sqlite errors in AI routes map to generic 503/500.
-  - Local-only DNS is checked, then used later, so a DNS change in between is not caught
-    (accepted: local-only hosts are set by the user).
   - The browser check of the settings screen is left for deploy.
   - The optional thumbs UI is deferred: the feedback route exists (server only) and the
     card has no thumb buttons.
+- D22: Local-only calls connect to the address that was checked. For an `http://` base URL with
+  a hostname, the name is resolved once, every address must be loopback or private, and the
+  request goes to one of those addresses with the original Host header, so a name that changes
+  its answer cannot send chat content to a public server. An `https://` hostname is refused on a
+  local-only chat, because connecting to a bare address breaks the certificate name check; a
+  private IP address over `https://` stays allowed. The server tells the web app which backends
+  are local (a `local` flag on each backend), so the sheet and the server always agree. Cost if
+  wrong: a local server behind an https name has to be reached by its IP address or over http.

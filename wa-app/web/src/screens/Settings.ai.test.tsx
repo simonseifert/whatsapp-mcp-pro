@@ -6,8 +6,8 @@ import { Settings } from './Settings'
 const list = {
   default_id: 1,
   backends: [
-    { id: 1, kind: 'openai', label: 'Ollama', base_url: 'http://127.0.0.1:11434/v1', model: 'llama3', has_key: false },
-    { id: 2, kind: 'anthropic', label: 'Claude API', base_url: null, model: 'claude-sonnet-5-5', has_key: true },
+    { id: 1, kind: 'openai', label: 'Ollama', base_url: 'http://127.0.0.1:11434/v1', model: 'llama3', has_key: false, local: true },
+    { id: 2, kind: 'anthropic', label: 'Claude API', base_url: null, model: 'claude-sonnet-5-5', has_key: true, local: false },
   ],
 }
 
@@ -73,6 +73,7 @@ describe('Settings AI section', () => {
       base_url: null,
       model: 'sonnet',
       has_key: false,
+      local: false,
     })
     await open()
     fireEvent.click(screen.getByRole('button', { name: 'Add an AI' }))

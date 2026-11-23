@@ -8,24 +8,9 @@ const MAX_NOTE = 500
 const MAX_RULES = 2000
 const NOT_LOCAL = 'Not local'
 
-/** True for a loopback or private-network host (client-side approximation of the server's policy check). */
-function isPrivateHost(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, '').toLowerCase()
-  if (h === 'localhost' || h === '::1' || h.endsWith('.localhost')) return true
-  const m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(h)
-  if (!m) return false
-  const [a, b] = [Number(m[1]), Number(m[2])]
-  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)
-}
-
-/** Cloud = anything that is not an OpenAI-compatible server on a loopback or private address. The server decides for real. */
-export function isCloud(b: Pick<BackendCfg, 'kind' | 'base_url'>): boolean {
-  if (b.kind !== 'openai' || !b.base_url) return true
-  try {
-    return !isPrivateHost(new URL(b.base_url).hostname)
-  } catch {
-    return true
-  }
+/** Cloud = the server says the backend is not local. The server decides; there is no client-side guess. */
+function isCloud(b: Pick<BackendCfg, 'local'>): boolean {
+  return !b.local
 }
 
 type Form = { enabled: boolean; backend: string; localOnly: boolean; note: string; rules: string }
