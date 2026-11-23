@@ -175,7 +175,11 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 	// Pinned, muted, archived and read state per chat (migrations/012).
-	return createChatStateTable(db)
+	if err := createChatStateTable(db); err != nil {
+		return err
+	}
+	// Delivery and read receipts from other people (migrations/014).
+	return createMessageReceiptsTable(db)
 }
 
 // createTables creates all necessary database tables

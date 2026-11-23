@@ -32,6 +32,8 @@ export type MediaView = {
   filename: string | null
   duration_s: number | null
   has_file: boolean
+  /** Not stored yet, but the server can fetch it from the CDN on GET (never asks the phone). */
+  downloadable: boolean
   size_bytes: number | null
 }
 export type QuoteView = { id: string; sender_name: string | null; preview: string }

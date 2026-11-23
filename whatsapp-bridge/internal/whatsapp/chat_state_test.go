@@ -146,3 +146,58 @@ func TestChatSeedFromConversationOnlyPresentFields(t *testing.T) {
 		t.Errorf("full conversation seed = %+v", full)
 	}
 }
+
+func TestPeerReceiptStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		fromMe bool
+		typ    types.ReceiptType
+		want   int
+	}{
+		{"delivered", false, types.ReceiptTypeDelivered, 1},
+		{"read", false, types.ReceiptTypeRead, 2},
+		{"played", false, types.ReceiptTypePlayed, 3},
+		{"read-self", false, types.ReceiptTypeReadSelf, 0},
+		{"sender", false, types.ReceiptTypeSender, 0},
+		{"own read", true, types.ReceiptTypeRead, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := peerReceiptStatus(&events.Receipt{MessageSource: types.MessageSource{IsFromMe: tt.fromMe}, Type: tt.typ})
+			if got != tt.want || ok != (tt.want != 0) {
+				t.Errorf("got %d, %v; want %d", got, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleChatStateEventStoresPeerReceipts(t *testing.T) {
+	store := openTestStore(t)
+	c := &Client{logger: waLog.Noop}
+	chat := types.JID{User: "123", Server: types.DefaultUserServer}
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	mk := func(typ types.ReceiptType, fromMe bool, ids ...string) *events.Receipt {
+		r := &events.Receipt{
+			MessageSource: types.MessageSource{Chat: chat, Sender: types.JID{User: "123", Server: types.DefaultUserServer, Device: 4}, IsFromMe: fromMe},
+			Timestamp:     at, Type: typ,
+		}
+		for _, id := range ids {
+			r.MessageIDs = append(r.MessageIDs, types.MessageID(id))
+		}
+		return r
+	}
+	c.HandleChatStateEvent(store, mk(types.ReceiptTypeRead, false, "M1", "M2"))
+	c.HandleChatStateEvent(store, mk(types.ReceiptTypeDelivered, false, "M1", "M3"))
+	c.HandleChatStateEvent(store, mk(types.ReceiptTypeRead, true, "M4"))
+
+	want := map[string]int{"M1": 2, "M2": 2, "M3": 1, "M4": 0}
+	for id, w := range want {
+		got, err := store.MessageReceiptStatus(chat.String(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != w {
+			t.Errorf("%s = %d, want %d", id, got, w)
+		}
+	}
+}

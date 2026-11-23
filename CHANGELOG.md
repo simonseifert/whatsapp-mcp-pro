@@ -8,6 +8,11 @@ All notable changes to this fork are recorded here. The format follows
 
 ### Added
 
+- `message_receipts` table (migration 014): highest delivered / read / played status per recipient per message,
+  recorded from other people's receipts (status only rises). Own-device read receipts still feed `chat_state`.
+- One-time full app-state resync on the first connect (`bridge_state` key `appstate_full_sync_v1`), with
+  `EmitAppStateEventsOnFullSync` on, so pin, mute, archive and read state of already-paired accounts is filled in.
+  `read_tracking_since` records when own read receipts started being stored.
 - `wa-app/` (working name): a login-protected chat PWA for your own number that rides the bridge. M1 reads every
   chat (media, voice notes, replies, reactions, polls, live updates) and sends text, replies, reactions and read
   receipts through the bridge's safety checks. Listens on `127.0.0.1:8085`; see the README's App section.

@@ -113,7 +113,7 @@ def test_preview_kinds(conns) -> None:
 
 
 def test_voice_without_file_has_no_duration(tmp_path: Path, settings: Settings) -> None:
-    for f in (settings.store_path / fx.FAMILY).glob("*.ogg"):
+    for f in (settings.store_path / fx.FAMILY.replace("@", "_")).glob("*.ogg"):
         f.unlink()
     ro = store.open_ro(settings)
     family = by_jid(store.list_chats(ro, appdb.connect(settings)), fx.FAMILY)

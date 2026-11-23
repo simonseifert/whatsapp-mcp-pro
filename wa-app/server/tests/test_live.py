@@ -347,6 +347,10 @@ def test_logout_drops_the_open_stream(logged_in: TestClient) -> None:
 
 
 def test_schema_is_looked_up_once_per_baseline(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    with bridge(settings) as w:  # an absent table is deliberately looked up again each tick
+        w.execute(
+            "CREATE TABLE message_receipts (message_id TEXT, chat_jid TEXT, participant TEXT, status INTEGER, at TIMESTAMP)"
+        )
     p = live.Poller(settings)
     p.poll_once()
     seen: list[str] = []

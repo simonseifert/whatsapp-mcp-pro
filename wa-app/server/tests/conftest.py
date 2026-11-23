@@ -192,7 +192,7 @@ def _fill(conn: sqlite3.Connection, store: Path) -> None:
     msg(FAMILY, 12, "", sender="385910000021@s.whatsapp.net", sender_name="Mama", media_type="audio",
         filename="audio_20261122_204800.ogg")  # fmt: skip
     state(FAMILY, pinned=1, muted_until=int(now.timestamp()) + 86400, history_unread_count=5)
-    voice_dir = store / FAMILY
+    voice_dir = store / FAMILY.replace("@", "_")  # the bridge's folder for the chat (safePathPart)
     voice_dir.mkdir()
     (voice_dir / "audio_20261122_204800.ogg").write_bytes(fake_ogg_opus(VOICE_SECONDS))
 
@@ -312,7 +312,9 @@ def _ekipa(conn: sqlite3.Connection, msg, chat, identity, state, ts) -> None:  #
             ("E06", EKIPA, voter, json.dumps(picked), 1),
         )
     msg(EKIPA, 128, "", sender=petra, sender_name="Petra", media_type="ptt", filename="audio_petra.ogg", mid="E07")
-    (conn_store := Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent / EKIPA).mkdir(exist_ok=True)
+    (conn_store := Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent / EKIPA.replace("@", "_")).mkdir(
+        exist_ok=True
+    )
     (conn_store / "audio_petra.ogg").write_bytes(fake_ogg_opus(37))
     msg(EKIPA, 125, "Ja imam jedne štapove viška, ponijet ću", sender=ana, sender_name="Ana", mid="E08",
         quoted_id="E07", quoted_name="Petra", quoted_text="stale preview")  # fmt: skip

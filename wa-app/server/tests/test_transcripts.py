@@ -32,7 +32,9 @@ def transcriber(monkeypatch, settings, voice_id):
     monkeypatch.setattr(
         mcp_lib,
         "download_media",
-        lambda message_id, chat_jid, *, no_phone_retry: str(settings.store_path / FAMILY / "audio_20261122_204800.ogg"),
+        lambda message_id, chat_jid, *, no_phone_retry: str(
+            settings.store_path / FAMILY.replace("@", "_") / "audio_20261122_204800.ogg"
+        ),
     )
     return calls, answer
 
@@ -95,7 +97,7 @@ def test_transcriptions_run_one_at_a_time(settings, monkeypatch):
     from wa_app import appdb, transcripts
 
     conn = appdb.connect(settings)
-    audio = settings.store_path / FAMILY / "audio_20261122_204800.ogg"
+    audio = settings.store_path / FAMILY.replace("@", "_") / "audio_20261122_204800.ogg"
     monkeypatch.setattr(mcp_lib, "download_media", lambda *a, **k: str(audio))
     running = peak = 0
     lock = threading.Lock()

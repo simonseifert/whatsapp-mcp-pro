@@ -2,11 +2,13 @@ import { useRef, useState, type PointerEvent } from 'react'
 import type { MessageView } from '../api-types'
 import { formatClock } from '../format'
 import { ContactCard } from './ContactCard'
+import { Avatar } from './Avatar'
 import { Icon } from './Icon'
 import { Media } from './Media'
 import { Poll } from './Poll'
 import { ReactionBar } from './ReactionBar'
 import { RichText } from './RichText'
+import { Ticks } from './Ticks'
 
 /** An outgoing text this device is still sending, or could not send. */
 export type Delivery = { state: 'sending' | 'sent' | 'failed'; error?: string; retryable?: boolean }
@@ -14,6 +16,8 @@ export type Delivery = { state: 'sending' | 'sent' | 'failed'; error?: string; r
 type Props = {
   message: MessageView
   showSender: boolean
+  /** Incoming message in a group: reserve the avatar column, filled on the last bubble of a run. */
+  groupAvatar?: boolean
   tail: boolean
   rise?: boolean
   delivery?: Delivery
@@ -77,6 +81,7 @@ function useGestures(onReply?: () => void, onMenu?: () => void) {
 export function Bubble({
   message: m,
   showSender,
+  groupAvatar = false,
   tail,
   rise = false,
   delivery,
@@ -88,13 +93,34 @@ export function Bubble({
   const side = m.from_me ? 'me' : 'them'
   const gestures = useGestures(onReply, onMenu)
   const hasMedia = m.media !== null
-  const classes = ['bubble', m.deleted ? 'deleted' : '', hasMedia ? 'media' : ''].filter(Boolean).join(' ')
+  const inline = !hasMedia && !m.deleted && !!m.text
+  const classes = ['bubble', m.deleted ? 'deleted' : '', hasMedia ? 'media' : '', inline ? 'inl' : ''].filter(Boolean).join(' ')
+  const metaContent = (
+    <>
+      {m.edited && <span>Edited</span>}
+      {delivery?.state === 'sending' ? (
+        <span>Sending…</span>
+      ) : delivery?.state === 'failed' ? (
+        <span>Not sent</span>
+      ) : (
+        <>
+          <time dateTime={m.timestamp_iso}>{formatClock(m.timestamp_iso)}</time>
+          {m.from_me && <Ticks state={m.ticks} />}
+        </>
+      )}
+    </>
+  )
+  const avatar = groupAvatar && (
+    <div className="bav">{tail && <Avatar name={m.sender_name ?? ''} src={m.sender_jid ? `/api/avatar/${encodeURIComponent(m.sender_jid)}` : undefined} />}</div>
+  )
   return (
     <div
-      className={`msg ${side}${tail ? ' tail' : ' run'}${rise ? ' rise' : ''}${delivery ? ` ${delivery.state}` : ''}`}
+      className={`msg ${side}${groupAvatar ? ' gav' : ''}${tail ? ' tail' : ' run'}${rise ? ' rise' : ''}${delivery ? ` ${delivery.state}` : ''}`}
       data-message-id={m.id}
       {...gestures.handlers}
     >
+      <div className={groupAvatar ? 'brow' : undefined}>
+      {avatar}
       <div className={classes} style={gestures.offset ? { transform: `translateX(${gestures.offset}px)` } : undefined}>
         {showSender && m.sender_name && (
           <div className="sender" dir="auto">
@@ -126,18 +152,15 @@ export function Bubble({
               <ContactCard key={i} card={card} />
             ))}
             {m.text && <RichText text={m.text} />}
+            {inline && (
+              <span className="mspace" aria-hidden="true">
+                {metaContent}
+              </span>
+            )}
           </>
         )}
-        <div className="meta">
-          {m.edited && <span>Edited</span>}
-          {delivery?.state === 'sending' ? (
-            <span>Sending…</span>
-          ) : delivery?.state === 'failed' ? (
-            <span>Not sent</span>
-          ) : (
-            <time dateTime={m.timestamp_iso}>{formatClock(m.timestamp_iso)}</time>
-          )}
-        </div>
+        <div className="meta">{metaContent}</div>
+      </div>
       </div>
       {onReply && (
         <button className="reply-hover" type="button" aria-label="Reply" onClick={onReply}>

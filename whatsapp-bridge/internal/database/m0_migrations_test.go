@@ -94,7 +94,7 @@ func TestM0MigrationsUpgradePreM0Store(t *testing.T) {
 
 	// Pre-M0 really means none of the M0 additions exist yet.
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('message_reactions', 'chat_state')`).Scan(&n); err != nil || n != 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('message_reactions', 'chat_state', 'message_receipts')`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("pre-M0 store already has %d M0 tables (err %v)", n, err)
 	}
 	if _, err := db.Exec(`SELECT is_community FROM identities`); err == nil {
@@ -113,6 +113,7 @@ func TestM0MigrationsUpgradePreM0Store(t *testing.T) {
 
 	assertTableColumns(t, db, "message_reactions", "chat_jid", "message_id", "sender", "emoji", "reacted_at")
 	assertTableColumns(t, db, "chat_state", "chat_jid", "pinned", "pinned_changed_at", "muted_until", "muted_until_changed_at", "archived", "archived_changed_at", "marked_unread", "marked_unread_changed_at", "last_read_at", "history_unread_count")
+	assertTableColumns(t, db, "message_receipts", "message_id", "chat_jid", "participant", "status", "at")
 	assertTableColumns(t, db, "identities", "is_community", "community_jid", "is_default_subgroup", "i_am_admin")
 
 	var (

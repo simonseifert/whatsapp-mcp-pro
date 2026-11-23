@@ -77,7 +77,7 @@ export function Media({ chat, id, media }: Props) {
   const [found, setFound] = useState(false)
   const [broken, setBroken] = useState(false)
   const [viewing, setViewing] = useState(false)
-  const available = (media.has_file || found) && !broken
+  const available = (media.has_file || media.downloadable || found) && !broken
   if (!available) {
     return <Missing chat={chat} id={id} media={media} onFound={() => (setBroken(false), setFound(true))} />
   }
@@ -106,7 +106,8 @@ export function Media({ chat, id, media }: Props) {
         controls
         playsInline
         preload="none"
-        poster={mediaUrl(chat, id, 'thumb')}
+        // A poster on a video that is not stored yet would make the server pull the whole file.
+        poster={media.has_file || found ? mediaUrl(chat, id, 'thumb') : undefined}
         src={mediaUrl(chat, id)}
         onError={() => setBroken(true)}
       />

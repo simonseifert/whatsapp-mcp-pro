@@ -281,6 +281,7 @@ class _Cursors:
     deleted: _Mark = field(default_factory=_Mark)
     reacted: _Mark = field(default_factory=_Mark)
     chat_state: _Mark = field(default_factory=_Mark)
+    receipted: _Mark = field(default_factory=_Mark)
 
 
 class Poller:
@@ -323,6 +324,19 @@ class Poller:
             (since,),
         ).fetchall()
 
+    def _receipts(self, conn: sqlite3.Connection, since: float) -> list[tuple]:
+        """(chat_jid, message_id, participant, status, time): the status is part of the key, so a receipt raised from
+        delivered to read in the same second is reported again."""
+        if not self._has(conn, "message_receipts"):
+            return []
+        at = "CASE WHEN typeof(at) IN ('integer', 'real') THEN at / 86400.0 + 2440587.5 ELSE julianday(at) END"
+        return conn.execute(
+            f"SELECT chat_jid, message_id, participant, status, t FROM"
+            f" (SELECT chat_jid, message_id, participant, status, {at} AS t FROM message_receipts)"
+            f" WHERE t IS NOT NULL AND t >= ?",
+            (since,),
+        ).fetchall()
+
     def _chat_states(self, conn: sqlite3.Connection, since: float) -> list[tuple]:
         """(chat_jid, *state values, newest change time). The values are part of the key: two changes to one chat in
         the same second (the timestamps' resolution) still differ by what they changed."""
@@ -357,6 +371,7 @@ class Poller:
             deleted=_Mark().advance(self._deleted(conn, 0.0))[0],
             reacted=_Mark().advance(self._reactions(conn, 0.0))[0],
             chat_state=_Mark().advance(self._chat_states(conn, 0.0))[0],
+            receipted=_Mark().advance(self._receipts(conn, 0.0))[0],
         )
 
     def poll_once(self) -> list[Event]:
@@ -387,7 +402,7 @@ class Poller:
         self._failing = True
 
     def _collect(self, ro: sqlite3.Connection, cur: _Cursors) -> tuple[list[Event], _Cursors]:
-        new = _Cursors(cur.rowid, cur.edit_id, cur.deleted, cur.reacted, cur.chat_state)
+        new = _Cursors(cur.rowid, cur.edit_id, cur.deleted, cur.reacted, cur.chat_state, cur.receipted)
         inserted = ro.execute(
             "SELECT rowid, id, chat_jid FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?",
             (cur.rowid, MAX_MESSAGES_PER_TICK + 1),
@@ -410,7 +425,8 @@ class Poller:
         new.deleted, deleted = cur.deleted.advance(self._deleted(ro, cur.deleted.value))
         new.reacted, reacted = cur.reacted.advance(self._reactions(ro, cur.reacted.value))
         new.chat_state, states = cur.chat_state.advance(self._chat_states(ro, cur.chat_state.value))
-        if not (inserted or edits or deleted or reacted or states or shrunk):
+        new.receipted, receipts = cur.receipted.advance(self._receipts(ro, cur.receipted.value))
+        if not (inserted or edits or deleted or reacted or states or receipts or shrunk):
             return [], new
 
         index = store.conversation_index(ro)
@@ -442,6 +458,13 @@ class Poller:
                 events.append(Event("message_changed", {"chat_jid": chat, "id": mid}))
             touched[chat] = None
         seen_reactions: dict[tuple[str, str], None] = {}
+        ticked: dict[tuple[str, str], None] = {}  # messages whose ticks changed; the chat row only if it is the last
+        for chat, mid, _, _, _ in receipts:
+            key = (canon(chat), mid)
+            if key not in changed and not any(canon(c) == key[0] and m == mid for c, m in added):
+                ticked[key] = None
+        for chat, mid in ticked:
+            events.append(Event("message_changed", {"chat_jid": chat, "id": mid}))
         for chat, mid, _, _, _ in reacted:
             seen_reactions[(canon(chat), mid)] = None
         for chat, mid in seen_reactions:
@@ -453,6 +476,10 @@ class Poller:
         for chat in touched:
             summary = store.get_chat(ro, self._appconn, chat)
             if summary is not None:
+                events.append(Event("chat", {"chat": asdict(summary)}))
+        for chat in dict.fromkeys(c for c, _ in ticked if c not in touched):
+            summary = store.get_chat(ro, self._appconn, chat)
+            if summary is not None and (chat, summary.last_message.id) in ticked:
                 events.append(Event("chat", {"chat": asdict(summary)}))
         return events, new
 
