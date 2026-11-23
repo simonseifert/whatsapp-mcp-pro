@@ -39,19 +39,25 @@ _DISTILL_SYSTEM = (
 )
 
 
+def _clean(text: str) -> str:
+    """No control/zero-width/format characters and no reserved label brackets (tabs become spaces)."""
+    text = _INVISIBLE.sub("", text.replace("\t", " "))
+    text = "".join(c for c in text if c == "\n" or unicodedata.category(c) not in ("Cc", "Cf"))
+    return text.translate({ord(c): None for c in _RESERVED})
+
+
 def _line(text: str, limit: int) -> str:
-    """One line, no fence-closing backticks, capped."""
-    flat = " ⏎ ".join(text.splitlines()).replace("`", _BACKTICK).replace(">", _ANGLE).strip()
+    """One line, no fence-closing backticks, no label brackets or invisible characters, capped."""
+    flat = " ⏎ ".join(_clean(text.replace("\r", "\n")).splitlines()).replace("`", _BACKTICK).replace(">", _ANGLE)
+    flat = flat.strip()
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
 def _name(text: str) -> str:
-    """A sender name as one plain label: NFKC, no control/zero-width chars, no reserved brackets, no '>'."""
+    """A sender name as one plain label: NFKC, no invisible chars, no brackets other than ASCII ()[]{}, no '>'."""
     flat = unicodedata.normalize("NFKC", text)
-    flat = "".join(c for c in _INVISIBLE.sub("", flat) if unicodedata.category(c) not in ("Cc", "Cf"))
-    for ch in _RESERVED:
-        flat = flat.replace(ch, "")
-    return _line(" ".join(flat.split()), 60) or "?"
+    flat = "".join(c for c in flat if unicodedata.category(c) not in ("Ps", "Pe") or c in "()[]{}")
+    return _line(" ".join(_clean(flat).split()), 60) or "?"
 
 
 def _body(m: store.MessageView, appconn: sqlite3.Connection, chat_jid: str) -> str | None:
