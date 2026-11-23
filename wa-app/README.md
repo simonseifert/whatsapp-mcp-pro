@@ -19,6 +19,7 @@ Status: M2, read, reply and AI drafts (chat list, chat view, media, live updates
 | `WA_APP_DATA` | `~/.local/share/wa-app` | Where `app.db` lives |
 | `WA_STORE_PATH` | same rule as `whatsapp-mcp-server` | Bridge store dir holding `messages.db` |
 | `WA_APP_CLAUDE_BIN` | the `claude` on `PATH` | Path to the `claude` CLI, for the CLI backend |
+| `WA_APP_AGENT_TOKEN` | unset | Bearer token for `/api/agent/*` (drafts from Claude). Unset means those routes answer 404 |
 | `WA_APP_INSECURE_COOKIES` | unset | `1` drops the `Secure` cookie flag, for local http development only |
 
 The login rate limit keys on the client address; behind a loopback proxy (tailscale serve) it uses the last `X-Forwarded-For` hop (the proxy appends the real client; earlier hops are client-controlled), trusted only from a loopback peer.
@@ -85,6 +86,20 @@ You can also tap Draft in a chat to ask for one.
 ### Learning
 
 Your next own message in the chat, within 15 minutes of the draft, is compared with the closest alternative: **used** (about identical), **edited** (close) or **ignored** (different, which teaches nothing). Edited outcomes become examples for later drafts, next to your last 30 replies in the chat. After every 10 new used or edited outcomes, and nightly at 03:30 for chats with new ones, the model distils the chat's rules from them.
+
+## Drafts from Claude
+
+Tell Claude "draft a reply to Ana saying I'll be there at 7". Claude pushes the text into wa-app; it shows on that chat's draft card, live, labelled **Draft · from Claude**. Tap it to fill the composer, then edit, check and send it yourself. **Nothing is ever sent by Claude**: the agent routes and the MCP tools have no path to sending, and a pushed draft makes no AI call. A new push replaces the chat's current draft. Claude can also switch a chat's automatic drafts on or off (the switch in the chat's AI sheet).
+
+Setup:
+
+1. Make a token (`openssl rand -hex 32`) and put the same value in `WA_APP_AGENT_TOKEN` in both services' environments: wa-app's, and the MCP server's (stdio session env or the shared server's unit). Restart both. Without it in wa-app, `/api/agent/*` answers 404.
+2. Enable the opt-in toolset on the MCP server: add `drafts` to `WHATSAPP_MCP_TOOLSETS` (the shared HTTP server already enables `all`). If wa-app is not on `http://127.0.0.1:8085`, set `WA_APP_URL` for the MCP server.
+3. Ask Claude for a draft. Tools: `push_draft(chat_jid, text, reply_to?)`, `set_auto_drafts(chat_jid, enabled)`, `get_auto_drafts(chat_jid)`.
+
+The routes (`Authorization: Bearer <token>`, no cookie, no Origin check since browsers never attach a bearer token by themselves): `POST /api/agent/drafts` with `{"chat", "text", "reply_to"?}` and `GET`/`PUT /api/agent/chats/{jid}/ai` with `{"enabled"}`. `reply_to` must be an incoming message of the chat; without it the draft answers the chat's latest incoming message. Everything else under `/api/*` still needs a login session.
+
+A pushed draft counts like any ready draft for learning: if your next own message in the chat is close to it, the outcome is recorded as used or edited.
 
 ## Develop
 

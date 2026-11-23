@@ -349,3 +349,16 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   private IP address over `https://` stays allowed. The server tells the web app which backends
   are local (a `local` flag on each backend), so the sheet and the server always agree. Cost if
   wrong: a local server behind an https name has to be reached by its IP address or over http.
+
+## D23 — 2026-11-23 — Agent drafts: Claude pushes a draft into wa-app
+- A bearer-token API for non-browser callers: `POST /api/agent/drafts` and `GET`/`PUT /api/agent/chats/{jid}/ai`.
+  The token is `WA_APP_AGENT_TOKEN`, compared with `hmac.compare_digest`; those routes skip the session cookie and the
+  Origin check (browsers never attach a bearer token themselves, so CSRF does not apply). Everything else under
+  `/api/*` is unchanged.
+- Off without a token: the routes answer 404, as if they did not exist.
+- No send path. The agent module never imports `sending` (a test pins it), a pushed draft is a `ready` row with
+  `source='agent'` and makes no AI call, and the user's tap and Send stay the only way out. The MCP tools live in
+  the opt-in `drafts` toolset and write only to wa-app.
+- The draft worker stays the only writer of `drafts` (`DraftWorker.push`). A push replaces the chat's live draft and
+  cancels a running automatic job. Learning needed no change: it links outcomes to any ready draft.
+- Cost if wrong: a leaked token lets its holder put text on draft cards and flip the AI switch, never send.

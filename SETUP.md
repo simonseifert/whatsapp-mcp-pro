@@ -368,6 +368,7 @@ enables `all` automatically.
 | `recall` | off | `recall`: multilingual semantic search over history |
 | `audio` | off | `transcribe_audio`: voice-note transcription |
 | `inbox` | off | `check_inbox`: "what arrived since I last asked" |
+| `drafts` | off | `push_draft`, `set_auto_drafts`, `get_auto_drafts`: put a draft in wa-app for you to send (see wa-app's README, "Drafts from Claude") |
 
 `inbox` is the one worth explaining to the user: Claude Desktop cannot be
 interrupted by an incoming message, so instead it asks. The **first**
