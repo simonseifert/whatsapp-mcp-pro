@@ -117,7 +117,8 @@ keeps its own state in `WA_APP_DATA` (default `~/.local/share/wa-app/`). Open
 Security notes:
 
 - Login is a passphrase (argon2 hash). The session cookie is `HttpOnly; Secure; SameSite=Strict`, and every
-  state-changing request checks `Origin`. That is why it needs https, which `tailscale serve` provides.
+  state-changing request checks `Origin`. The one exception is `/api/agent/*` (drafts from Claude): it takes a
+  bearer token (`WA_APP_AGENT_TOKEN`, 32+ characters) instead of a cookie, needs no Origin, and is off without the token. That is why it needs https, which `tailscale serve` provides.
 - Login is rate limited to 5 failures per 15 minutes per address. Behind a proxy on loopback it uses the last
   `X-Forwarded-For` hop only, since earlier hops are client-controlled.
 - It opens `messages.db` read-only. Every send goes through the bridge, so the send allowlists, caps and the

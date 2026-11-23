@@ -94,7 +94,7 @@ Tell Claude "draft a reply to Ana saying I'll be there at 7". Claude pushes the 
 Setup:
 
 1. Make a token (`openssl rand -hex 32`) and put the same value in `WA_APP_AGENT_TOKEN` in both services' environments: wa-app's, and the MCP server's (stdio session env or the shared server's unit). Restart both. Without it in wa-app, `/api/agent/*` answers 404.
-2. Enable the opt-in toolset on the MCP server: add `drafts` to `WHATSAPP_MCP_TOOLSETS` (the shared HTTP server already enables `all`). If wa-app is not on `http://127.0.0.1:8085`, set `WA_APP_URL` for the MCP server.
+2. Enable the opt-in toolset on the MCP server: add `drafts` to `WHATSAPP_MCP_TOOLSETS` (the shared HTTP server already enables `all`). If wa-app is not on `http://127.0.0.1:8085`, set `WA_APP_URL` for the MCP server; keep it loopback (or an https URL), because the token travels in clear over plain http. The token must be at least 32 characters or wa-app refuses to start.
 3. Ask Claude for a draft. Tools: `push_draft(chat_jid, text, reply_to?)`, `set_auto_drafts(chat_jid, enabled)`, `get_auto_drafts(chat_jid)`.
 
 The routes (`Authorization: Bearer <token>`, no cookie, no Origin check since browsers never attach a bearer token by themselves): `POST /api/agent/drafts` with `{"chat", "text", "reply_to"?}` and `GET`/`PUT /api/agent/chats/{jid}/ai` with `{"enabled"}`. `reply_to` must be an incoming message of the chat; without it the draft answers the chat's latest incoming message. Everything else under `/api/*` still needs a login session.

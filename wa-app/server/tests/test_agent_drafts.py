@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 from tests.conftest import ANA, EKIPA, LUKAS
 from tests.test_ai_drafts import _event, _insert, _ts, feed, run
 from tests.test_ai_learning import outcome
-from wa_app import live
+from wa_app import config, live
 from wa_app.config import Settings
 from wa_app.main import create_app
 
@@ -266,3 +266,81 @@ def test_agent_routes_never_send(agent: TestClient, monkeypatch) -> None:
     agent.put(f"/api/agent/chats/{ANA}/ai", json={"enabled": True}, headers=BEARER)
     agent.get(f"/api/agent/chats/{ANA}/ai", headers=BEARER)
     assert calls == []
+
+
+# --- review fixes -------------------------------------------------------------------------------------------------
+
+
+def test_token_must_be_long_enough(monkeypatch) -> None:
+    monkeypatch.setenv("WA_APP_AGENT_TOKEN", "short-secret-value")
+    with pytest.raises(ValueError) as err:
+        config.load()
+    assert "short-secret-value" not in str(err.value) and "32" in str(err.value)
+    monkeypatch.setenv("WA_APP_AGENT_TOKEN", "x" * 32)
+    assert config.load().agent_token == "x" * 32
+    assert "x" * 32 not in repr(config.load())
+    monkeypatch.setenv("WA_APP_AGENT_TOKEN", "  ")
+    assert config.load().agent_token is None
+
+
+def test_oversized_bodies_get_413(agent: TestClient) -> None:
+    big = b'{"chat": "x", "text": "' + b"a" * 70_000 + b'"}'
+    assert agent.post("/api/agent/drafts", content=big, headers=BEARER).status_code == 413
+    assert agent.put(f"/api/agent/chats/{ANA}/ai", content=big, headers=BEARER).status_code == 413
+    assert push(agent, text="x" * 4096).status_code == 201  # the largest real draft is well under the cap
+
+
+def test_other_paths_near_agent_still_need_a_session(agent: TestClient) -> None:
+    assert agent.get("/api/agentX", headers=BEARER).status_code == 401
+    assert agent.get("/api/agent", headers=BEARER).status_code == 401
+    assert agent.post("/api/agent", headers=BEARER).status_code == 401
+
+
+def test_unknown_agent_route_has_its_own_404(agent: TestClient) -> None:
+    r = agent.get("/api/agent/nope", headers=BEARER)
+    assert r.status_code == 404 and r.json() == {"error": "Unknown agent route"}
+
+
+def test_reply_to_needs_a_renderable_body(agent: TestClient, settings: Settings) -> None:
+    import sqlite3
+
+    db = sqlite3.connect(settings.store_path / "messages.db")
+    db.execute(
+        "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type)"
+        " VALUES ('PIC1', ?, ?, '', '2026-11-22 10:00:00', 0, NULL)",
+        (ANA, ANA),
+    )
+    db.commit()
+    db.close()
+    assert push(agent, reply_to="PIC1").status_code == 422
+
+
+def test_route_publishes_the_sse_event(settings: Settings, monkeypatch) -> None:
+    seen: list = []
+    orig = live.Hub.publish
+
+    def spy(self, name, data):  # noqa: ANN001, ANN202
+        seen.append((name, data))
+        return orig(self, name, data)
+
+    monkeypatch.setattr(live.Hub, "publish", spy)
+    with TestClient(create_app(replace(settings, agent_token=TOKEN)), base_url="https://testserver") as c:
+        draft = push(c).json()["draft"]
+    events = [d for n, d in seen if n == "draft" and d["draft"]]
+    assert events and events[-1]["chat_jid"] == ANA
+    assert events[-1]["draft"]["id"] == draft["id"] and events[-1]["draft"]["source"] == "agent"
+
+
+def test_hint_picks_the_hinted_agent_draft_over_a_newer_one(settings) -> None:
+    from wa_app.ai import learning
+
+    async def scenario(rig):
+        first = rig.worker.push(ANA, "Dolazim oko osam navečer", None)
+        second = rig.worker.push(ANA, "Nešto potpuno drugo", None)
+        learning.set_hint(ANA, first.id)
+        kind = learning.record_own_message(rig.appconn, ANA, "OWN3", "Dolazim oko osam navečer", time.time())
+        assert kind == "used"
+        assert outcome(rig.appconn, first.id)[3] == "OWN3"  # linked to the hinted (superseded) draft
+        assert outcome(rig.appconn, second.id) is None
+
+    run(settings, scenario)

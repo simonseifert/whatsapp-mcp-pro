@@ -478,7 +478,13 @@ class DraftWorker:
         try:
             if reply_to is not None:
                 message = store.get_message(ro, chat_jid, reply_to)
-                if message is None or message.from_me or message.system or message.deleted:
+                if (
+                    message is None
+                    or message.from_me
+                    or message.system
+                    or message.deleted
+                    or prompts._body(message, self._appconn, chat_jid) is None
+                ):
                     raise ValueError("'reply_to' must be an incoming message of this chat")
                 trigger = message.id
             else:

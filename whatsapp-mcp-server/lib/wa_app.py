@@ -18,6 +18,8 @@ from lib.utils import logger
 DEFAULT_URL = "http://127.0.0.1:8085"
 TIMEOUT_SECONDS = 10
 NOT_SET_UP = "wa-app drafts aren't set up (WA_APP_AGENT_TOKEN)"
+MAX_DETAIL = 300
+BAD_JID = "chat_jid must be a chat JID such as 385910000001@s.whatsapp.net (resolve names with the search tools first)"
 UNREACHABLE = "wa-app isn't reachable"
 
 
@@ -39,8 +41,7 @@ def _call(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[d
         kwargs["json"] = body
     try:
         response = requests.request(method, f"{_base_url()}{path}", **kwargs)
-    except requests.RequestException as exc:
-        # The exception text can carry the URL; log only its type.
+    except Exception as exc:  # never lets a transport surprise escape; the text can carry the URL, so log the type only
         logger.warning("wa-app agent API unreachable (%s)", type(exc).__name__)
         return None, UNREACHABLE
     try:
@@ -55,7 +56,13 @@ def _call(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[d
         return None, "wa-app rejected the token: WA_APP_AGENT_TOKEN must be the same in both services"
     if response.status_code == 404 and detail == "Not found":
         return None, "wa-app has no agent API: set WA_APP_AGENT_TOKEN for wa-app too and restart it"
-    return None, detail or f"wa-app answered {response.status_code}"
+    if response.status_code == 404 and detail == "Unknown agent route":
+        return None, "wa-app doesn't know this agent route: it is probably older than this MCP server"
+    return None, (detail[:MAX_DETAIL] if detail else f"wa-app answered {response.status_code}")
+
+
+def _bad_jid(chat_jid: str) -> bool:
+    return not isinstance(chat_jid, str) or not chat_jid.strip() or "/" in chat_jid
 
 
 def _chat_path(chat_jid: str) -> str:
@@ -64,6 +71,8 @@ def _chat_path(chat_jid: str) -> str:
 
 def push_draft(chat_jid: str, text: str, reply_to: str | None = None) -> str:
     """Put `text` on the chat's draft card in wa-app. Never sends."""
+    if _bad_jid(chat_jid):
+        return BAD_JID
     body: dict[str, Any] = {"chat": chat_jid, "text": text}
     if reply_to is not None:
         body["reply_to"] = reply_to
@@ -83,6 +92,8 @@ def _state(data: dict[str, Any]) -> bool:
 
 
 def set_auto_drafts(chat_jid: str, enabled: bool) -> str:
+    if _bad_jid(chat_jid):
+        return BAD_JID
     data, error = _call("PUT", _chat_path(chat_jid), {"enabled": enabled})
     if error is not None or data is None:
         return error or UNREACHABLE
@@ -90,6 +101,8 @@ def set_auto_drafts(chat_jid: str, enabled: bool) -> str:
 
 
 def get_auto_drafts(chat_jid: str) -> str:
+    if _bad_jid(chat_jid):
+        return BAD_JID
     data, error = _call("GET", _chat_path(chat_jid))
     if error is not None or data is None:
         return error or UNREACHABLE

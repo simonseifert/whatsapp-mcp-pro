@@ -138,8 +138,30 @@ def test_get_auto_drafts(app_env, http, monkeypatch):
 
 def test_jid_is_escaped_in_the_path(app_env, http, monkeypatch):
     http.reply = FakeResponse(200, {"ai": {"enabled": False}})
-    reload_main(monkeypatch, "drafts").get_auto_drafts("a/b?c@lid")
-    assert http.calls[0][1].endswith("/api/agent/chats/a%2Fb%3Fc@lid/ai")
+    reload_main(monkeypatch, "drafts").get_auto_drafts("a?b c@lid")
+    assert http.calls[0][1].endswith("/api/agent/chats/a%3Fb%20c@lid/ai")
+
+
+def test_bad_jids_never_reach_the_app(app_env, http, monkeypatch):
+    main = reload_main(monkeypatch, "drafts")
+    for bad in ["", "   ", "a/b@lid", "../x"]:
+        for out in (main.push_draft(bad, "x"), main.set_auto_drafts(bad, True), main.get_auto_drafts(bad)):
+            assert "chat_jid must be" in out
+    assert http.calls == []
+
+
+def test_unknown_agent_route_is_not_reported_as_a_missing_token(app_env, http, monkeypatch):
+    http.reply = FakeResponse(404, {"error": "Unknown agent route"})
+    out = reload_main(monkeypatch, "drafts").get_auto_drafts(ANA)
+    assert "older" in out and "WA_APP_AGENT_TOKEN" not in out
+
+
+def test_relayed_error_is_truncated_and_any_exception_is_caught(app_env, http, monkeypatch):
+    main = reload_main(monkeypatch, "drafts")
+    http.reply = FakeResponse(422, {"error": "e" * 1000})
+    assert len(main.push_draft(ANA, "x")) <= 300
+    http.error = RuntimeError(f"weird {TOKEN}")
+    assert main.push_draft(ANA, "x") == "wa-app isn't reachable"
 
 
 # --- errors -------------------------------------------------------------------------------------------------------
