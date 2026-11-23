@@ -37,7 +37,11 @@ Add one or more under Settings, AI, and pick a default.
 - **Anthropic API.** Needs an API key.
 - **OpenAI-compatible.** Any endpoint that speaks the chat completions API, such as local Ollama (`http://127.0.0.1:11434/v1`). A key is optional.
 
-Each backend has a Test button. Keys are encrypted at rest in `ai.key` inside `WA_APP_DATA` (mode 600), are never shown again after you save them, and are never logged. The API only says whether a key exists.
+Each backend has a Test button. Keys are encrypted at rest in `ai.key` inside `WA_APP_DATA` (mode 600), are never shown again after you save them, and are never logged. The API only says whether a key exists. **Back up `ai.key` together with `app.db`**: without it the saved keys cannot be read and must be entered again.
+
+### What is stored
+
+`app.db` keeps copies of drafts and of the texts you sent after one (tables `drafts`, `draft_outcomes`), because learning needs them. The nightly sweep (03:30) deletes drafts, and their outcomes, older than 90 days.
 
 ### Per chat
 
@@ -54,12 +58,12 @@ The AI sheet in a chat header sets, for that chat:
 The server runs:
 
 ```sh
-claude -p --output-format json --model <model> --system-prompt <system> \
+claude -p --output-format json --model <model> --system-prompt <fixed text> \
   --tools "" --disallowedTools "*" --max-turns 1 \
   --strict-mcp-config --setting-sources ""
 ```
 
-The prompt goes in on stdin, from an empty working directory, with a 120 s timeout. `--strict-mcp-config --setting-sources ""` matters for speed: without them the CLI starts every MCP server, hook and plugin you have configured. A draft took about 2.6 s with the flags and 26 to 29 s without. Set `WA_APP_CLAUDE_BIN` if `claude` is not on the server's `PATH`.
+Only the fixed instructions go in `--system-prompt`; everything derived from the chat (note, rules, examples, messages) goes in on stdin, so it never shows in the process list. It runs from an empty working directory, with a 120 s timeout. `--strict-mcp-config --setting-sources ""` matters for speed: without them the CLI starts every MCP server, hook and plugin you have configured. A draft took about 2.6 s with the flags and 26 to 29 s without. Set `WA_APP_CLAUDE_BIN` if `claude` is not on the server's `PATH`.
 
 ### Costs
 
@@ -69,7 +73,7 @@ The prompt goes in on stdin, from an empty working directory, with a 120 s timeo
 
 ### What triggers a draft
 
-A new incoming text message, or a voice note or media with a caption, in an opted-in chat, at most 10 minutes old when first seen. History sync, backfill and imports never trigger. Announcement groups only when you are an admin.
+A new incoming text message, or a voice note or media with a caption, in an opted-in chat (stickers, polls, contact cards and media without a caption never trigger; the Draft button still accepts them), at most 10 minutes old when first seen. History sync, backfill and imports never trigger. Announcement groups only when you are an admin.
 
 - App open: drafts at once.
 - App closed: waits for 20 s without a new incoming message in that chat, then drafts once. A burst of messages makes one draft, for the last one.

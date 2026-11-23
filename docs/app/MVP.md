@@ -45,7 +45,8 @@ Built 2026-11-23 (code landed; deploy and the week of real use are still open).
 - [x] **The draft card:** debounced when away, instant when the app is open, stale drafts
   cleared.
 - [x] **Learning:** past replies as examples, edit outcomes, distilled per-chat rules you
-  can read and edit, optional thumbs.
+  can read and edit.
+- [ ] **Optional thumbs:** API only (`POST /api/drafts/{id}/feedback`), UI deferred.
 - [ ] **Deploy:** rebuild, restart, set up backends in Settings, switch on a few chats,
   check one live draft end to end.
 - [ ] **Done when:** more than half of replies in opted-in chats start from a draft for a
