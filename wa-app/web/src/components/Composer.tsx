@@ -1,14 +1,26 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 import type { MessageView } from '../api-types'
 import { Icon } from './Icon'
 
 export const MAX_TEXT = 4096
 const MAX_ROWS_PX = 132 // about five lines, then the box scrolls
 
+/** What the chat screen may do to the box from outside: read it and fill it (a draft's "Use"). */
+export type ComposerHandle = {
+  getText: () => string
+  fill: (text: string) => void
+}
+
 type Props = {
   replyTo: MessageView | null
   onCancelReply: () => void
   onSend: (text: string) => void
+  ref?: Ref<ComposerHandle>
+  /** Ask for a one-off draft; the button is absent without it. */
+  onDraft?: () => void
+  /** The box's text changed (typing, clearing, a draft filled in, or a send emptied it). */
+  onTextChange?: (text: string) => void
+  drafting?: boolean
 }
 
 const quoteLabel = (m: MessageView) => m.text?.trim() || (m.media ? `[${m.media.type}]` : m.poll ? m.poll.question : '')
@@ -38,7 +50,7 @@ function useKeyboardInset(target: React.RefObject<HTMLElement | null>) {
 }
 
 /** The message box: a pill, 16 px text, 44 px targets. Attach is a placeholder until a later version; no mic in M1. */
-export function Composer({ replyTo, onCancelReply, onSend }: Props) {
+export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, drafting, onTextChange }: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
@@ -56,12 +68,31 @@ export function Composer({ replyTo, onCancelReply, onSend }: Props) {
     if (replyTo) box.current?.focus()
   }, [replyTo])
 
+  const current = useRef(text)
+  useEffect(() => {
+    current.current = text
+  })
+  useImperativeHandle(
+    ref,
+    () => ({
+      getText: () => current.current,
+      fill: (value) => {
+        current.current = value
+        setText(value)
+        onTextChange?.(value)
+        box.current?.focus()
+      },
+    }),
+    [onTextChange],
+  )
+
   const tooLong = text.length > MAX_TEXT
   const canSend = text.trim().length > 0 && !tooLong
 
   function submit() {
     if (!canSend) return
     onSend(text)
+    onTextChange?.('')
     setText('') // synchronous: a second tap or Enter finds an empty box and sends nothing
     box.current?.focus()
   }
@@ -101,6 +132,18 @@ export function Composer({ replyTo, onCancelReply, onSend }: Props) {
         >
           <Icon name="attach" size={22} />
         </button>
+        {onDraft && (
+          <button
+            className="iconbtn draftbtn"
+            type="button"
+            aria-label="Draft a reply"
+            title="Draft a reply"
+            disabled={drafting}
+            onClick={onDraft}
+          >
+            <Icon name="sparkle" size={22} />
+          </button>
+        )}
         <textarea
           ref={box}
           className="composer-input"
@@ -109,7 +152,10 @@ export function Composer({ replyTo, onCancelReply, onSend }: Props) {
           placeholder="Message"
           aria-label="Message"
           enterKeyHint="enter"
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            onTextChange?.(e.target.value)
+          }}
           onKeyDown={onKeyDown}
         />
         {canSend && (

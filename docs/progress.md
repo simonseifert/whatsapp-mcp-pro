@@ -17,3 +17,14 @@ Plan: docs/superpowers/plans/2026-11-22-wa-app-m1-chat-app.md. Branch feat/m1-ch
 | 10 Retire wa-client, docs | done (wa-client deleted, README App section with screenshots, DECISIONS D21, deferred nits fixed) |
 
 Running now: `systemctl --user status wa-app` (runs from the worktree until merge; repoint ExecStart to the main checkout after the M1 merge).
+
+# wa-app M2 progress
+
+Plan: docs/superpowers/plans/2026-11-23-wa-app-m2-ai-drafts.md. Branch feat/m2-ai-drafts.
+
+2026-11-23: M2 AI drafts built. Backends (`claude` CLI, Anthropic API, OpenAI-compatible
+incl. local Ollama) with encrypted keys and a local-only gate; prompt builder with
+untrusted-message framing; draft worker (instant when the app is open, 20 s debounce when
+closed); draft card; outcomes (used, edited, ignored) and distilled per-chat rules; AI
+settings screen and per-chat sheet. Every task reviewed with fix rounds; rulings in
+DECISIONS D22. Not deployed yet, and the week of real use is still open.

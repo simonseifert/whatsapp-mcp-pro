@@ -55,7 +55,7 @@ describe('outbox', () => {
 
   it('sends the replied-to id and a uuid key', async () => {
     await sendText(JID, 'Da', { id: 'Q1', sender_name: 'Ana', preview: 'hej' })
-    expect(send).toHaveBeenCalledWith(JID, 'Da', 'Q1', expect.stringMatching(/^[0-9a-f-]{36}$/))
+    expect(send).toHaveBeenCalledWith(JID, 'Da', 'Q1', expect.stringMatching(/^[0-9a-f-]{36}$/), undefined)
   })
 
   it('a failure stays visible with the line, and Retry reuses the same key', async () => {
@@ -176,5 +176,15 @@ describe('outbox', () => {
     await first
     expect(getBox(JID).reactions.M1.emoji).toBe('❤️')
     expect(getBox(JID).notice).toBe('Not sent: limit')
+  })
+})
+
+describe('outbox draft_id', () => {
+  afterEach(() => vi.restoreAllMocks())
+  it('passes the draft id to the send call as a hint', async () => {
+    resetOutbox()
+    const send = vi.spyOn(api, 'sendMessage').mockResolvedValue(ok)
+    await sendText(JID, 'Bok', null, 7)
+    expect(send).toHaveBeenCalledWith(JID, 'Bok', null, expect.any(String), 7)
   })
 })

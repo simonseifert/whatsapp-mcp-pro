@@ -1,7 +1,9 @@
 """App factory and the `wa-app` console entry point."""
 
+import asyncio
 import contextlib
 import logging
+import traceback
 from pathlib import Path
 
 import uvicorn
@@ -15,6 +17,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
 from . import api, appdb, auth, config, live
+from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
 
@@ -35,6 +38,20 @@ class SpaFiles(StaticFiles):
             return await super().get_response("index.html", scope)
 
 
+def _log_worker_end(task: "asyncio.Task[None]") -> None:
+    """The draft worker only ends when cancelled; anything else is a bug worth a line (type and traceback, no text:
+    exception messages may quote chat content)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "draft worker stopped unexpectedly (%s)\n%s",
+            type(exc).__name__,
+            "\n".join(f"  {f.filename}:{f.lineno} in {f.name}" for f in traceback.extract_tb(exc.__traceback__)),
+        )
+
+
 def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     conn = appdb.connect(settings)
 
@@ -48,15 +65,25 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
             return auth.session_hash_valid(conn, hashed)
 
     poller = live.Poller(settings)
+    worker = DraftWorker(settings, hub, appconn=conn)
+    poller.on_events.append(worker.on_events)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
-        async with live.running(poller, hub):
-            yield
+        draft_task = asyncio.create_task(worker.run())
+        draft_task.add_done_callback(_log_worker_end)
+        try:
+            async with live.running(poller, hub):
+                yield
+        finally:
+            draft_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await draft_task
+            worker.close()
         # Under uvicorn the real work is timeout_graceful_shutdown (it waits for streams before lifespan shutdown).
         hub.close()
 
-    routes: list[Route | Mount] = [*live.routes(hub, _session_alive, auth.COOKIE), *api.routes(conn, settings)]
+    routes: list[Route | Mount] = [*live.routes(hub, _session_alive, auth.COOKIE), *api.routes(conn, settings, worker)]
     routes.append(Route("/api/{rest:path}", api_not_found))
     if dist.is_dir():
         routes.append(Mount("/", SpaFiles(directory=dist, html=True)))

@@ -1,2 +1,6 @@
 # Test fixture: a made-up client request UUID in a variable once named KEY (not a credential).
 bfbc9408896e38858b3aef6512407032c5effb53:wa-app/server/tests/test_sending.py:generic-api-key:13
+# Test fixtures: made-up API keys ("sk-test-FICTIONAL-...") for the wa-app AI backend tests (not credentials).
+875df0b24d25e59748c953565c783fc1ea5e7541:wa-app/server/tests/test_ai_config.py:generic-api-key:10
+ab320b7ad35943a77124c0d77497c4c6019457be:wa-app/server/tests/test_ai_backends.py:generic-api-key:16
+a182bf8a0523c82e88cd663eaa45caccffe1fdd2:wa-app/server/tests/test_api_ai_test_route.py:generic-api-key:7

@@ -9,6 +9,8 @@ dependencies = [
     "argon2-cffi>=23.1.0",
     "pillow>=13.0.0",
     "requests>=2.34.2",
+    "cryptography>=50.0.2",
+    "httpx2>=2.16.2",
 ]
 
 [project.scripts]
@@ -23,7 +25,6 @@ packages = ["wa_app"]
 
 [dependency-groups]
 dev = [
-    "httpx2",
     "pytest>=9.0.3",
     "ruff>=0.8.0",
     "mypy>=1.13.0",

@@ -5,7 +5,7 @@ export const BACKOFF_MAX_MS = 30000
 /** While visible, ask listeners to refetch this often: covers what the server's poller cannot see. */
 export const SAFETY_RESYNC_MS = 5 * 60 * 1000
 
-const EVENT_NAMES = ['message', 'message_changed', 'reaction', 'chat', 'resync'] as const
+const EVENT_NAMES = ['message', 'message_changed', 'reaction', 'chat', 'draft', 'resync'] as const
 
 /** Delay before reconnect attempt number `attempt` (0 = first): 1 s, doubling, capped at 30 s. */
 export function backoffDelay(attempt: number): number {

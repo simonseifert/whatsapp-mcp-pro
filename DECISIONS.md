@@ -285,3 +285,67 @@ Choices made while building wa-app M1 (the number D20 above covers only the chat
 - Ticks are not shown, because there is no receipt data.
 - The chat pane does not follow the finger yet (the DESIGN.md Motion row). Deferred.
 - Receipts are capped at the newest 200 per read.
+
+## D22 — 2026-11-23 — M2 build rulings
+Choices made while building wa-app M2 (AI drafts), where the plan was silent or unclear:
+- R1: Use the installed `httpx2` package (added to runtime dependencies next to
+  `cryptography`) for async HTTP and `MockTransport`, because the plan named httpx but only
+  `httpx2` was installed. Cost if wrong: a dependency swap.
+- R2: A "local" backend is an `openai` kind whose base URL host passes the same loopback or
+  private check as the local-only gate; everything else is cloud. This keeps one definition
+  of local. Cost if wrong: the wrong worker semaphore (1 for local, 3 for cloud) is chosen.
+- R3: The send route and `sending.send_text` accept an optional `draft_id`, kept as a hint
+  for outcome matching. `ai.drafts` and `ai.learning` never import `sending`, so the
+  "no send path" test stays valid. Cost if wrong: outcomes link by time window only.
+- R4: Task 7 also adds a server test route for a backend (`POST /api/ai/backends/{id}/test`)
+  with a test, because the Settings screen needs it. Cost if wrong: an extra route to remove.
+- R5: The `claude` CLI runs from `<WA_APP_DATA>/claude-cwd`, an empty directory (mode 700),
+  so it picks up no project files or settings. Cost if wrong: a different working
+  directory, and the CLI might load project context.
+- R6: Only eligible triggers restart the debounce. Ineligible incoming messages (stickers,
+  polls, contact cards, media without a caption, system rows) do not. Text, voice notes and
+  media with a caption are eligible; the manual Draft button accepts any renderable
+  incoming message. The spec's "a new message" is read as "a new triggering message".
+  Cost if wrong: a reply is drafted for an earlier message while a sticker followed.
+- R7: Any own message (text or media, from any device) supersedes the chat's live draft
+  (pending, ready or failed). An outcome is recorded only when the message can be linked to
+  a draft. This follows "phone replies first removes the card". Cost if wrong: a draft
+  disappears that the user still wanted; they can tap Draft again.
+- R8: "Last distilled time" is dropped from the chat AI sheet. The API has no distill
+  timestamp, and adding one needs an `app.db` column migration. Cost if wrong: the user
+  cannot see when the rules were last updated automatically.
+- Changing a backend's kind or base URL without sending a new API key drops the saved key,
+  so a saved key can never be redirected to a different server. The form says so first.
+  Cost if wrong: the user retypes the key after moving a server.
+- Prompt hardening stopped after the fourth automated security finding (homoglyph brackets
+  in message bodies). Rounds one to three closed the real holes: fenced examples, the
+  trigger not repeated outside the fence, no marker or label spoofing, bracket look-alikes
+  and invisible characters stripped. The rest is bounded: body text always follows the real
+  numbered sender label on its own line, there is no path from a draft to a send, and a
+  draft cannot reach another chat. The worst case is a degraded draft the user can ignore.
+  Cost if wrong: a crafted message steers one draft, never a send.
+- Deferred minors worth knowing:
+  - The 03:30 distillation uses naive local time, so it fires an hour off once at a DST change.
+  - The send hint can be taken by an unrelated phone message within 120 s, and then falls
+    back to the latest ready draft.
+  - The chat name sits outside the prompt fence (flattened, 80 characters). The note
+    and rules are now fenced as data like the examples.
+  - The worker reads whether the app is open once at job start, and the inbox is unbounded
+    with one read-only open per candidate under backfill bursts.
+  - Save is disabled without a message when a chat is local only, the default is a cloud
+    backend and a local one exists.
+  - Missing tests: a trigger that renders to nothing, a deleted trigger, and sheet focus
+    restore with Escape.
+  - AI routes now take `db_lock` and `ai.key` is created with `O_EXCL`; what remains is
+    that sqlite errors in AI routes map to generic 503/500.
+  - The browser check of the settings screen is left for deploy.
+  - The optional thumbs UI is deferred: the feedback route exists (server only) and the
+    card has no thumb buttons.
+- D22: Local-only calls connect to the address that was checked. For an `http://` base URL with
+  a hostname, the name is resolved once, every address must be loopback or private, and the
+  request goes to one of those addresses with the original Host header, so a name that changes
+  its answer cannot send chat content to a public server. An `https://` hostname is refused on a
+  local-only chat, because connecting to a bare address breaks the certificate name check; a
+  private IP address over `https://` stays allowed. The server tells the web app which backends
+  are local (a `local` flag on each backend), so the sheet and the server always agree. Cost if
+  wrong: a local server behind an https name has to be reached by its IP address or over http.
