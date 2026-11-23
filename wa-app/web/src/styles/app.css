@@ -1976,3 +1976,108 @@ input {
 .sheet-save:disabled {
   opacity: 0.5;
 }
+
+/* --- AI section in Settings ------------------------------------------------------------------------------------ */
+.ai-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.ai-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.ai-row input[type='radio'] {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--fg);
+}
+
+.ai-main {
+  min-width: 0;
+}
+
+.ai-name {
+  font-weight: var(--font-weight-title);
+  overflow-wrap: anywhere;
+}
+
+.ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-left: calc(22px + var(--spacing-md) - var(--spacing-sm));
+}
+
+.ai-actions .danger {
+  color: var(--danger-ink);
+}
+
+.ai-result {
+  margin-left: calc(22px + var(--spacing-md));
+  font-size: var(--text-body-sm);
+  overflow-wrap: anywhere;
+}
+
+.ai-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) 0;
+}
+
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.ai-field > span,
+.ai-field > label {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.ai-field input,
+.ai-field select {
+  min-height: var(--spacing-touch);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body); /* 16 px: no iOS focus zoom */
+}
+
+.ai-field input:focus-visible,
+.ai-field select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ai-remove {
+  align-self: flex-start;
+  padding-left: 0;
+}
+
+.ai-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}

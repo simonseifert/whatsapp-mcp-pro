@@ -86,6 +86,16 @@ export type BackendCfg = {
   model: string
   has_key: boolean
 }
+export type BackendInput = {
+  id?: number
+  kind: BackendCfg['kind']
+  label: string
+  base_url: string | null
+  model: string
+  /** Write-only. Omitted = keep the saved key, "" = remove it. */
+  api_key?: string
+}
+export type BackendTestResult = { ok: true; ms: number; sample: string } | { ok: false; ms: number; error: string }
 export type BackendsResponse = { backends: BackendCfg[]; default_id: number | null }
 
 export type ChatAi = {
