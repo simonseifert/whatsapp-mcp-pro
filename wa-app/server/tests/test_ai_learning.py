@@ -140,7 +140,7 @@ def test_send_hint_prefers_that_draft_within_window(settings) -> None:
     learning.set_hint(ANA, d)
     assert learning.record_own_message(conn, ANA, "S2", "Vidimo se sutra", time.time()) == "used"
     assert outcome(conn, d)[0] == "used" and outcome(conn, live_one) is None
-    assert older and status_of(conn, live_one) == "superseded"
+    assert status_of(conn, older) == "superseded" and status_of(conn, live_one) == "superseded"
     old = make_draft(conn, status="dismissed", ready_ago=20 * 60, alts=("Vidimo se sutra",))
     learning.set_hint(ANA, old)  # hinted but outside the 15 minute window
     assert learning.record_own_message(conn, ANA, "S3", "Vidimo se sutra", time.time()) is None
@@ -360,3 +360,83 @@ def test_send_route_takes_a_draft_hint_and_never_changes_the_send(logged_in, mon
         == 502
     )
     assert ANA not in learning._hints  # a failed send leaves no hint behind
+
+
+# --- any own message makes the live draft stale -----------------------------------------------------------------
+
+
+def _own_event(mid, **message) -> live.Event:
+    return live.Event(
+        "message", {"chat_jid": ANA, "message": {"id": mid, "from_me": True, "timestamp_iso": _ts(0), **message}}
+    )
+
+
+def test_own_text_outside_window_clears_card_without_outcome(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        d = make_draft(rig.appconn, ready_ago=20 * 60)
+        rig.events()
+        await feed(rig, _own_event("M1", text="Može!"))
+        assert status_of(rig.appconn, d) == "superseded"
+        assert outcome(rig.appconn, d) is None and counter(rig.appconn) == 0
+        assert rig.events() == [{"chat_jid": ANA, "draft": None}]
+        await feed(rig, _own_event("M2", text="Opet"))  # nothing left to change: nothing published
+        assert rig.events() == []
+
+    _run(settings, scenario)
+
+
+def test_media_only_own_message_clears_card(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        d = make_draft(rig.appconn)
+        rig.events()
+        await feed(rig, _own_event("M1"))
+        assert status_of(rig.appconn, d) == "superseded" and outcome(rig.appconn, d) is None
+        assert rig.events() == [{"chat_jid": ANA, "draft": None}]
+
+    _run(settings, scenario)
+
+
+def test_failed_draft_cleared_by_own_message(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        d = make_draft(rig.appconn, status="failed")
+        rig.events()
+        await feed(rig, _own_event("M1", text="Evo me"))
+        assert status_of(rig.appconn, d) == "superseded"
+        assert rig.events() == [{"chat_jid": ANA, "draft": None}]
+
+    _run(settings, scenario)
+
+
+def test_failed_distill_is_not_retried_by_later_outcomes(settings) -> None:
+    from wa_app.ai.backends import BackendError
+
+    async def scenario(rig):
+        rig.setup()
+        rig.fake.error = BackendError("down")
+        for i in range(12):
+            make_draft(rig.appconn, alts=("Može!",))
+            await feed(rig, _own(f"M{i}", "Može!"))
+        assert len(rig.fake.calls) == 1  # only the crossing to 10 asked the model
+        assert counter(rig.appconn) == 12
+
+    _run(settings, scenario)
+
+
+def test_rejected_hint_is_kept_and_stale_feedback_pruned(settings) -> None:
+    conn = _appconn(settings)
+    learning._hints.clear()
+    old = make_draft(conn, status="dismissed", ready_ago=20 * 60)
+    learning.set_hint(ANA, old)
+    assert learning.record_own_message(conn, ANA, "S1", "x", time.time()) is None
+    assert learning._hints[ANA][0] == old
+    learning._hints.clear()
+    learning.set_feedback(conn, old, 1, None)
+    fresh = make_draft(conn)
+    learning.set_feedback(conn, fresh, 1, None)
+    conn.execute("UPDATE drafts SET created_at=? WHERE id=?", (int(time.time()) - 25 * 3600, old))
+    learning.prune_feedback(conn, time.time())
+    keys = {r[0] for r in conn.execute("SELECT key FROM meta WHERE key LIKE 'draft_feedback:%'")}
+    assert keys == {f"draft_feedback:{fresh}"}

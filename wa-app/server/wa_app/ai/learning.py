@@ -60,10 +60,18 @@ def clear_hint(chat_jid: str, draft_id: int) -> None:
             del _hints[chat_jid]
 
 
-def _take_hint(chat_jid: str) -> int | None:
+def _peek_hint(chat_jid: str) -> int | None:
+    """The chat's hinted draft; an expired hint is dropped. It stays until it is used (see `_use_hint`)."""
     with _hint_lock:
-        found = _hints.pop(chat_jid, None)
-    return found[0] if found and time.time() - found[1] <= HINT_TTL else None
+        found = _hints.get(chat_jid)
+        if found and time.time() - found[1] > HINT_TTL:
+            del _hints[chat_jid]
+            return None
+    return found[0] if found else None
+
+
+def _use_hint(chat_jid: str, draft_id: int) -> None:
+    clear_hint(chat_jid, draft_id)
 
 
 # --- outcomes -----------------------------------------------------------------------------------------------------
@@ -116,7 +124,8 @@ def record_own_message(
             "SELECT 1 FROM draft_outcomes WHERE chat_jid=? AND sent_id=?", (chat_jid, sent_id)
         ).fetchone():
             return None  # the same message delivered twice
-        draft = _pick(appconn, chat_jid, _take_hint(chat_jid), sent_at)
+        hint = _peek_hint(chat_jid)
+        draft = _pick(appconn, chat_jid, hint, sent_at)
         if draft is None:
             return None
         draft_id, status = draft[0], draft[1]
@@ -130,24 +139,55 @@ def record_own_message(
         if best is None:
             kind = "ignored"
         thumb, note = _stored_feedback(appconn, draft_id)
-        appconn.execute(
-            "INSERT OR IGNORE INTO draft_outcomes (draft_id, chat_jid, sent_id, sent_text, best_alternative, ratio,"
-            " kind, thumb, feedback, at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (draft_id, chat_jid, sent_id, text, best, ratio, kind, thumb, note, int(sent_at)),
-        )
-        appconn.execute("DELETE FROM meta WHERE key=?", (_FEEDBACK_KEY.format(draft_id),))
-        if status == "ready":
-            appconn.execute("UPDATE drafts SET status='done' WHERE id=?", (draft_id,))
-        appconn.execute(  # a pending draft, and whatever else the chat still shows, is overtaken by the reply
-            "UPDATE drafts SET status='superseded' WHERE chat_jid=? AND status IN ('pending','ready','failed')",
-            (chat_jid,),
-        )
-        if kind != "ignored":
-            appconn.execute("INSERT OR IGNORE INTO chat_ai (chat_jid) VALUES (?)", (chat_jid,))
+        appconn.execute("BEGIN")
+        try:
             appconn.execute(
-                "UPDATE chat_ai SET outcomes_since_distill = outcomes_since_distill + 1 WHERE chat_jid=?", (chat_jid,)
+                "INSERT OR IGNORE INTO draft_outcomes (draft_id, chat_jid, sent_id, sent_text, best_alternative,"
+                " ratio, kind, thumb, feedback, at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (draft_id, chat_jid, sent_id, text, best, ratio, kind, thumb, note, int(sent_at)),
             )
+            appconn.execute("DELETE FROM meta WHERE key=?", (_FEEDBACK_KEY.format(draft_id),))
+            if status == "ready":
+                appconn.execute("UPDATE drafts SET status='done' WHERE id=?", (draft_id,))
+            appconn.execute(  # a pending draft, and whatever else the chat still shows, is overtaken by the reply
+                "UPDATE drafts SET status='superseded' WHERE chat_jid=? AND status IN ('pending','ready','failed')",
+                (chat_jid,),
+            )
+            if kind != "ignored":
+                appconn.execute("INSERT OR IGNORE INTO chat_ai (chat_jid) VALUES (?)", (chat_jid,))
+                appconn.execute(
+                    "UPDATE chat_ai SET outcomes_since_distill = outcomes_since_distill + 1 WHERE chat_jid=?",
+                    (chat_jid,),
+                )
+            appconn.execute("COMMIT")
+        except BaseException:
+            appconn.execute("ROLLBACK")
+            raise
+        if hint == draft_id:
+            _use_hint(chat_jid, draft_id)
     return kind
+
+
+def supersede_live(appconn: sqlite3.Connection, chat_jid: str, sent_at: float) -> bool:
+    """An own message makes the chat's pending, ready or failed drafts stale even when it links to none of them.
+    A message older than the draft (a re-delivered old row) changes nothing. True when a row changed."""
+    with appdb.db_lock:
+        cur = appconn.execute(
+            "UPDATE drafts SET status='superseded' WHERE chat_jid=? AND status IN ('pending','ready','failed')"
+            " AND created_at <= ?",
+            (chat_jid, int(sent_at) + _SLACK),
+        )
+    return cur.rowcount > 0
+
+
+def prune_feedback(appconn: sqlite3.Connection, now: float) -> None:
+    """Drop stored feedback of drafts that are over a day old and never got an outcome."""
+    with appdb.db_lock:
+        appconn.execute(
+            "DELETE FROM meta WHERE key LIKE 'draft_feedback:%' AND CAST(substr(key, 16) AS INTEGER) NOT IN"
+            " (SELECT id FROM drafts WHERE created_at >= ?)",
+            (int(now) - 24 * 3600,),
+        )
 
 
 def pending_outcomes(appconn: sqlite3.Connection, chat_jid: str) -> int:
@@ -198,7 +238,7 @@ def parse_rules(raw: str) -> str | None:
         stripped = line.strip()
         if not stripped.startswith(("- ", "* ", "• ")):
             continue
-        body = prompts._line(stripped[2:], MAX_RULE_LINE).strip()
+        body = prompts.clean_line(stripped[2:], MAX_RULE_LINE).strip()
         if not body:
             continue
         entry = f"- {body}"

@@ -46,7 +46,7 @@ def _clean(text: str) -> str:
     return text.translate({ord(c): None for c in _RESERVED})
 
 
-def _line(text: str, limit: int) -> str:
+def clean_line(text: str, limit: int) -> str:
     """One line, no fence-closing backticks, no label brackets or invisible characters, capped."""
     flat = " ⏎ ".join(_clean(text.replace("\r", "\n")).splitlines()).replace("`", _BACKTICK).replace(">", _ANGLE)
     flat = flat.strip()
@@ -57,7 +57,7 @@ def _name(text: str) -> str:
     """A sender name as one plain label: NFKC, no invisible chars, no brackets other than ASCII ()[]{}, no '>'."""
     flat = unicodedata.normalize("NFKC", text)
     flat = "".join(c for c in flat if unicodedata.category(c) not in ("Ps", "Pe") or c in "()[]{}")
-    return _line(" ".join(_clean(flat).split()), 60) or "?"
+    return clean_line(" ".join(_clean(flat).split()), 60) or "?"
 
 
 def _body(m: store.MessageView, appconn: sqlite3.Connection, chat_jid: str) -> str | None:
@@ -86,7 +86,7 @@ def _render(
     stamp = store.parse_ts(m.timestamp_iso)
     clock = stamp.astimezone().strftime("%H:%M") if stamp else "--:--"
     who = ME_LABEL if m.from_me else _name(m.sender_name or chat_name)
-    return f"[{clock}] {who}: {_line(body, MAX_LINE)}"
+    return f"[{clock}] {who}: {clean_line(body, MAX_LINE)}"
 
 
 def _own_replies(ro: sqlite3.Connection, chat_jid: str) -> list[str]:
@@ -99,7 +99,7 @@ def _own_replies(ro: sqlite3.Connection, chat_jid: str) -> list[str]:
         f" AND julianday(timestamp) IS NOT NULL{deleted} ORDER BY julianday(timestamp) DESC LIMIT ?",
         [*forms, OWN_EXAMPLES],
     ).fetchall()
-    return [_line(r[0], MAX_EXAMPLE) for r in reversed(rows)]
+    return [clean_line(r[0], MAX_EXAMPLE) for r in reversed(rows)]
 
 
 def _edited(appconn: sqlite3.Connection, chat_jid: str) -> list[tuple[str, str]]:
@@ -142,7 +142,7 @@ def build_draft_prompt(
 
     system = [_SYSTEM]
     if chat_ai.note and chat_ai.note.strip():
-        system.append(f"About this chat: {_line(chat_ai.note, 400)}")
+        system.append(f"About this chat: {clean_line(chat_ai.note, 400)}")
     if chat_ai.rules and chat_ai.rules.strip():
         system.append("Style rules for this chat:\n" + chat_ai.rules.strip().replace("`", _BACKTICK))
     examples: list[str] = []
@@ -151,13 +151,13 @@ def build_draft_prompt(
     if edited := _edited(appconn, chat_jid):
         examples += [
             "Drafts the user changed before sending (draft → what I sent):",
-            *(f"- {_line(d, MAX_EXAMPLE)} → {_line(s, MAX_EXAMPLE)}" for d, s in edited),
+            *(f"- {clean_line(d, MAX_EXAMPLE)} → {clean_line(s, MAX_EXAMPLE)}" for d, s in edited),
         ]
     if examples:
         system.append("```examples\n" + "\n".join(examples) + "\n```")
 
     user = [
-        f"Chat: {_line(chat_name, 80)} ({kind})",
+        f"Chat: {clean_line(chat_name, 80)} ({kind})",
         "```chat",
         *lines,
         "```",
@@ -168,6 +168,6 @@ def build_draft_prompt(
 
 def build_distill_prompt(rules: str | None, outcomes: list[tuple[str, str]]) -> Prompt:
     base = rules.strip().replace("`", _BACKTICK) if rules and rules.strip() else "(none yet)"
-    pairs = [f"{_line(d, MAX_EXAMPLE)} → {_line(s, MAX_EXAMPLE)}" for d, s in outcomes]
+    pairs = [f"{clean_line(d, MAX_EXAMPLE)} → {clean_line(s, MAX_EXAMPLE)}" for d, s in outcomes]
     user = f"Existing rules:\n{base}\n\nDraft → what the user sent:\n```pairs\n" + "\n".join(pairs) + "\n```"
     return Prompt(_DISTILL_SYSTEM, user)

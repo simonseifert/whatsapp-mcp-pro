@@ -241,6 +241,7 @@ class DraftWorker:
         self._inbox = asyncio.Queue()
         with appdb.db_lock:  # rows a previous process left pending will never finish
             self._appconn.execute("UPDATE drafts SET status='superseded' WHERE status='pending'")
+        learning.prune_feedback(self._appconn, self._now())
         nightly = asyncio.get_running_loop().create_task(self._nightly())
         try:
             while True:
@@ -306,31 +307,35 @@ class DraftWorker:
     # -- outcomes and rules
 
     async def _own_message(self, chat_jid: str, message: dict[str, Any]) -> None:
-        """The user replied (from any device): record the outcome, drop the chat's card and stop its running draft."""
+        """The user replied (any device, text or media): the chat's draft is stale. Record the outcome when it links,
+        else just supersede; stop the running job; remove the card live only when something changed."""
         text, mid = message.get("text"), message.get("id")
-        if not isinstance(text, str) or not text.strip() or not isinstance(mid, str):
-            return
         stamp = store.parse_ts(message["timestamp_iso"]) if isinstance(message.get("timestamp_iso"), str) else None
         sent_at = stamp.timestamp() if stamp else self._now()
+        body = text if isinstance(text, str) and text.strip() else None
         try:
-            had_card, kind = await asyncio.to_thread(self._learn, chat_jid, mid, text, sent_at)
+            changed, kind = await asyncio.to_thread(self._learn, chat_jid, mid, body, sent_at)
         except Exception as exc:
             logger.error("outcome failed (%s)", type(exc).__name__)
             return
         job = self._jobs.get(chat_jid)
         if job is not None:
             self._cancel(job, publish=False)  # the user got there first
-            had_card = True
-        if had_card:
+            changed = True
+        if changed:
             self._publish(chat_jid, None)
-        if kind in ("used", "edited") and await asyncio.to_thread(
-            learning.pending_outcomes, self._appconn, chat_jid
-        ) >= (learning.DISTILL_AT):
-            self._schedule_distill(chat_jid)
+        if (
+            kind in ("used", "edited")
+            and await asyncio.to_thread(learning.pending_outcomes, self._appconn, chat_jid) == learning.DISTILL_AT
+        ):
+            self._schedule_distill(chat_jid)  # exactly once per crossing; a failed distill waits for the nightly sweep
 
-    def _learn(self, chat_jid: str, mid: str, text: str, sent_at: float) -> tuple[bool, str | None]:
-        had_card = current(self._appconn, chat_jid, now=self._now()) is not None
-        return had_card, learning.record_own_message(self._appconn, chat_jid, mid, text, sent_at)
+    def _learn(self, chat_jid: str, mid: object, text: str | None, sent_at: float) -> tuple[bool, str | None]:
+        kind = None
+        if text is not None and isinstance(mid, str):
+            kind = learning.record_own_message(self._appconn, chat_jid, mid, text, sent_at)
+        changed = kind is not None
+        return learning.supersede_live(self._appconn, chat_jid, sent_at) or changed, kind
 
     def _schedule_distill(self, chat_jid: str) -> None:
         """At most one distill per chat at a time."""
@@ -361,6 +366,7 @@ class DraftWorker:
         while True:
             await self._nightly_sleep(_seconds_until_nightly(self._now()))
             try:
+                await asyncio.to_thread(learning.prune_feedback, self._appconn, self._now())
                 for chat_jid in await asyncio.to_thread(learning.chats_with_new_outcomes, self._appconn):
                     self._schedule_distill(chat_jid)
             except Exception as exc:
