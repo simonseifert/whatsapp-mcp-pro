@@ -30,9 +30,9 @@ def _insert(settings, chat, mid, text="Dolaziš večeras?", minutes_ago=0.0, **k
     conn = sqlite3.connect(settings.store_path / "messages.db")
     conn.execute(
         "INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me,"
-        " is_system_message) VALUES (?,?,?,?,?,?,?,?)",
+        " is_system_message, media_type) VALUES (?,?,?,?,?,?,?,?,?)",
         (mid, chat, kw.get("sender", chat), kw.get("sender_name", "Ana"), text, _ts(minutes_ago),
-         int(kw.get("from_me", False)), int(kw.get("system", False))),
+         int(kw.get("from_me", False)), int(kw.get("system", False)), kw.get("media_type")),
     )  # fmt: skip
     conn.commit()
     conn.close()
@@ -218,6 +218,64 @@ def test_old_or_imported_or_own_or_system_never_triggers(settings) -> None:
     run(settings, scenario)
 
 
+def test_only_text_voice_and_captioned_media_trigger(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        _insert(settings, ANA, "STK", text="", media_type="sticker")
+        _insert(settings, ANA, "PIC", text="", media_type="image")
+        _insert(settings, ANA, "DOC", text="  ", media_type="document")
+        _insert(settings, ANA, "CARD", text="[Contact: Marko]\n📞 +385910000009")
+        _insert(settings, ANA, "POLL", text="[Poll: Pizza?]")
+        conn = sqlite3.connect(settings.store_path / "messages.db")
+        conn.execute("INSERT INTO poll_options VALUES ('POLL', ?, 0, 'Da')", (ANA,))
+        conn.commit()
+        conn.close()
+        await feed(rig, *(_event(ANA, m) for m in ("STK", "PIC", "DOC", "CARD", "POLL")))
+        assert rig.fake.calls == [] and rig.rows() == []
+        for n, (mid, text, kind) in enumerate(
+            [("TXT", "Dolaziš?", None), ("CAP", "Evo slika", "image"), ("VN", "", "ptt")]
+        ):
+            _insert(settings, ANA, mid, text=text, media_type=kind)
+            await feed(rig, _event(ANA, mid))
+            assert len(rig.fake.calls) == n + 1, mid
+
+    run(settings, scenario)
+
+
+def test_chat_switched_to_local_only_while_waiting_for_a_slot(settings) -> None:
+    async def scenario(rig):
+        rig.setup(backend=CLOUD)
+        _insert(settings, ANA, "N1")
+        for _ in range(drafts.CLOUD_SLOTS):
+            await rig.worker._cloud.acquire()  # the cloud is busy
+        rig.worker.on_events([_event(ANA, "N1")])
+        await asyncio.sleep(0.1)
+        assert rig.rows() == [("pending", None)]
+        ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
+        for _ in range(drafts.CLOUD_SLOTS):
+            rig.worker._cloud.release()
+        await rig.worker.idle()
+        assert rig.fake.calls == []
+        assert rig.rows() == [("failed", "This chat is local only")]
+
+    run(settings, scenario)
+
+
+def test_switched_off_during_the_quiet_wait_makes_no_draft(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        _insert(settings, ANA, "N1")
+        rig.sleep_gate = asyncio.Event()
+        rig.worker.on_events([_event(ANA, "N1")])
+        await asyncio.sleep(0.1)
+        ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
+        rig.sleep_gate.set()
+        await rig.worker.idle()
+        assert rig.fake.calls == [] and rig.rows() == []
+
+    run(settings, scenario, visible=0)
+
+
 def test_announcement_group_needs_admin(settings) -> None:
     async def scenario(rig):
         rig.setup(chat=NEIGHBOURHOOD)
@@ -395,7 +453,7 @@ def test_no_draft_route_sends(logged_in) -> None:
     orig = sending.send_text
     sending.send_text = lambda *a, **k: calls.append(a)  # type: ignore[assignment]
     try:
-        assert logged_in.get(f"/api/chats/{ANA}/draft").json() == {"draft": None}
+        assert logged_in.get(f"/api/chats/{ANA}/draft").json() == {"draft": None, "chat_jid": ANA}
         logged_in.post(f"/api/chats/{ANA}/draft", json={})
         logged_in.post(f"/api/chats/{ANA}/draft", json={"trigger_id": "x"})
         logged_in.delete("/api/drafts/1")
@@ -410,7 +468,7 @@ def test_draft_routes(logged_in) -> None:
     got = logged_in.get(f"/api/chats/{ANA}/draft").json()["draft"]
     assert got["id"] == r.json()["draft"]["id"]
     assert logged_in.delete(f"/api/drafts/{got['id']}").status_code == 204
-    assert logged_in.get(f"/api/chats/{ANA}/draft").json() == {"draft": None}
+    assert logged_in.get(f"/api/chats/{ANA}/draft").json() == {"draft": None, "chat_jid": ANA}
     assert logged_in.delete("/api/drafts/9999").status_code == 404
     assert logged_in.get("/api/chats/nobody@s.whatsapp.net/draft").status_code == 404
 
@@ -518,3 +576,20 @@ def test_request_view_carries_the_group_quote(settings) -> None:
         await rig.worker.idle()
 
     run(settings, scenario)
+
+
+def test_worker_task_crash_is_logged_without_message(caplog) -> None:
+    from wa_app.main import _log_worker_end
+
+    async def boom() -> None:
+        raise RuntimeError("Dolaziš večeras? secret chat text")
+
+    async def main() -> None:
+        task = asyncio.create_task(boom())
+        task.add_done_callback(_log_worker_end)
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    with caplog.at_level("ERROR", logger="wa_app"):
+        asyncio.run(main())
+    assert "RuntimeError" in caplog.text and "secret chat text" not in caplog.text

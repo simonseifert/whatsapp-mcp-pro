@@ -30,6 +30,8 @@ MAX_RULE_LINES = 12
 MAX_RULE_LINE = 200
 PAIRS = 20
 HINT_TTL = 120.0
+MAX_COMPARE = 4096  # chars compared per side: the matcher is quadratic
+DRAFT_KEEP_DAYS = 90
 _SLACK = 2  # seconds: timestamps have 1 s resolution
 _LIVE = ("pending", "ready", "failed")
 _FEEDBACK_KEY = "draft_feedback:{}"
@@ -38,7 +40,7 @@ Complete = Callable[..., Awaitable[str]]
 
 
 def similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.strip(), b.strip(), autojunk=False).ratio()
+    return SequenceMatcher(None, a.strip()[:MAX_COMPARE], b.strip()[:MAX_COMPARE], autojunk=False).ratio()
 
 
 # --- the send hint ------------------------------------------------------------------------------------------------
@@ -130,14 +132,15 @@ def record_own_message(
             return None
         draft_id, status = draft[0], draft[1]
         alternatives = _alternatives(draft[2])
-        best, ratio = None, 0.0
-        for alt in alternatives:
-            score = similarity(alt, text)
-            if best is None or score > ratio:
-                best, ratio = alt, score
-        kind = "used" if ratio >= USED else "edited" if ratio >= EDITED else "ignored"
-        if best is None:
-            kind = "ignored"
+    best, ratio = None, 0.0  # the comparison is CPU work: outside the lock
+    for alt in alternatives:
+        score = similarity(alt, text)
+        if best is None or score > ratio:
+            best, ratio = alt, score
+    kind = "used" if ratio >= USED else "edited" if ratio >= EDITED else "ignored"
+    if best is None:
+        kind = "ignored"
+    with appdb.db_lock:
         thumb, note = _stored_feedback(appconn, draft_id)
         appconn.execute("BEGIN")
         try:
@@ -188,6 +191,22 @@ def prune_feedback(appconn: sqlite3.Connection, now: float) -> None:
             " (SELECT id FROM drafts WHERE created_at >= ?)",
             (int(now) - 24 * 3600,),
         )
+
+
+def prune_old_drafts(appconn: sqlite3.Connection, now: float) -> None:
+    """Drop drafts (and their outcomes) older than DRAFT_KEEP_DAYS: they hold copies of replies and sent texts."""
+    cutoff = int(now) - DRAFT_KEEP_DAYS * 24 * 3600
+    with appdb.db_lock:
+        appconn.execute("BEGIN")
+        try:
+            appconn.execute(
+                "DELETE FROM draft_outcomes WHERE draft_id IN (SELECT id FROM drafts WHERE created_at < ?)", (cutoff,)
+            )
+            appconn.execute("DELETE FROM drafts WHERE created_at < ?", (cutoff,))
+            appconn.execute("COMMIT")
+        except BaseException:
+            appconn.execute("ROLLBACK")
+            raise
 
 
 def pending_outcomes(appconn: sqlite3.Connection, chat_jid: str) -> int:

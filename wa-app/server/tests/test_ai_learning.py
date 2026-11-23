@@ -467,3 +467,37 @@ def test_old_own_row_does_not_cancel_a_newer_draft(settings) -> None:
 async def feed_nowait(rig, *events) -> None:
     rig.worker.on_events(list(events))
     await asyncio.sleep(0.05)
+
+
+def test_drafts_older_than_90_days_are_pruned_with_their_outcomes(settings) -> None:
+    conn = _appconn(settings)
+    now = time.time()
+    old = make_draft(conn, now=now - 91 * 86400)
+    fresh = make_draft(conn, now=now - 3600)
+    for d in (old, fresh):
+        conn.execute(
+            "INSERT INTO draft_outcomes (draft_id, chat_jid, sent_id, sent_text, best_alternative, ratio, kind, at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (d, ANA, f"s{d}", "x", "y", 0.5, "edited", 1),
+        )
+    learning.prune_old_drafts(conn, now)
+    assert [r[0] for r in conn.execute("SELECT id FROM drafts")] == [fresh]
+    assert [r[0] for r in conn.execute("SELECT draft_id FROM draft_outcomes")] == [fresh]
+
+
+def test_distill_rechecks_local_only_after_the_slot(settings) -> None:
+    async def scenario(rig):
+        rig.setup(backend=CLOUD, rules="- Jedan")
+        seed_outcomes(rig.appconn, 3)
+        for _ in range(3):
+            await rig.worker._cloud.acquire()
+        rig.worker._schedule_distill(ANA)
+        await asyncio.sleep(0.1)
+        ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
+        for _ in range(3):
+            rig.worker._cloud.release()
+        await rig.worker.idle()
+        assert rig.fake.calls == []
+        assert ai_config.chat_ai(rig.appconn, ANA).rules == "- Jedan"
+
+    _run(settings, scenario)

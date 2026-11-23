@@ -168,6 +168,17 @@ def _settle(
 # --- the worker ---------------------------------------------------------------------------------------------------
 
 
+def _triggers_draft(message: store.MessageView) -> bool:
+    """Automatic drafts answer text, voice notes and media that has a caption; nothing else."""
+    if message.poll or message.contact_cards:
+        return False
+    if message.media:
+        if message.media.type in ("audio", "ptt"):
+            return True
+        return message.media.type != "sticker" and bool((message.text or "").strip())
+    return bool((message.text or "").strip())
+
+
 @dataclass(eq=False)
 class _Job:
     chat_jid: str
@@ -362,6 +373,8 @@ class DraftWorker:
         ) -> str:
             local = await asyncio.to_thread(policy.is_local, cfg)
             async with self._local if local else self._cloud:
+                if not await asyncio.to_thread(self._unchanged, chat_jid, cfg):  # raises Refused when now refused
+                    raise policy.Refused("AI settings changed")
                 return await self._complete(cfg, secret, prompt, settings)
 
         await learning.distill(self.settings, self._appconn, chat_jid, complete=limited)
@@ -372,6 +385,7 @@ class DraftWorker:
             await self._nightly_sleep(_seconds_until_nightly(self._now()))
             try:
                 await asyncio.to_thread(learning.prune_feedback, self._appconn, self._now())
+                await asyncio.to_thread(learning.prune_old_drafts, self._appconn, self._now())
                 for chat_jid in await asyncio.to_thread(learning.chats_with_new_outcomes, self._appconn):
                     self._schedule_distill(chat_jid)
             except Exception as exc:
@@ -398,8 +412,10 @@ class DraftWorker:
             stamp = store.parse_ts(message.timestamp_iso)
             if stamp is None or candidate.received - stamp.timestamp() > MAX_AGE_SECONDS:
                 return False
+            if not _triggers_draft(message):
+                return False  # polls, contact cards, stickers, caption-less media: nothing to reply to
             if prompts._body(message, self._appconn, chat_jid) is None:
-                return False  # it would not render in the prompt, so there is nothing to reply to
+                return False
             chat = store.get_chat(ro, self._appconn, chat_jid)
             if chat is not None and chat.kind == "announcement":
                 return _i_am_admin(ro, chat_jid)
@@ -478,6 +494,8 @@ class DraftWorker:
         try:
             if not manual and self._visible() <= 0:
                 await self._sleep(self._debounce)  # closed app: wait for the chat to go quiet
+            if not manual and not await asyncio.to_thread(self._still_enabled, job.chat_jid):
+                return  # switched off while we waited: no row, no card
             if job.draft_id is None:
                 backend = await asyncio.to_thread(self._backend_id, job.chat_jid)
                 job.draft_id = _create(self._appconn, job.chat_jid, job.trigger_id, backend, self._now())
@@ -496,6 +514,10 @@ class DraftWorker:
             if self._jobs.get(job.chat_jid) is job:
                 del self._jobs[job.chat_jid]
 
+    def _still_enabled(self, chat_jid: str) -> bool:
+        with appdb.db_lock:
+            return ai_config.chat_ai(self._appconn, chat_jid).enabled
+
     def _backend_id(self, chat_jid: str) -> int | None:
         with appdb.db_lock:
             backend = ai_config.effective_backend(self._appconn, chat_jid)
@@ -503,10 +525,7 @@ class DraftWorker:
 
     async def _draft(self, job: _Job, draft_id: int) -> None:
         try:
-            cfg, secret, prompt, local = await asyncio.to_thread(self._prepare, job)
-            sem = self._local if local else self._cloud
-            async with sem:
-                raw = await self._complete(cfg, secret, prompt, self.settings)
+            raw = await self._complete_in_slot(job)
             alternatives = backends.parse_alternatives(raw)
         except policy.Refused as exc:
             self._finish(job, "failed", error=exc.reason)
@@ -515,6 +534,23 @@ class DraftWorker:
             self._finish(job, "failed", error=str(exc))
             return
         self._finish(job, "ready", alternatives=alternatives)
+
+    async def _complete_in_slot(self, job: _Job) -> str:
+        """Prepare, wait for a slot, then check again: the chat or backend may have changed while we queued, and
+        a chat that became local only must not reach a cloud backend. A changed backend means preparing again."""
+        for _ in range(3):
+            cfg, secret, prompt, local = await asyncio.to_thread(self._prepare, job)
+            async with self._local if local else self._cloud:
+                if await asyncio.to_thread(self._unchanged, job.chat_jid, cfg):  # raises Refused when now refused
+                    return await self._complete(cfg, secret, prompt, self.settings)
+        raise backends.BackendError("AI settings changed, try again")
+
+    def _unchanged(self, chat_jid: str, prepared: ai_config.BackendCfg) -> bool:
+        with appdb.db_lock:
+            chat = ai_config.chat_ai(self._appconn, chat_jid)
+            cfg = ai_config.effective_backend(self._appconn, chat_jid)
+        policy.check(chat, cfg)
+        return cfg == prepared
 
     def _prepare(self, job: _Job) -> tuple[ai_config.BackendCfg, str | None, backends.Prompt, bool]:
         """Policy gate and prompt (blocking: DNS and SQLite)."""
