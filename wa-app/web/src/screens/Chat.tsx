@@ -189,6 +189,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
                 key={key}
                 message={m}
                 showSender={item.showSender}
+                groupAvatar={inGroup && !m.from_me}
                 tail={item.tail}
                 rise={key === riseKey}
                 delivery={pending && { state: pending.status, error: pending.error, retryable: pending.retryable }}

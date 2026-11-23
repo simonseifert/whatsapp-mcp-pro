@@ -3,6 +3,7 @@ import type { ChatSummary } from '../api-types'
 import { formatListTime } from '../format'
 import { Avatar } from './Avatar'
 import { Icon } from './Icon'
+import { Ticks } from './Ticks'
 
 const GROUP_KINDS = ['group', 'community_group', 'announcement']
 
@@ -31,11 +32,12 @@ export function ChatRow({ chat, now }: { chat: ChatSummary; now?: Date }) {
           <div className="bot">
             <div className={last.deleted ? 'prev del' : 'prev'}>
               {last.deleted && <Icon name="ban" size={15} />}
+              {last.from_me && !last.deleted && <Ticks state={last.ticks} />}
               {prefix && <b>{prefix}: </b>}
               {last.preview}
             </div>
             <div className="badges">
-              {chat.muted && <Icon name="mute" size={16} />}
+              {chat.muted && <Icon name="bellOff" size={16} label="Muted" />}
               {chat.pinned && <Icon name="pin" size={16} />}
               {chat.unread > 0 && (
                 <span className={chat.muted ? 'badge muted' : 'badge'} aria-label={label ?? undefined}>

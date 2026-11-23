@@ -13,6 +13,7 @@ export function Avatar({ name, src, kind }: Props) {
   const letters = initials(name)
   let content
   if (kind === 'announcement' || kind === 'newsletter') content = <Icon name="megaphone" size={22} />
+  else if (kind === 'group' || kind === 'community_group' || kind === 'community') content = <Icon name="communities" size={22} />
   else if (letters === '' || isNumberLike(name)) content = <Icon name="person" size={22} />
   else content = letters
   return (

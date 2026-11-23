@@ -837,6 +837,74 @@ input {
   color: var(--me-meta);
 }
 
+.ticks {
+  display: inline-flex;
+  align-items: center;
+}
+
+.me .ticks.read {
+  color: var(--me-text);
+}
+
+.prev .ticks {
+  margin-right: 4px;
+  vertical-align: -3px;
+}
+
+.prev .ticks.read {
+  color: var(--fg);
+}
+
+/* Time on the last text line: an invisible copy of the meta ends the text, the real one sits bottom-right. */
+.bubble.inl .txt {
+  display: inline;
+}
+
+.mspace {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 12px;
+  visibility: hidden;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.bubble.inl .meta {
+  position: absolute;
+  right: 12px;
+  bottom: 6px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+/* Group chats: avatar column beside incoming bubbles, filled on the last bubble of a run. */
+.brow {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bav {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+
+.bav .av {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+}
+
+.msg.gav.tail .bubble::before,
+.msg.gav.tail .bubble::after {
+  display: none;
+}
+
 /* Tail on the last bubble of a run: two masks drawn with the page background. */
 .tail .bubble::before,
 .tail .bubble::after {

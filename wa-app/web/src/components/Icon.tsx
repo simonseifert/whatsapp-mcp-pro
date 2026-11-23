@@ -20,6 +20,19 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M16 9.5l5 5M21 9.5l-5 5" />
     </>
   ),
+  check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
+  checks: (
+    <>
+      <path d="M2.5 12.5L7 17l9-9.5" />
+      <path d="M11.5 15.5l1.5 1.5 8.5-9.5" />
+    </>
+  ),
+  bellOff: (
+    <>
+      <path d="M8.5 5.5A5.5 5.5 0 0117.5 10v3l1.5 3H8M6.5 9.5V13L5 16h1.5" />
+      <path d="M10 19.5a2 2 0 004 0M4 4l16 16" />
+    </>
+  ),
   archive: (
     <>
       <rect x="3" y="4" width="18" height="4.5" rx="1.2" />
@@ -115,7 +128,7 @@ const PATHS: Record<string, ReactNode> = {
 
 export type IconName = keyof typeof PATHS
 
-export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
+export function Icon({ name, size = 20, label }: { name: IconName; size?: number; label?: string }) {
   return (
     <svg
       className="ic"
@@ -127,7 +140,9 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
       strokeWidth={1.75}
       strokeLinecap="round"
       strokeLinejoin="round"
-      aria-hidden="true"
+      aria-hidden={label ? undefined : true}
+      role={label ? 'img' : undefined}
+      aria-label={label}
     >
       {PATHS[name]}
     </svg>
