@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from tests.conftest import ANA, EKIPA, NEIGHBOURHOOD
-from wa_app import appdb, live
+from wa_app import appdb, live, store
 from wa_app.ai import config as ai_config
 from wa_app.ai import drafts
 from wa_app.ai.backends import BackendError
@@ -334,7 +334,7 @@ def test_group_draft_quotes_trigger(settings) -> None:
         rig.setup(chat=EKIPA)
         _insert(settings, EKIPA, "G1", "Tko nosi roštilj?", sender_name="Nikola")
         await feed(rig, _event(EKIPA, "G1"))
-        ro = __import__("wa_app.store", fromlist=["x"]).open_ro(settings)
+        ro = store.open_ro(settings)
         view = drafts.current(rig.appconn, EKIPA, ro)
         assert view and view.quote and view.quote.id == "G1" and view.quote.preview == "Tko nosi roštilj?"
 
@@ -417,3 +417,108 @@ def test_draft_routes(logged_in) -> None:
     assert logged_in.get(f"/api/chats/{ANA}/draft").json() == {"draft": None}
     assert logged_in.delete("/api/drafts/9999").status_code == 404
     assert logged_in.get("/api/chats/nobody@s.whatsapp.net/draft").status_code == 404
+
+
+def test_create_failure_does_not_kill_the_job(settings, caplog) -> None:
+    async def scenario(rig):
+        rig.setup()
+        _insert(settings, ANA, "N1", "tajni sadržaj")
+        orig = drafts._create
+        drafts._create = lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("tajni sadržaj"))  # type: ignore[assignment]
+        try:
+            await feed(rig, _event(ANA, "N1"))
+        finally:
+            drafts._create = orig  # type: ignore[assignment]
+        assert rig.rows() == [] and rig.fake.calls == [] and rig.events() == []
+        assert "tajni" not in caplog.text
+        _insert(settings, ANA, "N2")  # the worker still works
+        await feed(rig, _event(ANA, "N2"))
+        assert rig.rows() == [("ready", None)]
+
+    run(settings, scenario)
+
+
+@pytest.mark.parametrize(
+    ("fake", "error"),
+    [
+        (Fake(reply="not json"), "No usable draft"),
+        (Fake(reply='{"alternatives": []}'), "No usable draft"),
+        (Fake(error=BackendError("AI didn't answer in time")), "AI didn't answer in time"),
+    ],
+)
+def test_bad_backend_replies_fail_once_and_free_the_slot(settings, fake, error) -> None:
+    other = "385910000003@s.whatsapp.net"
+
+    async def scenario(rig):
+        rig.setup()
+        rig.setup(chat=other)
+        _insert(settings, ANA, "N1")
+        await feed(rig, _event(ANA, "N1"))
+        assert rig.rows() == [("failed", error)]
+        await asyncio.sleep(0.02)
+        assert len(rig.fake.calls) == 1  # no retry
+        fake.error, fake.reply = None, REPLY  # the backend recovers; the slot must be free
+        _insert(settings, other, "O1")
+        await feed(rig, _event(other, "O1"))
+        assert rig.rows(other) == [("ready", None)]
+
+    run(settings, scenario, fake=fake)
+
+
+def test_hanging_backend_times_out_and_frees_slot(settings) -> None:
+    async def hang(*args, **kw):
+        await asyncio.sleep(10)
+
+    async def scenario(rig):
+        rig.setup()
+        rig.worker._complete = lambda *a, **k: backends.complete(*a, timeout=0.05, **k)
+        _insert(settings, ANA, "N1")
+        await feed(rig, _event(ANA, "N1"))
+        assert rig.rows() == [("failed", "AI didn't answer in time")]
+        assert rig.worker._local._value == 1
+
+    from wa_app.ai import backends
+
+    real = backends._openai
+    backends._openai = hang  # type: ignore[assignment]
+    try:
+        run(settings, scenario)
+    finally:
+        backends._openai = real
+
+
+def test_request_without_incoming_message_is_nothing_to_reply_to(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        conn = sqlite3.connect(settings.store_path / "messages.db")
+        conn.execute("DELETE FROM messages WHERE chat_jid=? AND COALESCE(is_from_me,0)=0", (ANA,))
+        conn.commit()
+        conn.close()
+        with pytest.raises(LookupError, match="Nothing to reply to"):
+            rig.worker.request(ANA, None)
+
+    run(settings, scenario)
+
+
+def test_request_rejects_own_and_system_triggers(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        _insert(settings, ANA, "MINE", from_me=True)
+        _insert(settings, ANA, "SYS", system=True, text="Ana joined")
+        for mid in ("MINE", "SYS"):
+            with pytest.raises(LookupError):
+                rig.worker.request(ANA, mid)
+        assert rig.rows() == []
+
+    run(settings, scenario)
+
+
+def test_request_view_carries_the_group_quote(settings) -> None:
+    async def scenario(rig):
+        rig.setup(chat=EKIPA)
+        _insert(settings, EKIPA, "G1", "Tko nosi roštilj?", sender_name="Nikola")
+        view = rig.worker.request(EKIPA, "G1")
+        assert view.quote and view.quote.id == "G1"
+        await rig.worker.idle()
+
+    run(settings, scenario)

@@ -329,19 +329,19 @@ class DraftWorker:
         Call on the event loop. Raises LookupError when there is no message to reply to."""
         ro = store.open_ro(self.settings)
         try:
-            if trigger_id is None:
-                trigger_id = self._last_incoming(ro, chat_jid)
-            message = store.get_message(ro, chat_jid, trigger_id) if trigger_id else None
+            found = trigger_id if trigger_id is not None else self._last_incoming(ro, chat_jid)
+            message = store.get_message(ro, chat_jid, found) if found else None
             if message is None or prompts._body(message, self._appconn, chat_jid) is None:
                 raise LookupError("Nothing to reply to")
+            if message.from_me or message.system or message.deleted:
+                raise LookupError("That message can't be replied to")
+            with appdb.db_lock:
+                backend = ai_config.effective_backend(self._appconn, chat_jid)
+            draft_id = _create(self._appconn, chat_jid, message.id, backend.id if backend else None, self._now())
+            self._start(chat_jid, message.id, manual=True, draft_id=draft_id)
+            view = get(self._appconn, draft_id, ro)  # with the quote, like the SSE event
         finally:
             ro.close()
-        trigger_id = message.id
-        with appdb.db_lock:
-            backend = ai_config.effective_backend(self._appconn, chat_jid)
-        draft_id = _create(self._appconn, chat_jid, trigger_id, backend.id if backend else None, self._now())
-        self._start(chat_jid, trigger_id, manual=True, draft_id=draft_id)
-        view = get(self._appconn, draft_id)
         assert view is not None
         return view
 
@@ -397,7 +397,11 @@ class DraftWorker:
             raise
         except Exception as exc:  # never lets a draft take the worker down; content is not logged
             logger.error("draft failed (%s)", type(exc).__name__)
-            self._finish(job, "failed", error=GENERIC_ERROR)
+            if job.draft_id is not None:  # no row yet (the insert itself failed): nothing to mark or show
+                try:
+                    self._finish(job, "failed", error=GENERIC_ERROR)
+                except Exception as inner:
+                    logger.error("could not record the failure (%s)", type(inner).__name__)
         finally:
             if self._jobs.get(job.chat_jid) is job:
                 del self._jobs[job.chat_jid]
