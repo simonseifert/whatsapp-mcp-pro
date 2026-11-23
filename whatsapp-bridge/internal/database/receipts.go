@@ -43,7 +43,7 @@ func (store *MessageStore) RecordMessageReceipts(chatJID, participant string, me
 	if err != nil {
 		return fmt.Errorf("record receipts: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	stmt, err := tx.Prepare(`
 		INSERT INTO message_receipts (message_id, chat_jid, participant, status, at) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(message_id, chat_jid, participant) DO UPDATE SET
@@ -52,7 +52,7 @@ func (store *MessageStore) RecordMessageReceipts(chatJID, participant string, me
 	if err != nil {
 		return fmt.Errorf("record receipts: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	for _, id := range messageIDs {
 		if id == "" {
 			continue
