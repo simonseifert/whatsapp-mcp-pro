@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import traceback
 from pathlib import Path
 
 import uvicorn
@@ -37,6 +38,20 @@ class SpaFiles(StaticFiles):
             return await super().get_response("index.html", scope)
 
 
+def _log_worker_end(task: "asyncio.Task[None]") -> None:
+    """The draft worker only ends when cancelled; anything else is a bug worth a line (type and traceback, no text:
+    exception messages may quote chat content)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "draft worker stopped unexpectedly (%s)\n%s",
+            type(exc).__name__,
+            "\n".join(f"  {f.filename}:{f.lineno} in {f.name}" for f in traceback.extract_tb(exc.__traceback__)),
+        )
+
+
 def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     conn = appdb.connect(settings)
 
@@ -56,6 +71,7 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
         draft_task = asyncio.create_task(worker.run())
+        draft_task.add_done_callback(_log_worker_end)
         try:
             async with live.running(poller, hub):
                 yield

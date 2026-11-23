@@ -53,12 +53,13 @@ describe('Chat with a draft', () => {
   let send: ReturnType<typeof vi.spyOn>
   beforeEach(() => {
     resetOutbox()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-23T12:00:00Z'))
     vi.spyOn(live, 'subscribeLive').mockImplementation((l) => {
       emit = l
       return () => {}
     })
     vi.spyOn(api, 'apiFetch').mockImplementation(async (path: string) => (path.endsWith('/messages') ? page : detail))
-    vi.spyOn(api, 'fetchDraft').mockResolvedValue(draft)
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({ draft, chat_jid: draft.chat_jid })
     send = vi.spyOn(api, 'sendMessage').mockResolvedValue({ ok: true, message_id: 'S1' })
   })
   afterEach(() => {
@@ -97,6 +98,14 @@ describe('Chat with a draft', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(send).toHaveBeenCalled())
     expect(send).toHaveBeenCalledWith(JID, 'nešto drugo', 'M1', expect.any(String), undefined)
+  })
+
+  it('emptying the box after Use brings the card back', async () => {
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: /Stižem/ }))
+    expect(screen.queryByText('Draft · replying to Nikola')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: '' } })
+    expect(screen.getByText('Draft · replying to Nikola')).toBeTruthy()
   })
 
   it('dismissing the card forgets the used draft', async () => {
@@ -146,7 +155,10 @@ describe('Chat with a draft', () => {
   })
 
   it('the Draft button requests a one-off draft and Try again repeats the same trigger', async () => {
-    vi.spyOn(api, 'fetchDraft').mockResolvedValue({ ...draft, status: 'failed', alternatives: [], error: 'This chat is local only' })
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({
+      draft: { ...draft, status: 'failed', alternatives: [], error: 'This chat is local only' },
+      chat_jid: draft.chat_jid,
+    })
     const post = vi.spyOn(api, 'requestDraft').mockResolvedValue(draft)
     await open()
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))

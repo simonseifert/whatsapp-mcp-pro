@@ -422,7 +422,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
                 if chat is None:
                     return _error(404, "Chat not found")
                 view = drafts.current(conn, chat.jid, ro)
-                return JSONResponse({"draft": asdict(view) if view else None})
+                return JSONResponse({"draft": asdict(view) if view else None, "chat_jid": chat.jid})
 
             return with_store(work)
         if worker is None:

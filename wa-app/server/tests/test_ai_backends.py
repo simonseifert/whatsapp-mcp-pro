@@ -182,6 +182,27 @@ def test_claude_cli_args_exact(settings, fake_claude) -> None:
     assert stat.S_IMODE(cwd.stat().st_mode) == 0o700
 
 
+def test_claude_cli_keeps_chat_text_out_of_argv(settings, fake_claude) -> None:
+    prompt = Prompt(
+        system="Fixed rules.\n\n```rules\n- no emoji\n```",
+        user="Nikola: friday?",
+        fixed_system="Fixed rules.",
+        chat_system="```rules\n- no emoji\n```",
+    )
+    _run(backends.complete(_cli(), None, prompt, settings))
+    argv = json.loads(Path(str(fake_claude) + ".argv").read_text())
+    assert argv[argv.index("--system-prompt") + 1] == "Fixed rules."
+    assert not any("no emoji" in a or "friday" in a for a in argv)
+    stdin = Path(str(fake_claude) + ".stdin").read_text()
+    assert "- no emoji" in stdin and stdin.endswith("Nikola: friday?")
+
+
+def test_alternatives_are_capped() -> None:
+    long = "x" * 10000
+    [only] = backends.parse_alternatives(json.dumps({"alternatives": [long]}))
+    assert len(only) == backends.MAX_ALTERNATIVE_CHARS
+
+
 def test_claude_cli_binary_from_path(settings, tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("WA_APP_CLAUDE_BIN", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))

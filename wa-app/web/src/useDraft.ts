@@ -5,6 +5,9 @@ import { subscribeLive } from './live'
 
 /** How long the "nothing to reply to" style error stays on screen. */
 export const ERROR_MS = 4000
+/** The server flips a draft to expired after this long; an open client stops showing it at the same time. */
+export const EXPIRY_MS = 24 * 3600 * 1000
+const EXPIRY_CHECK_MS = 60_000
 
 /**
  * The one source of draft state for a chat: the current draft (initial GET, then the `draft` live events, where null
@@ -14,7 +17,14 @@ export const ERROR_MS = 4000
 export function useDraft(chatJid: string) {
   // Tagged with the chat it belongs to, so a card never outlives a switch to another chat.
   const [held, setHeld] = useState<{ jid: string; draft: DraftView | null }>({ jid: chatJid, draft: null })
-  const draft = held.jid === chatJid ? held.draft : null
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), EXPIRY_CHECK_MS)
+    return () => clearInterval(timer)
+  }, [])
+  const kept = held.jid === chatJid ? held.draft : null
+  const created = kept ? Date.parse(kept.created_at_iso) : NaN
+  const draft = kept && !(now - created > EXPIRY_MS) ? kept : null
   const setDraft = useCallback(
     (update: DraftView | null | ((d: DraftView | null) => DraftView | null)) =>
       setHeld((h) => {
@@ -36,16 +46,20 @@ export function useDraft(chatJid: string) {
     let current = true
     canonical.current = null
     fetchDraft(chatJid)
-      .then((d) => {
+      .then(({ draft: d, chat_jid }) => {
         if (!current) return
-        canonical.current = d?.chat_jid ?? null
+        canonical.current = chat_jid
         setDraft((prev) => prev ?? d) // an event that raced the GET is newer
       })
       .catch(() => {}) // no card is the safe fallback; the next event or resync fills it
     const unsubscribe = subscribeLive((event) => {
       if (event.name === 'resync') {
         void fetchDraft(chatJid)
-          .then((d) => current && setDraft(d))
+          .then(({ draft: d, chat_jid }) => {
+            if (!current) return
+            canonical.current = chat_jid
+            setDraft(d)
+          })
           .catch(() => {})
         return
       }

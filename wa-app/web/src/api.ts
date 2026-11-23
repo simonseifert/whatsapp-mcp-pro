@@ -38,9 +38,9 @@ export function mediaUrl(chat: string, id: string, kind: 'file' | 'thumb' | 'ret
 
 const chatPath = (jid: string) => `/api/chats/${encodeURIComponent(jid)}`
 
-/** The chat's current draft, or null. */
-export async function fetchDraft(jid: string): Promise<DraftView | null> {
-  return (await apiFetch<{ draft: DraftView | null }>(`${chatPath(jid)}/draft`)).draft
+/** The chat's current draft (or null) and the chat's canonical jid, which live events are keyed by. */
+export async function fetchDraft(jid: string): Promise<{ draft: DraftView | null; chat_jid: string }> {
+  return apiFetch<{ draft: DraftView | null; chat_jid: string }>(`${chatPath(jid)}/draft`)
 }
 
 /** Asks for a draft: for the given message, or (no trigger) a one-off reply to the latest. Throws ApiError (404 when there is nothing to reply to). */

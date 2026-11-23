@@ -90,6 +90,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   // The draft whose text is in the composer: the next send carries its id as a hint, until the box is emptied.
   // Its card is hidden (not dismissed) so the server can still learn from the outcome.
   const [usedDraft, setUsedDraft] = useState<number | null>(null)
+  const usedNow = useRef<number | null>(null) // usedDraft, readable inside the same event as a send
   const [hiddenDraft, setHiddenDraft] = useState<number | null>(null)
   const [replacing, setReplacing] = useState<{ draft: DraftView; text: string } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -114,6 +115,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     const reply = replyTo
     setReplyTo(null)
     const fromDraft = usedDraft
+    usedNow.current = null
     setUsedDraft(null)
     void sendText(jid, text, reply ? quoteOf(reply) : null, fromDraft)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
@@ -125,6 +127,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   /** "Use" on a draft row: fills the box (and replies to the quoted message in groups). It never sends. */
   function applyDraft(d: DraftView, text: string) {
     setReplacing(null)
+    usedNow.current = d.id
     setUsedDraft(d.id)
     setHiddenDraft(d.id)
     if (d.quote) setReplyTo(messages.find((m) => m.id === d.quote?.id) ?? viewFromQuote(d.quote, chatJid))
@@ -325,6 +328,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             name={chat?.name ?? ''}
             onUse={(text) => chooseDraft(card, text)}
             onDismiss={() => {
+              usedNow.current = null
               setUsedDraft(null)
               setReplacing(null)
               dismissDraft()
@@ -355,7 +359,13 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
           onSend={send}
-          onTextChange={(t) => t.trim() === '' && setUsedDraft(null)}
+          onTextChange={(t) => {
+            if (t.trim() !== '') return
+            // The box was emptied by hand (not by a send or a dismiss): the draft's card may come back.
+            if (usedNow.current !== null) setHiddenDraft(null)
+            usedNow.current = null
+            setUsedDraft(null)
+          }}
           onDraft={() => void requestDraft()}
           drafting={card?.status === 'pending'}
         />

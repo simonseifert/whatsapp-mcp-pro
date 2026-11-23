@@ -21,13 +21,17 @@ const draft = (id: number, extra: Partial<DraftView> = {}): DraftView => ({
 describe('useDraft', () => {
   let emit: (event: LiveEvent) => void
   beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-23T12:00:00Z'))
     vi.spyOn(live, 'subscribeLive').mockImplementation((listener) => {
       emit = listener
       return () => {}
     })
-    vi.spyOn(api, 'fetchDraft').mockResolvedValue(draft(1))
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({ draft: draft(1), chat_jid: JID })
   })
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 
   it('loads the current draft, applies draft events for this chat and clears on null', async () => {
     const { result } = renderHook(() => useDraft(JID))
@@ -40,6 +44,24 @@ describe('useDraft', () => {
     expect(result.current.draft).toBeNull()
   })
 
+  it('hides a draft older than 24 h, also while the client stays open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { result } = renderHook(() => useDraft(JID))
+    await waitFor(() => expect(result.current.draft?.id).toBe(1))
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-24T10:00:01Z'))
+    act(() => vi.advanceTimersByTime(60_000))
+    expect(result.current.draft).toBeNull()
+  })
+
+  it('keeps the canonical jid when there is no draft, so a live event under it still shows', async () => {
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({ draft: null, chat_jid: JID })
+    const { result } = renderHook(() => useDraft('+385910000001'))
+    await waitFor(() => expect(api.fetchDraft).toHaveBeenCalled())
+    await act(async () => {})
+    act(() => emit({ name: 'draft', data: { chat_jid: JID, draft: draft(5) } }))
+    expect(result.current.draft?.id).toBe(5)
+  })
+
   it('ignores a draft event for a different chat', async () => {
     const { result } = renderHook(() => useDraft(JID))
     await waitFor(() => expect(result.current.draft?.id).toBe(1))
@@ -48,7 +70,7 @@ describe('useDraft', () => {
   })
 
   it('request() posts for a one-off draft and shows it; a 404 becomes a brief error', async () => {
-    vi.spyOn(api, 'fetchDraft').mockResolvedValue(null)
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({ draft: null, chat_jid: JID })
     const post = vi.spyOn(api, 'requestDraft').mockResolvedValueOnce(draft(3, { status: 'pending', alternatives: [] }))
     const { result } = renderHook(() => useDraft(JID))
     await waitFor(() => expect(post).not.toHaveBeenCalled())
