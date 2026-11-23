@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS chat_ai (chat_jid TEXT PRIMARY KEY, enabled INTEGER N
     outcomes_since_distill INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS drafts (id INTEGER PRIMARY KEY, chat_jid TEXT NOT NULL, trigger_id TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending','ready','failed','dismissed','superseded','expired','done')),
-    alternatives TEXT, error TEXT, backend_id INTEGER, created_at INTEGER NOT NULL, ready_at INTEGER);
+    alternatives TEXT, error TEXT, backend_id INTEGER, created_at INTEGER NOT NULL, ready_at INTEGER,
+    source TEXT NOT NULL DEFAULT 'ai');
 CREATE INDEX IF NOT EXISTS drafts_chat ON drafts(chat_jid, created_at);
 CREATE TABLE IF NOT EXISTS draft_outcomes (draft_id INTEGER PRIMARY KEY, chat_jid TEXT NOT NULL, sent_id TEXT NOT NULL,
     sent_text TEXT NOT NULL, best_alternative TEXT, ratio REAL NOT NULL,
@@ -49,6 +50,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(read_state)")}
     if columns and "opened_at" not in columns:
         conn.execute("ALTER TABLE read_state ADD COLUMN opened_at INTEGER")
+    draft_columns = {row[1] for row in conn.execute("PRAGMA table_info(drafts)")}
+    if draft_columns and "source" not in draft_columns:  # 'ai' (written by the worker) or 'agent' (pushed by Claude)
+        conn.execute("ALTER TABLE drafts ADD COLUMN source TEXT NOT NULL DEFAULT 'ai'")
 
 
 def connect(settings: Settings) -> sqlite3.Connection:

@@ -16,7 +16,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import api, appdb, auth, config, live
+from . import agent_api, api, appdb, auth, config, live
 from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
@@ -83,7 +83,11 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
         # Under uvicorn the real work is timeout_graceful_shutdown (it waits for streams before lifespan shutdown).
         hub.close()
 
-    routes: list[Route | Mount] = [*live.routes(hub, _session_alive, auth.COOKIE), *api.routes(conn, settings, worker)]
+    routes: list[Route | Mount] = [
+        *live.routes(hub, _session_alive, auth.COOKIE),
+        *api.routes(conn, settings, worker),
+        *agent_api.routes(conn, settings, worker),
+    ]
     routes.append(Route("/api/{rest:path}", api_not_found))
     if dist.is_dir():
         routes.append(Mount("/", SpaFiles(directory=dist, html=True)))
@@ -93,7 +97,11 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
             return JSONResponse({"error": "Web build missing (run pnpm build in wa-app/web)"}, status_code=503)
 
         routes.append(Route("/{rest:path}", no_build))
-    return Starlette(routes=routes, middleware=[Middleware(AuthMiddleware, conn=conn)], lifespan=lifespan)
+    return Starlette(
+        routes=routes,
+        middleware=[Middleware(AuthMiddleware, conn=conn, agent_token=settings.agent_token)],
+        lifespan=lifespan,
+    )
 
 
 def run() -> None:

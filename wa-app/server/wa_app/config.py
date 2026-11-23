@@ -12,6 +12,7 @@ class Settings:
     data_dir: Path
     store_path: Path
     secure_cookies: bool
+    agent_token: str | None = None  # bearer token for /api/agent/*; unset = those routes answer 404
 
 
 def _default_store_path() -> Path:
@@ -34,4 +35,5 @@ def load() -> Settings:
         data_dir=Path(data) if data else Path.home() / ".local" / "share" / "wa-app",
         store_path=Path(store) if store else _default_store_path(),
         secure_cookies=os.getenv("WA_APP_INSECURE_COOKIES") != "1",
+        agent_token=(os.getenv("WA_APP_AGENT_TOKEN") or "").strip() or None,
     )

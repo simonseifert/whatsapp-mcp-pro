@@ -55,6 +55,7 @@ class DraftView:
     error: str | None
     quote: store.QuoteView | None
     created_at_iso: str
+    source: str = "ai"  # 'agent' when Claude pushed the text (no AI call made)
 
 
 # --- the drafts table ---------------------------------------------------------------------------------------------
@@ -81,7 +82,7 @@ def _quote(
     return store.QuoteView(message.id, message.sender_name, preview)
 
 
-_COLS = "id, chat_jid, trigger_id, status, alternatives, error, created_at"
+_COLS = "id, chat_jid, trigger_id, status, alternatives, error, created_at, source"
 
 
 def _view(appconn: sqlite3.Connection, row: tuple, ro: sqlite3.Connection | None) -> DraftView:
@@ -95,7 +96,7 @@ def _view(appconn: sqlite3.Connection, row: tuple, ro: sqlite3.Connection | None
             quote = _quote(ro, appconn, row[1], row[2])
         except sqlite3.Error:
             quote = None
-    return DraftView(row[0], row[1], row[2], row[3], alternatives, row[5], quote, _iso(row[6]))
+    return DraftView(row[0], row[1], row[2], row[3], alternatives, row[5], quote, _iso(row[6]), row[7])
 
 
 def get(appconn: sqlite3.Connection, draft_id: int, ro: sqlite3.Connection | None = None) -> DraftView | None:
@@ -141,6 +142,22 @@ def _create(appconn: sqlite3.Connection, chat_jid: str, trigger_id: str, backend
         cur = appconn.execute(
             "INSERT INTO drafts (chat_jid, trigger_id, status, backend_id, created_at) VALUES (?,?,'pending',?,?)",
             (chat_jid, trigger_id, backend_id, int(now)),
+        )
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+def _create_agent(appconn: sqlite3.Connection, chat_jid: str, trigger_id: str, text: str, now: float) -> int:
+    """A draft Claude pushed: born `ready` with the text as its only alternative. Replaces the chat's live draft."""
+    with appdb.db_lock:
+        appconn.execute(
+            "UPDATE drafts SET status='superseded' WHERE chat_jid=? AND status IN ('pending','ready','failed')",
+            (chat_jid,),
+        )
+        cur = appconn.execute(
+            "INSERT INTO drafts (chat_jid, trigger_id, status, alternatives, created_at, ready_at, source)"
+            " VALUES (?,?,'ready',?,?,?,'agent')",
+            (chat_jid, trigger_id, json.dumps([text]), int(now), int(now)),
         )
     assert cur.lastrowid is not None
     return cur.lastrowid
@@ -452,6 +469,29 @@ class DraftWorker:
         finally:
             ro.close()
         assert view is not None
+        return view
+
+    def push(self, chat_jid: str, text: str, reply_to: str | None = None) -> DraftView:
+        """A draft pushed by Claude (agent API): shown on the chat's card, never sent, no AI call and no policy gate.
+        Call on the event loop. Raises ValueError when `reply_to` is not an incoming message of the chat."""
+        ro = store.open_ro(self.settings)
+        try:
+            if reply_to is not None:
+                message = store.get_message(ro, chat_jid, reply_to)
+                if message is None or message.from_me or message.system or message.deleted:
+                    raise ValueError("'reply_to' must be an incoming message of this chat")
+                trigger = message.id
+            else:
+                trigger = self._last_incoming(ro, chat_jid) or ""
+            old = self._jobs.get(chat_jid)
+            if old is not None:
+                self._cancel(old, publish=False)  # a running automatic draft would only be overtaken
+            draft_id = _create_agent(self._appconn, chat_jid, trigger, text, self._now())
+            view = get(self._appconn, draft_id, ro)
+        finally:
+            ro.close()
+        assert view is not None
+        self._publish(chat_jid, view)
         return view
 
     def _last_incoming(self, ro: sqlite3.Connection, chat_jid: str) -> str | None:

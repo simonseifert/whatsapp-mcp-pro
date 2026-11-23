@@ -1,5 +1,6 @@
 """Passphrase, server-side sessions, login rate limit, Origin check and the API middleware."""
 
+import hmac
 import secrets
 import sqlite3
 import time
@@ -131,11 +132,25 @@ def _error(status: int, message: str) -> Response:
 
 
 class AuthMiddleware:
-    """Origin check on writes; 401 JSON on /api/* without a session (auth and health excepted)."""
+    """Origin check on writes; 401 JSON on /api/* without a session (auth and health excepted).
 
-    def __init__(self, app: ASGIApp, conn: sqlite3.Connection) -> None:
+    `/api/agent/*` is the one exception: it takes `Authorization: Bearer <WA_APP_AGENT_TOKEN>` instead of a session
+    and skips the Origin check (a bearer token is not attached by browsers on their own, so CSRF does not apply).
+    With no token configured those paths answer 404, as if the feature did not exist."""
+
+    def __init__(self, app: ASGIApp, conn: sqlite3.Connection, agent_token: str | None = None) -> None:
         self.app = app
         self.conn = conn
+        self.agent_token = agent_token
+
+    def _agent_response(self, request: Request) -> Response | None:
+        """None when the caller may proceed to an agent route."""
+        if not self.agent_token:
+            return _error(404, "Not found")
+        scheme, _, given = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(given.encode(), self.agent_token.encode()):
+            return _error(401, "Bad token")
+        return None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -143,6 +158,13 @@ class AuthMiddleware:
             return
         request = Request(scope)
         path = request.url.path
+        if path.startswith("/api/agent/"):
+            refused = self._agent_response(request)
+            if refused is not None:
+                await refused(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
         if request.method not in _SAFE_METHODS and not origin_ok(request):
             await _error(403, "Bad origin")(scope, receive, send)
             return
