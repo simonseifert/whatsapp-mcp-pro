@@ -36,6 +36,8 @@ type Client struct {
 	logger waLog.Logger
 	cfg    *config.Config
 
+	appStateSyncing atomic.Bool // guards StartAppStateFullSync
+
 	// Connection state tracking
 	connMu              sync.RWMutex
 	startedAt           time.Time
@@ -133,6 +135,10 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 	if client == nil {
 		return nil, fmt.Errorf("failed to create WhatsApp client")
 	}
+
+	// Replay stored pin, mute, archive and read state as events on a full app
+	// state sync (see Client.StartAppStateFullSync).
+	client.EmitAppStateEventsOnFullSync = true
 
 	antibanCfg := antiban.LoadConfig()
 	antibanInterceptor, antibanErr := antiban.NewSendInterceptor(antibanCfg)

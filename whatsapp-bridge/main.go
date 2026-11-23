@@ -129,6 +129,8 @@ func main() {
 	// Reachout timelock (WhatsApp error 463): restore persisted state, watch notifications.
 	client.EnableReachoutTracking(messageStore)
 
+	client.EnsureReadTrackingSince(messageStore)
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -183,6 +185,7 @@ func main() {
 			logger.Infof("✓ Connected to WhatsApp")
 			go fireConnectionEvent(webhookManager, client, "connected", "")
 			identitySyncer.Trigger()
+			client.StartAppStateFullSync(messageStore)
 
 			// If we were disconnected for >30s, attempt best-effort history backfill
 			// for recently active chats to recover any messages missed during the gap.

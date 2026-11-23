@@ -82,6 +82,7 @@ func (c *Client) HandleChatStateEvent(store *database.MessageStore, evt any) {
 			err = store.SetChatMarkedUnread(chat.String(), true, v.Timestamp)
 		}
 	case *events.Receipt:
+		c.recordPeerReceipt(store, v)
 		at, ok := ownReadReceipt(v)
 		if !ok || at.IsZero() { // never default a missing time to now
 			return
@@ -93,5 +94,39 @@ func (c *Client) HandleChatStateEvent(store *database.MessageStore, evt any) {
 	}
 	if err != nil {
 		c.logger.Warnf("Failed to store chat state for %s: %v", chat, err)
+	}
+}
+
+// peerReceiptStatus maps a receipt from someone else to a stored status.
+// Other types (read-self, sender, retry, ...) are not ticks.
+func peerReceiptStatus(r *events.Receipt) (int, bool) {
+	if r == nil || r.IsFromMe {
+		return 0, false
+	}
+	switch r.Type {
+	case types.ReceiptTypeDelivered:
+		return database.ReceiptDelivered, true
+	case types.ReceiptTypeRead:
+		return database.ReceiptRead, true
+	case types.ReceiptTypePlayed:
+		return database.ReceiptPlayed, true
+	}
+	return 0, false
+}
+
+// recordPeerReceipt stores a delivered, read or played receipt from another
+// person for each message id it covers.
+func (c *Client) recordPeerReceipt(store *database.MessageStore, r *events.Receipt) {
+	status, ok := peerReceiptStatus(r)
+	if !ok || len(r.MessageIDs) == 0 || r.Timestamp.IsZero() {
+		return
+	}
+	chat := c.NormalizeChatJID(r.Chat)
+	ids := make([]string, len(r.MessageIDs))
+	for i, id := range r.MessageIDs {
+		ids[i] = string(id)
+	}
+	if err := store.RecordMessageReceipts(chat.String(), r.Sender.ToNonAD().String(), ids, status, r.Timestamp); err != nil {
+		c.logger.Warnf("Failed to store receipt for %s: %v", chat, err)
 	}
 }
