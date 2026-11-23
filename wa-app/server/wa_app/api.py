@@ -13,10 +13,13 @@ from starlette.routing import Route
 
 from . import appdb, auth, live, media, sending, store, transcripts
 from .ai import config as ai_config
-from .ai import drafts
+from .ai import drafts, learning
 from .config import Settings
 
 MEDIA_RETRY_SECONDS = 6 * 3600
+
+
+MAX_FEEDBACK_NOTE = 300
 
 
 def _error(status: int, message: str) -> Response:
@@ -434,7 +437,28 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             drafts.dismiss(conn, draft_id)
         return Response(status_code=204)
 
+    async def draft_feedback(request: Request) -> Response:
+        try:
+            draft_id = int(request.path_params["id"])
+        except ValueError:
+            return _error(404, "Draft not found")
+        body = await body_of(request)
+        if not isinstance(body, dict) or "thumb" not in body:
+            return _error(422, "'thumb' (1, -1 or null) is required")
+        thumb, note = body["thumb"], body.get("note")
+        if thumb is not None and (isinstance(thumb, bool) or thumb not in (1, -1) or not isinstance(thumb, int)):
+            return _error(422, "'thumb' must be 1, -1 or null")
+        if note is not None and not isinstance(note, str):
+            return _error(422, "'note' must be text")
+        if note is not None and len(note) > MAX_FEEDBACK_NOTE:
+            return _error(422, f"'note' is limited to {MAX_FEEDBACK_NOTE} characters")
+        if drafts.get(conn, draft_id) is None:
+            return _error(404, "Draft not found")
+        await run_in_threadpool(learning.set_feedback, conn, draft_id, thumb, (note or "").strip() or None)
+        return Response(status_code=204)
+
     return [
+        Route("/api/drafts/{id}/feedback", draft_feedback, methods=["POST"]),
         Route("/api/drafts/{id}", draft_dismiss, methods=["DELETE"]),
         Route("/api/chats/{jid}/draft", chat_draft, methods=["GET", "POST"]),
         Route("/api/media/{chat}/{id}/thumb", media_thumb, methods=["GET"]),

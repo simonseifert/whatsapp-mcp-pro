@@ -144,7 +144,7 @@ def build_draft_prompt(
     if chat_ai.note and chat_ai.note.strip():
         system.append(f"About this chat: {_line(chat_ai.note, 400)}")
     if chat_ai.rules and chat_ai.rules.strip():
-        system.append("Rules for this chat (from the user):\n" + chat_ai.rules.strip().replace("`", _BACKTICK))
+        system.append("Style rules for this chat:\n" + chat_ai.rules.strip().replace("`", _BACKTICK))
     examples: list[str] = []
     if own := _own_replies(ro, chat_jid):
         examples += ["The user's own replies here (oldest first):", *(f"- {o}" for o in own)]

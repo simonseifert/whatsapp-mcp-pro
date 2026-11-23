@@ -383,11 +383,7 @@ def test_poller_hands_events_to_listeners(settings) -> None:
 
 
 def test_drafts_module_has_no_send_path() -> None:
-    code = (
-        "import sys, wa_app.ai.drafts\n"
-        "try:\n import wa_app.ai.learning\nexcept ImportError:\n pass\n"
-        "print('wa_app.sending' in sys.modules)"
-    )
+    code = "import sys, wa_app.ai.drafts\nimport wa_app.ai.learning\nprint('wa_app.sending' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
 

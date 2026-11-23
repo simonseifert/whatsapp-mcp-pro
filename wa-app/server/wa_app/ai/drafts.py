@@ -21,12 +21,12 @@ import sqlite3
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .. import appdb, live, store
 from ..config import Settings
-from . import backends, policy
+from . import backends, learning, policy
 from . import config as ai_config
 from . import prompt as prompts
 
@@ -37,6 +37,7 @@ DEBOUNCE_SECONDS = 20.0
 EXPIRY_SECONDS = 24 * 3600
 LOCAL_SLOTS = 1
 CLOUD_SLOTS = 3
+NIGHTLY_AT = (3, 30)  # local time of the nightly rules sweep
 GENERIC_ERROR = "Couldn't draft"
 _LIVE = ("pending", "ready", "failed")
 _QUOTE_MAX = 120
@@ -194,6 +195,7 @@ class DraftWorker:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         visible: Callable[[], int] = live.visible_clients,
         debounce: float = DEBOUNCE_SECONDS,
+        nightly_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.settings = settings
         self.hub = hub
@@ -203,14 +205,16 @@ class DraftWorker:
         self._sleep = sleep
         self._visible = visible
         self._debounce = debounce
+        self._nightly_sleep = nightly_sleep
+        self._distills: dict[str, asyncio.Task[None]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._inbox: asyncio.Queue[_Candidate] | None = None
         self._jobs: dict[str, _Job] = {}
         self._local = asyncio.Semaphore(LOCAL_SLOTS)
         self._cloud = asyncio.Semaphore(CLOUD_SLOTS)
         self._consuming = False
-        # Seam for outcome learning (Task 5): called on the event loop with (chat_jid, message dict) for every own
-        # message the poller reports, whatever device it was sent from.
+        # Extra observers, called on the event loop with (chat_jid, message dict) for every own message the poller
+        # reports, whatever device it was sent from. Outcome learning itself is built in (`_own_message`).
         self.own_message_listeners: list[Callable[[str, dict[str, Any]], None]] = []
 
     # -- entry from the poller thread
@@ -237,6 +241,7 @@ class DraftWorker:
         self._inbox = asyncio.Queue()
         with appdb.db_lock:  # rows a previous process left pending will never finish
             self._appconn.execute("UPDATE drafts SET status='superseded' WHERE status='pending'")
+        nightly = asyncio.get_running_loop().create_task(self._nightly())
         try:
             while True:
                 candidate = await self._inbox.get()
@@ -250,10 +255,14 @@ class DraftWorker:
                 finally:
                     self._consuming = False
         finally:
+            nightly.cancel()
             self.close()
 
     def close(self) -> None:
-        """Cancel running drafts; their rows stop being pending. Safe to call twice."""
+        """Cancel running drafts and distills; their rows stop being pending. Safe to call twice."""
+        for task in list(self._distills.values()):
+            task.cancel()
+        self._distills.clear()
         for job in list(self._jobs.values()):
             self._cancel(job, publish=False)
         self._jobs.clear()
@@ -262,6 +271,7 @@ class DraftWorker:
         """Returns when nothing is queued or running (for tests and orderly shutdown)."""
         while True:
             tasks = [j.task for j in self._jobs.values() if j.task is not None and not j.task.done()]
+            tasks += [t for t in self._distills.values() if not t.done()]
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
                 continue
@@ -283,6 +293,7 @@ class DraftWorker:
                     listener(candidate.chat_jid, message)
                 except Exception as exc:
                     logger.error("own-message listener failed (%s)", type(exc).__name__)
+            await self._own_message(candidate.chat_jid, message)
             return
         if mid.startswith("import-") or message.get("system") or message.get("deleted"):
             return
@@ -291,6 +302,69 @@ class DraftWorker:
             return  # the bridge re-inserted the same message (INSERT OR REPLACE): not a new trigger
         if await asyncio.to_thread(self._eligible, candidate):
             self._start(candidate.chat_jid, mid, manual=False)
+
+    # -- outcomes and rules
+
+    async def _own_message(self, chat_jid: str, message: dict[str, Any]) -> None:
+        """The user replied (from any device): record the outcome, drop the chat's card and stop its running draft."""
+        text, mid = message.get("text"), message.get("id")
+        if not isinstance(text, str) or not text.strip() or not isinstance(mid, str):
+            return
+        stamp = store.parse_ts(message["timestamp_iso"]) if isinstance(message.get("timestamp_iso"), str) else None
+        sent_at = stamp.timestamp() if stamp else self._now()
+        try:
+            had_card, kind = await asyncio.to_thread(self._learn, chat_jid, mid, text, sent_at)
+        except Exception as exc:
+            logger.error("outcome failed (%s)", type(exc).__name__)
+            return
+        job = self._jobs.get(chat_jid)
+        if job is not None:
+            self._cancel(job, publish=False)  # the user got there first
+            had_card = True
+        if had_card:
+            self._publish(chat_jid, None)
+        if kind in ("used", "edited") and await asyncio.to_thread(
+            learning.pending_outcomes, self._appconn, chat_jid
+        ) >= (learning.DISTILL_AT):
+            self._schedule_distill(chat_jid)
+
+    def _learn(self, chat_jid: str, mid: str, text: str, sent_at: float) -> tuple[bool, str | None]:
+        had_card = current(self._appconn, chat_jid, now=self._now()) is not None
+        return had_card, learning.record_own_message(self._appconn, chat_jid, mid, text, sent_at)
+
+    def _schedule_distill(self, chat_jid: str) -> None:
+        """At most one distill per chat at a time."""
+        running = self._distills.get(chat_jid)
+        if running is not None and not running.done():
+            return
+        task = asyncio.get_running_loop().create_task(self._distill(chat_jid))
+        self._distills[chat_jid] = task
+
+        def forget(done: "asyncio.Task[None]") -> None:
+            if self._distills.get(chat_jid) is done:
+                del self._distills[chat_jid]
+
+        task.add_done_callback(forget)
+
+    async def _distill(self, chat_jid: str) -> None:
+        async def limited(
+            cfg: ai_config.BackendCfg, secret: str | None, prompt: backends.Prompt, settings: Settings
+        ) -> str:
+            local = await asyncio.to_thread(policy.is_local, cfg)
+            async with self._local if local else self._cloud:
+                return await self._complete(cfg, secret, prompt, settings)
+
+        await learning.distill(self.settings, self._appconn, chat_jid, complete=limited)
+
+    async def _nightly(self) -> None:
+        """Every night at 03:30 local: distill the chats that have new outcomes since their last distill."""
+        while True:
+            await self._nightly_sleep(_seconds_until_nightly(self._now()))
+            try:
+                for chat_jid in await asyncio.to_thread(learning.chats_with_new_outcomes, self._appconn):
+                    self._schedule_distill(chat_jid)
+            except Exception as exc:
+                logger.error("nightly sweep failed (%s)", type(exc).__name__)
 
     def _eligible(self, candidate: _Candidate) -> bool:
         """The trigger rules (blocking: reads app.db and the bridge store)."""
@@ -466,6 +540,14 @@ class DraftWorker:
 
     def _publish(self, chat_jid: str, view: DraftView | None) -> None:
         self.hub.publish("draft", {"chat_jid": chat_jid, "draft": asdict(view) if view else None})
+
+
+def _seconds_until_nightly(now: float) -> float:
+    local = datetime.fromtimestamp(now)
+    target = local.replace(hour=NIGHTLY_AT[0], minute=NIGHTLY_AT[1], second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return (target - local).total_seconds()
 
 
 def _i_am_admin(ro: sqlite3.Connection, chat_jid: str) -> bool:

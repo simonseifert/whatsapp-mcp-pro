@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from . import appdb, mcp_lib, store, unread
+from .ai import learning
 from .config import Settings
 
 logger = logging.getLogger("wa_app.sending")
@@ -244,6 +245,9 @@ def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: o
         return _bad("Message too long")
     if reply_to is not None and not isinstance(reply_to, str):
         return _bad("Bad reply_to")
+    draft_id = body.get("draft_id")  # a hint for outcome learning; it never changes what is sent
+    if draft_id is not None and (not isinstance(draft_id, int) or isinstance(draft_id, bool)):
+        return _bad("Bad draft_id")
     ro = store.open_ro(settings)
     try:
         with appdb.db_lock:
@@ -259,6 +263,8 @@ def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: o
         ro.close()
     # The canonical jid the list uses (the phone form when known), never a bare LID that may be unmapped.
     # A retry keeps the recipient of the first attempt: the bridge scopes the key to endpoint + recipient.
+    if draft_id is not None:
+        learning.set_hint(chat.jid, draft_id)  # set before the send: the poller may report the message first
     result = _call(
         mcp_lib.send_message,
         _recipient_for(appconn, key, chat.jid),
@@ -267,6 +273,8 @@ def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: o
         idempotency_key=key,
     )
     if not result.get("success"):
+        if draft_id is not None:
+            learning.clear_hint(chat.jid, draft_id)
         return map_failure(result)
     return Outcome(200, {"ok": True, "message_id": result.get("message_id")})
 
