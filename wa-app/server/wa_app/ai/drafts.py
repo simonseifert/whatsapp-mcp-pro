@@ -174,6 +174,7 @@ class _Job:
     trigger_id: str
     task: "asyncio.Task[None] | None" = None
     draft_id: int | None = None
+    trigger_at: float = 0.0  # when the trigger message was sent: an older own row cannot be a reply to it
 
 
 @dataclass
@@ -302,7 +303,11 @@ class DraftWorker:
         if running and running.trigger_id == mid and running.task and not running.task.done():
             return  # the bridge re-inserted the same message (INSERT OR REPLACE): not a new trigger
         if await asyncio.to_thread(self._eligible, candidate):
-            self._start(candidate.chat_jid, mid, manual=False)
+            raw = message.get("timestamp_iso")
+            stamp = store.parse_ts(raw) if isinstance(raw, str) else None
+            self._start(
+                candidate.chat_jid, mid, manual=False, trigger_at=stamp.timestamp() if stamp else candidate.received
+            )
 
     # -- outcomes and rules
 
@@ -319,7 +324,7 @@ class DraftWorker:
             logger.error("outcome failed (%s)", type(exc).__name__)
             return
         job = self._jobs.get(chat_jid)
-        if job is not None:
+        if job is not None and sent_at >= job.trigger_at - learning._SLACK:  # older: a re-delivered row, not a reply
             self._cancel(job, publish=False)  # the user got there first
             changed = True
         if changed:
@@ -418,7 +423,10 @@ class DraftWorker:
             with appdb.db_lock:
                 backend = ai_config.effective_backend(self._appconn, chat_jid)
             draft_id = _create(self._appconn, chat_jid, message.id, backend.id if backend else None, self._now())
-            self._start(chat_jid, message.id, manual=True, draft_id=draft_id)
+            stamp = store.parse_ts(message.timestamp_iso)
+            self._start(
+                chat_jid, message.id, manual=True, draft_id=draft_id, trigger_at=stamp.timestamp() if stamp else 0.0
+            )
             view = get(self._appconn, draft_id, ro)  # with the quote, like the SSE event
         finally:
             ro.close()
@@ -444,11 +452,13 @@ class DraftWorker:
 
     # -- jobs
 
-    def _start(self, chat_jid: str, trigger_id: str, *, manual: bool, draft_id: int | None = None) -> _Job:
+    def _start(
+        self, chat_jid: str, trigger_id: str, *, manual: bool, draft_id: int | None = None, trigger_at: float = 0.0
+    ) -> _Job:
         old = self._jobs.get(chat_jid)
         if old is not None:
             self._cancel(old, publish=True)
-        job = _Job(chat_jid, trigger_id, draft_id=draft_id)
+        job = _Job(chat_jid, trigger_id, draft_id=draft_id, trigger_at=trigger_at)
         self._jobs[chat_jid] = job
         job.task = asyncio.get_running_loop().create_task(self._job(job, manual))
         if draft_id is not None:

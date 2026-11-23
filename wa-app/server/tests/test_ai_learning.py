@@ -440,3 +440,30 @@ def test_rejected_hint_is_kept_and_stale_feedback_pruned(settings) -> None:
     learning.prune_feedback(conn, time.time())
     keys = {r[0] for r in conn.execute("SELECT key FROM meta WHERE key LIKE 'draft_feedback:%'")}
     assert keys == {f"draft_feedback:{fresh}"}
+
+
+def test_old_own_row_does_not_cancel_a_newer_draft(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        rig.visible_now = 0  # closed app: the job waits in its debounce
+        rig.sleep_gate = asyncio.Event()
+        _insert(settings, ANA, "N1")
+        rig.worker.on_events([_event(ANA, "N1")])
+        await asyncio.sleep(0.05)
+        assert rig.sleeps == [20.0] and rig.rows() == []
+        rig.events()
+        old = live.Event("message", {"chat_jid": ANA, "message": {
+            "id": "OLD", "from_me": True, "text": "Stara poruka", "timestamp_iso": _ts(60)}})  # fmt: skip
+        await feed_nowait(rig, old)
+        assert rig.events() == []
+        rig.sleep_gate.set()
+        await rig.worker.idle()
+        assert rig.rows() == [("ready", None)] and len(rig.fake.calls) == 1
+        assert rig.events()[-1]["draft"]["status"] == "ready"
+
+    _run(settings, scenario)
+
+
+async def feed_nowait(rig, *events) -> None:
+    rig.worker.on_events(list(events))
+    await asyncio.sleep(0.05)
