@@ -1,97 +1,81 @@
-import { useEffect, useState } from "react";
-import {
-  apiFetch,
-  deleteBackend,
-  fetchBackends,
-  saveBackend,
-  setDefaultBackend,
-  testBackend,
-} from "../api";
-import type { BackendCfg, BackendInput, BackendTestResult } from "../api-types";
-import { BackendForm } from "../components/BackendForm";
-import { UpdateRow } from "../components/UpdateRow";
-import { readTheme, saveTheme, THEMES, type ThemePref } from "../theme";
+import { useEffect, useState } from 'react'
+import { apiFetch, deleteBackend, fetchBackends, saveBackend, setDefaultBackend, testBackend } from '../api'
+import type { BackendCfg, BackendInput, BackendTestResult } from '../api-types'
+import { BackendForm } from '../components/BackendForm'
+import { UpdateRow } from '../components/UpdateRow'
+import { readTheme, saveTheme, THEMES, type ThemePref } from '../theme'
 
-const KIND_LABEL: Record<BackendCfg["kind"], string> = {
-  claude_cli: "Claude CLI",
-  openai: "OpenAI-compatible",
-  anthropic: "Anthropic API",
-};
+const KIND_LABEL: Record<BackendCfg['kind'], string> = {
+  claude_cli: 'Claude CLI',
+  openai: 'OpenAI-compatible',
+  anthropic: 'Anthropic API',
+}
 
 function secondsLine(ms: number): string {
-  return `${(ms / 1000).toFixed(1)} s`;
+  return `${(ms / 1000).toFixed(1)} s`
 }
 
 /** The AIs that write drafts: add, edit, test, pick the default, delete. Keys go in and never come back out. */
 function AiSection() {
-  const [backends, setBackends] = useState<BackendCfg[] | null>(null);
-  const [defaultId, setDefaultId] = useState<number | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [editing, setEditing] = useState<BackendCfg | "new" | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [results, setResults] = useState<
-    Record<number, BackendTestResult | "running">
-  >({});
-  const [deleting, setDeleting] = useState<number | null>(null);
+  const [backends, setBackends] = useState<BackendCfg[] | null>(null)
+  const [defaultId, setDefaultId] = useState<number | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [editing, setEditing] = useState<BackendCfg | 'new' | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [results, setResults] = useState<Record<number, BackendTestResult | 'running'>>({})
+  const [deleting, setDeleting] = useState<number | null>(null)
 
   useEffect(() => {
-    let live = true;
+    let live = true
     fetchBackends()
       .then((r) => {
-        if (!live) return;
-        setBackends(r.backends);
-        setDefaultId(r.default_id);
+        if (!live) return
+        setBackends(r.backends)
+        setDefaultId(r.default_id)
       })
-      .catch(() => live && setLoadFailed(true));
+      .catch(() => live && setLoadFailed(true))
     return () => {
-      live = false;
-    };
-  }, []);
+      live = false
+    }
+  }, [])
 
-  const fail = (err: unknown, fallback: string) =>
-    setError(err instanceof Error ? err.message : fallback);
+  const fail = (err: unknown, fallback: string) => setError(err instanceof Error ? err.message : fallback)
 
   async function save(input: BackendInput) {
-    setSaving(true);
-    setFormError(null);
+    setSaving(true)
+    setFormError(null)
     try {
-      const saved = await saveBackend(input);
+      const saved = await saveBackend(input)
       setBackends((list) => {
-        const rest = list ?? [];
-        return rest.some((b) => b.id === saved.id)
-          ? rest.map((b) => (b.id === saved.id ? saved : b))
-          : [...rest, saved];
-      });
-      setResults((r) =>
-        Object.fromEntries(
-          Object.entries(r).filter(([id]) => Number(id) !== saved.id),
-        ),
-      ); // an edit makes the last test stale
-      setEditing(null);
+        const rest = list ?? []
+        return rest.some((b) => b.id === saved.id) ? rest.map((b) => (b.id === saved.id ? saved : b)) : [...rest, saved]
+      })
+      setResults((r) => Object.fromEntries(Object.entries(r).filter(([id]) => Number(id) !== saved.id))) // an edit makes the last test stale
+      setEditing(null)
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Couldn't save");
+      setFormError(err instanceof Error ? err.message : "Couldn't save")
     } finally {
-      setSaving(false);
+      setSaving(false)
     }
   }
 
   async function makeDefault(id: number) {
-    setError(null);
+    setError(null)
     try {
-      await setDefaultBackend(id);
-      setDefaultId(id);
+      await setDefaultBackend(id)
+      setDefaultId(id)
     } catch (err) {
-      fail(err, "Couldn't change the default");
+      fail(err, "Couldn't change the default")
     }
   }
 
   async function test(id: number) {
-    setResults((r) => ({ ...r, [id]: "running" }));
+    setResults((r) => ({ ...r, [id]: 'running' }))
     try {
-      const result = await testBackend(id);
-      setResults((r) => ({ ...r, [id]: result }));
+      const result = await testBackend(id)
+      setResults((r) => ({ ...r, [id]: result }))
     } catch (err) {
       setResults((r) => ({
         ...r,
@@ -100,19 +84,19 @@ function AiSection() {
           ms: 0,
           error: err instanceof Error ? err.message : "Couldn't test",
         },
-      }));
+      }))
     }
   }
 
   async function remove(id: number) {
-    setError(null);
+    setError(null)
     try {
-      await deleteBackend(id);
-      setBackends((list) => (list ?? []).filter((b) => b.id !== id));
-      setDefaultId((d) => (d === id ? null : d));
-      setDeleting(null);
+      await deleteBackend(id)
+      setBackends((list) => (list ?? []).filter((b) => b.id !== id))
+      setDefaultId((d) => (d === id ? null : d))
+      setDeleting(null)
     } catch (err) {
-      fail(err, "Couldn't delete");
+      fail(err, "Couldn't delete")
     }
   }
 
@@ -121,24 +105,22 @@ function AiSection() {
       <div className="settings-label">AI</div>
       {loadFailed && <p className="form-error">Couldn&apos;t load your AIs.</p>}
       {backends?.length === 0 && editing === null && (
-        <p className="settings-about">
-          No AI yet. Add one to get drafted replies.
-        </p>
+        <p className="settings-about">No AI yet. Add one to get drafted replies.</p>
       )}
       <ul className="ai-list">
         {(backends ?? []).map((b) => {
-          const result = results[b.id];
+          const result = results[b.id]
           return (
             <li key={b.id} className="ai-item">
-              {editing !== null && editing !== "new" && editing.id === b.id ? (
+              {editing !== null && editing !== 'new' && editing.id === b.id ? (
                 <BackendForm
                   backend={b}
                   saving={saving}
                   error={formError}
                   onSave={save}
                   onCancel={() => {
-                    setEditing(null);
-                    setFormError(null);
+                    setEditing(null)
+                    setFormError(null)
                   }}
                 />
               ) : (
@@ -157,7 +139,7 @@ function AiSection() {
                         {KIND_LABEL[b.kind]} · {b.model}
                         {b.has_key && (
                           <>
-                            {" "}
+                            {' '}
                             · <span>Key saved</span>
                           </>
                         )}
@@ -169,36 +151,28 @@ function AiSection() {
                       className="button-text"
                       type="button"
                       aria-label={`Test ${b.label}`}
-                      disabled={result === "running"}
+                      disabled={result === 'running'}
                       onClick={() => void test(b.id)}
                     >
-                      {result === "running" ? "Testing…" : "Test"}
+                      {result === 'running' ? 'Testing…' : 'Test'}
                     </button>
                     <button
                       className="button-text"
                       type="button"
                       aria-label={`Edit ${b.label}`}
                       onClick={() => {
-                        setFormError(null);
-                        setEditing(b);
+                        setFormError(null)
+                        setEditing(b)
                       }}
                     >
                       Edit
                     </button>
                     {deleting === b.id ? (
                       <>
-                        <button
-                          className="button-text danger"
-                          type="button"
-                          onClick={() => void remove(b.id)}
-                        >
+                        <button className="button-text danger" type="button" onClick={() => void remove(b.id)}>
                           Yes, delete
                         </button>
-                        <button
-                          className="button-text"
-                          type="button"
-                          onClick={() => setDeleting(null)}
-                        >
+                        <button className="button-text" type="button" onClick={() => setDeleting(null)}>
                           Cancel
                         </button>
                       </>
@@ -213,7 +187,7 @@ function AiSection() {
                       </button>
                     )}
                   </div>
-                  {result && result !== "running" && (
+                  {result && result !== 'running' && (
                     <div className="ai-result" role="status">
                       {result.ok ? (
                         <>
@@ -228,18 +202,18 @@ function AiSection() {
                 </>
               )}
             </li>
-          );
+          )
         })}
       </ul>
       {error && <p className="form-error">{error}</p>}
-      {editing === "new" ? (
+      {editing === 'new' ? (
         <BackendForm
           saving={saving}
           error={formError}
           onSave={save}
           onCancel={() => {
-            setEditing(null);
-            setFormError(null);
+            setEditing(null)
+            setFormError(null)
           }}
         />
       ) : (
@@ -248,8 +222,8 @@ function AiSection() {
             className="button-text"
             type="button"
             onClick={() => {
-              setFormError(null);
-              setEditing("new");
+              setFormError(null)
+              setEditing('new')
             }}
           >
             Add an AI
@@ -257,31 +231,27 @@ function AiSection() {
         </div>
       )}
     </div>
-  );
+  )
 }
 
-export function Settings({
-  onLogout,
-}: {
-  onLogout: (everywhere: boolean) => void;
-}) {
-  const [theme, setTheme] = useState<ThemePref>(readTheme);
-  const [version, setVersion] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void }) {
+  const [theme, setTheme] = useState<ThemePref>(readTheme)
+  const [version, setVersion] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
 
   useEffect(() => {
-    let live = true;
-    apiFetch<{ version: string }>("/api/about")
+    let live = true
+    apiFetch<{ version: string }>('/api/about')
       .then((about) => live && setVersion(about.version))
-      .catch(() => undefined); // the version line is a courtesy; it stays out when the server does not answer
+      .catch(() => undefined) // the version line is a courtesy; it stays out when the server does not answer
     return () => {
-      live = false;
-    };
-  }, []);
+      live = false
+    }
+  }, [])
 
   function choose(next: ThemePref) {
-    setTheme(next);
-    saveTheme(next);
+    setTheme(next)
+    saveTheme(next)
   }
 
   return (
@@ -295,13 +265,7 @@ export function Settings({
           <div className="segmented">
             {THEMES.map((t) => (
               <label key={t.value}>
-                <input
-                  type="radio"
-                  name="theme"
-                  value={t.value}
-                  checked={theme === t.value}
-                  onChange={() => choose(t.value)}
-                />
+                <input type="radio" name="theme" value={t.value} checked={theme === t.value} onChange={() => choose(t.value)} />
                 {t.label}
               </label>
             ))}
@@ -310,39 +274,21 @@ export function Settings({
         <div className="settings-group">
           <div className="settings-label">Session</div>
           <div className="settings-actions">
-            <button
-              className="button-text"
-              type="button"
-              onClick={() => onLogout(false)}
-            >
+            <button className="button-text" type="button" onClick={() => onLogout(false)}>
               Log out
             </button>
             {confirming ? (
               <>
-                <p className="settings-about">
-                  This ends every signed-in session, on every device.
-                </p>
-                <button
-                  className="button-text danger"
-                  type="button"
-                  onClick={() => onLogout(true)}
-                >
+                <p className="settings-about">This ends every signed-in session, on every device.</p>
+                <button className="button-text danger" type="button" onClick={() => onLogout(true)}>
                   Yes, log out everywhere
                 </button>
-                <button
-                  className="button-text"
-                  type="button"
-                  onClick={() => setConfirming(false)}
-                >
+                <button className="button-text" type="button" onClick={() => setConfirming(false)}>
                   Cancel
                 </button>
               </>
             ) : (
-              <button
-                className="button-text danger"
-                type="button"
-                onClick={() => setConfirming(true)}
-              >
+              <button className="button-text danger" type="button" onClick={() => setConfirming(true)}>
                 Log out everywhere
               </button>
             )}
@@ -353,5 +299,5 @@ export function Settings({
         {version && <p className="settings-about">wa-app {version}</p>}
       </div>
     </div>
-  );
+  )
 }

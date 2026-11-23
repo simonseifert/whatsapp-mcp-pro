@@ -96,4 +96,19 @@ describe('BackendForm key', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(onSave).not.toHaveBeenCalled()
   })
+
+  it('opens an openai backend with no URL as OpenAI-compatible, not the CLI preset', () => {
+    render(<BackendForm backend={{ ...saved, kind: 'openai', base_url: null, has_key: false }} onSave={vi.fn()} onCancel={() => {}} />)
+    expect((screen.getByLabelText('Type') as HTMLSelectElement).value).toBe('OpenAI-compatible')
+  })
+
+  it('switching a keyed backend to the Claude CLI says Save removes the key, and sends api_key ""', () => {
+    const onSave = vi.fn()
+    render(<BackendForm backend={saved} onSave={onSave} onCancel={() => {}} />)
+    expect(screen.queryByText('Saving removes the saved key.')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'Claude (claude CLI)' } })
+    expect(screen.getByText('Saving removes the saved key.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onSave.mock.calls[0]![0]).toMatchObject({ id: 7, kind: 'claude_cli', model: 'sonnet', api_key: '' })
+  })
 })

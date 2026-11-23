@@ -56,3 +56,22 @@ def test_unknown_id_login_and_origin(client: TestClient) -> None:
     assert client.post("/api/ai/backends/1/test", headers={"Origin": "https://evil.example"}).status_code == 403
     assert client.post("/api/ai/backends/999/test").status_code == 404
     assert client.post("/api/ai/backends/abc/test").status_code == 404
+
+
+def test_unreadable_saved_key_is_a_failure(logged_in: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from wa_app.ai import config
+
+    backend_id = _make(logged_in)
+
+    def broken(*a, **kw):  # noqa: ANN002, ANN003
+        raise ValueError(f"bad token {SECRET}")
+
+    async def never(*a, **kw):  # noqa: ANN002, ANN003
+        raise AssertionError("must not call the AI")
+
+    monkeypatch.setattr(config, "backend_secret", broken)
+    monkeypatch.setattr(backends, "complete", never)
+    resp = logged_in.post(f"/api/ai/backends/{backend_id}/test")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": False, "ms": 0, "error": "Couldn't read the saved key"}
+    assert SECRET not in resp.text

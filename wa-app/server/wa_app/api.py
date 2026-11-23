@@ -364,8 +364,11 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         cfg = ai_config.get_backend(conn, backend_id)
         if cfg is None:
             return _error(404, "Backend not found")
-        secret = ai_config.backend_secret(conn, settings, backend_id)
         started = time.monotonic()
+        try:
+            secret = ai_config.backend_secret(conn, settings, backend_id)
+        except Exception:  # noqa: BLE001 - e.g. the key file changed; the cause could name key material
+            return JSONResponse({"ok": False, "ms": 0, "error": "Couldn't read the saved key"})
         try:
             raw = await ai_llm.complete(cfg, secret, TEST_PROMPT, settings, timeout=60)
             sample = ai_llm.parse_alternatives(raw)[0]
