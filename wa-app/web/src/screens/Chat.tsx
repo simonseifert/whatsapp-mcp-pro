@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import type { DraftView, MessageView, QuoteView } from '../api-types'
 import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
+import { ChatMenu } from '../components/ChatMenu'
 import { ChatAiSheet } from '../components/ChatAiSheet'
 import { Composer, type ComposerHandle } from '../components/Composer'
 import { DraftCard } from '../components/DraftCard'
@@ -86,12 +87,14 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const chatJid = detail?.chat.jid ?? jid
   const composer = useRef<ComposerHandle>(null)
   const { draft, error: draftError, request: requestDraft, dismiss: dismissDraft } = useDraft(jid)
-  // The draft whose text went into the composer: its card is gone, and the next send carries its id as a hint.
+  // The draft whose text is in the composer: the next send carries its id as a hint, until the box is emptied.
+  // Its card is hidden (not dismissed) so the server can still learn from the outcome.
   const [usedDraft, setUsedDraft] = useState<number | null>(null)
+  const [hiddenDraft, setHiddenDraft] = useState<number | null>(null)
   const [replacing, setReplacing] = useState<{ draft: DraftView; text: string } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
-  const card = draft && draft.id !== usedDraft && ['pending', 'ready', 'failed'].includes(draft.status) ? draft : null
+  const card = draft && draft.id !== hiddenDraft && ['pending', 'ready', 'failed'].includes(draft.status) ? draft : null
   useEffect(() => reconcile(jid, messages), [jid, messages])
   // The loaded messages with my optimistic reactions applied, then the texts still on their way out.
   const shown = useMemo(
@@ -123,6 +126,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   function applyDraft(d: DraftView, text: string) {
     setReplacing(null)
     setUsedDraft(d.id)
+    setHiddenDraft(d.id)
     if (d.quote) setReplyTo(messages.find((m) => m.id === d.quote?.id) ?? viewFromQuote(d.quote, chatJid))
     composer.current?.fill(text)
   }
@@ -262,28 +266,13 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
         </div>
       )}
       {menuOpen && (
-        <div className="menu-wrap">
-          <button
-            className="menu-backdrop"
-            type="button"
-            aria-label="Close menu"
-            onClick={() => setMenuOpen(false)}
-            tabIndex={-1}
-          />
-          <div className="menu" role="dialog" aria-label="Chat actions">
-            <button
-              className="menu-item"
-              type="button"
-              onClick={() => {
-                setMenuOpen(false)
-                setAiOpen(true)
-              }}
-            >
-              <Icon name="sparkle" size={20} />
-              AI drafts
-            </button>
-          </div>
-        </div>
+        <ChatMenu
+          onClose={() => setMenuOpen(false)}
+          onAi={() => {
+            setMenuOpen(false)
+            setAiOpen(true)
+          }}
+        />
       )}
       {aiOpen && <ChatAiSheet jid={chatJid} onClose={() => setAiOpen(false)} />}
       {menuMessage && (
@@ -335,10 +324,14 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             draft={card}
             name={chat?.name ?? ''}
             onUse={(text) => chooseDraft(card, text)}
-            onDismiss={dismissDraft}
+            onDismiss={() => {
+              setUsedDraft(null)
+              setReplacing(null)
+              dismissDraft()
+            }}
             onRetry={() => void requestDraft(card.trigger_id)}
           />
-          {replacing && (
+          {replacing && replacing.draft.id === card.id && (
             <p className="draft-confirm" role="alertdialog" aria-label="Replace your text?">
               <span>Replace your text?</span>
               <button className="button-text" type="button" onClick={() => applyDraft(replacing.draft, replacing.text)}>
@@ -362,6 +355,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
           onSend={send}
+          onTextChange={(t) => t.trim() === '' && setUsedDraft(null)}
           onDraft={() => void requestDraft()}
           drafting={card?.status === 'pending'}
         />

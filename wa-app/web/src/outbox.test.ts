@@ -180,11 +180,11 @@ describe('outbox', () => {
 })
 
 describe('outbox draft_id', () => {
+  afterEach(() => vi.restoreAllMocks())
   it('passes the draft id to the send call as a hint', async () => {
     resetOutbox()
     const send = vi.spyOn(api, 'sendMessage').mockResolvedValue(ok)
     await sendText(JID, 'Bok', null, 7)
     expect(send).toHaveBeenCalledWith(JID, 'Bok', null, expect.any(String), 7)
-    vi.restoreAllMocks()
   })
 })

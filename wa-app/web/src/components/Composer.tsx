@@ -18,6 +18,8 @@ type Props = {
   ref?: Ref<ComposerHandle>
   /** Ask for a one-off draft; the button is absent without it. */
   onDraft?: () => void
+  /** The box's text changed (typing, clearing, a draft filled in, or a send emptied it). */
+  onTextChange?: (text: string) => void
   drafting?: boolean
 }
 
@@ -48,7 +50,7 @@ function useKeyboardInset(target: React.RefObject<HTMLElement | null>) {
 }
 
 /** The message box: a pill, 16 px text, 44 px targets. Attach is a placeholder until a later version; no mic in M1. */
-export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, drafting }: Props) {
+export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, drafting, onTextChange }: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
@@ -77,10 +79,11 @@ export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, draftin
       fill: (value) => {
         current.current = value
         setText(value)
+        onTextChange?.(value)
         box.current?.focus()
       },
     }),
-    [],
+    [onTextChange],
   )
 
   const tooLong = text.length > MAX_TEXT
@@ -89,6 +92,7 @@ export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, draftin
   function submit() {
     if (!canSend) return
     onSend(text)
+    onTextChange?.('')
     setText('') // synchronous: a second tap or Enter finds an empty box and sends nothing
     box.current?.focus()
   }
@@ -148,7 +152,10 @@ export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, draftin
           placeholder="Message"
           aria-label="Message"
           enterKeyHint="enter"
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            onTextChange?.(e.target.value)
+          }}
           onKeyDown={onKeyDown}
         />
         {canSend && (

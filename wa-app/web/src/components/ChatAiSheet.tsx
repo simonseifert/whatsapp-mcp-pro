@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fetchBackends, fetchChatAi, saveChatAi } from '../api'
 import type { BackendCfg, BackendsResponse, ChatAi } from '../api-types'
 import { Icon } from './Icon'
+import { useDialog } from './useDialog'
 
 const MAX_NOTE = 500
 const MAX_RULES = 2000
@@ -59,14 +60,16 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
     }
   }, [jid])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const dialog = useRef<HTMLDivElement>(null)
+  useDialog(dialog, onClose)
 
   const defaultBackend = backends.backends.find((b) => b.id === backends.default_id)
   const defaultCloud = defaultBackend ? isCloud(defaultBackend) : false
+
+  const hasLocal = backends.backends.some((b) => !isCloud(b)) || (defaultBackend !== undefined && !defaultCloud)
+  // Local only with a cloud (or no) backend would only fail when drafting: refuse to save it.
+  const chosen = form ? backends.backends.find((b) => String(b.id) === form.backend) : undefined
+  const cloudChoice = form?.localOnly === true && (chosen ? isCloud(chosen) : defaultCloud || !defaultBackend)
 
   function setLocalOnly(on: boolean) {
     setForm((f) => {
@@ -102,7 +105,7 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
   return (
     <div className="menu-wrap sheet-wrap">
       <button className="menu-backdrop" type="button" aria-label="Close" onClick={onClose} tabIndex={-1} />
-      <div className="sheet" role="dialog" aria-label="AI in this chat">
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="AI in this chat" ref={dialog}>
         <header className="sheet-head">
           <h2>
             <Icon name="sparkle" size={18} /> AI in this chat
@@ -171,8 +174,9 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
                 onChange={(e) => setForm({ ...form, rules: e.target.value })}
               />
             </label>
+            {form.localOnly && !hasLocal && <p role="alert">Add a local AI in Settings first</p>}
             {saveError && <p role="alert">{saveError}</p>}
-            <button className="sheet-save" type="button" disabled={saving} onClick={() => void save()}>
+            <button className="sheet-save" type="button" disabled={saving || cloudChoice} onClick={() => void save()}>
               Save
             </button>
           </>

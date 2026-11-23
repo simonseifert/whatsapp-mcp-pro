@@ -40,6 +40,13 @@ describe('useDraft', () => {
     expect(result.current.draft).toBeNull()
   })
 
+  it('ignores a draft event for a different chat', async () => {
+    const { result } = renderHook(() => useDraft(JID))
+    await waitFor(() => expect(result.current.draft?.id).toBe(1))
+    act(() => emit({ name: 'draft', data: { chat_jid: 'other@s.whatsapp.net', draft: null } }))
+    expect(result.current.draft?.id).toBe(1)
+  })
+
   it('request() posts for a one-off draft and shows it; a 404 becomes a brief error', async () => {
     vi.spyOn(api, 'fetchDraft').mockResolvedValue(null)
     const post = vi.spyOn(api, 'requestDraft').mockResolvedValueOnce(draft(3, { status: 'pending', alternatives: [] }))

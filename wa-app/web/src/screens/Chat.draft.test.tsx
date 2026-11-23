@@ -88,6 +88,40 @@ describe('Chat with a draft', () => {
     expect(send).toHaveBeenCalledWith(JID, 'Stižem za deset minuta', 'M1', expect.any(String), 11)
   })
 
+  it('a send after the box was cleared and retyped carries no draft_id', async () => {
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: /Stižem/ }))
+    const box = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: '' } })
+    fireEvent.change(box, { target: { value: 'nešto drugo' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(send).toHaveBeenCalled())
+    expect(send).toHaveBeenCalledWith(JID, 'nešto drugo', 'M1', expect.any(String), undefined)
+  })
+
+  it('dismissing the card forgets the used draft', async () => {
+    vi.spyOn(api, 'dismissDraft').mockResolvedValue(null)
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: /Stižem/ }))
+    act(() => emit({ name: 'draft', data: { chat_jid: JID, draft: { ...draft, id: 12 } } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss draft' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(send).toHaveBeenCalled())
+    expect(send.mock.calls[0][4]).toBeUndefined()
+  })
+
+  it('the chat menu closes on Escape and gives focus back to its button', async () => {
+    await open()
+    const opener = screen.getByRole('button', { name: 'Chat menu' })
+    opener.focus()
+    fireEvent.click(opener)
+    expect(screen.getByRole('dialog', { name: 'Chat actions' }).getAttribute('aria-modal')).toBe('true')
+    expect(document.activeElement?.textContent).toContain('AI drafts')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Chat actions' })).toBeNull()
+    expect(document.activeElement).toBe(opener)
+  })
+
   it('asks before replacing text that is already typed', async () => {
     await open()
     const box = screen.getByLabelText('Message') as HTMLTextAreaElement

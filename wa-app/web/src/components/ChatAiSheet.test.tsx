@@ -48,6 +48,15 @@ describe('ChatAiSheet', () => {
     expect((screen.getByRole('option', { name: /^Ollama$/ }) as HTMLOptionElement).disabled).toBe(false)
   })
 
+  it('says so and blocks Save when Local only has no local backend', async () => {
+    vi.spyOn(api, 'fetchBackends').mockResolvedValue({ default_id: 2, backends: [backends.backends[1]] } as never)
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    fireEvent.click(await screen.findByLabelText('Local only'))
+    expect(screen.getByText('Add a local AI in Settings first')).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('dialog').getAttribute('aria-modal')).toBe('true')
+  })
+
   it('saves the chosen settings', async () => {
     const save = vi.spyOn(api, 'saveChatAi').mockResolvedValue(ai)
     const onClose = vi.fn()
