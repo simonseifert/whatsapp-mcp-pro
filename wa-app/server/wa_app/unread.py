@@ -2,7 +2,9 @@
 
 Incoming, non-system, non-deleted messages after the read marker. The marker is the later of the phone's
 (bridge chat_state.last_read_at) and the app's own (app.db read_state.read_at), so a chat read on either side is
-read on both. With no marker at all, the count history sync reported (chat_state.history_unread_count), else 0.
+read on both. With no marker at all: the incoming messages after bridge_state `read_tracking_since` (RFC3339; from then on the
+bridge sees this device's read receipts, so "no marker" means "not read since") when that key exists, else the count
+history sync reported (chat_state.history_unread_count), else 0.
 `marked_unread` (the phone's manual "mark as unread" dot) is not part of the count; the chat list passes it through.
 """
 
@@ -45,6 +47,14 @@ class UnreadCounter:
         except sqlite3.OperationalError as exc:
             if "no such table" not in str(exc):  # only an app db without the table (a bare connection) is empty
                 raise
+        self.tracking_since: datetime | None = None
+        try:
+            from .store import parse_ts
+
+            row = conn.execute("SELECT value FROM bridge_state WHERE key = 'read_tracking_since'").fetchone()
+            self.tracking_since = parse_ts(row[0]) if row and row[0] else None
+        except sqlite3.OperationalError:  # a store without bridge_state: no fallback bound
+            pass
         columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
         self._not_deleted = "AND deleted_at IS NULL" if "deleted_at" in columns else ""
 
@@ -67,7 +77,7 @@ class UnreadCounter:
         return changed is not None and changed > datetime.fromtimestamp(max(opened), UTC)
 
     def count(self, forms: Sequence[str], last_read_at: str | None, history_unread: int | None) -> int:
-        marker = self.marker(forms, last_read_at)
+        marker = self.marker(forms, last_read_at) or self.tracking_since
         if marker is None:
             return max(history_unread or 0, 0)
         bound = marker.isoformat(sep=" ")

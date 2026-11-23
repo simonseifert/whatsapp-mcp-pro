@@ -5,6 +5,7 @@ import re
 import sqlite3
 import time
 import unicodedata
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,7 +31,7 @@ class LastMessage:
     media_type: str | None
     deleted: bool
     timestamp_iso: str
-    # The store keeps no delivery receipts, so there is nothing to tick yet.
+    # For our own last message: from message_receipts when the bridge records them, else None.
     ticks: str | None = None
 
 
@@ -130,15 +131,56 @@ def ogg_opus_seconds(path: Path) -> int | None:
         return None
 
 
-def _voice_seconds(store_dir: Path | None, chat_jids: list[str], chat_jid: str, filename: str | None) -> int | None:
-    """Duration of a voice note that was auto-downloaded (the store keeps no duration column)."""
-    if store_dir is None or not filename:
+_AUTO_UNSAFE = re.compile(r"[^a-zA-Z0-9._-]")
+_SANITIZE_KEEP = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-@")
+
+
+def _safe_part(text: str) -> str:
+    """Mirror of the bridge's safePathPart (handlers.go): unsafe characters become '_'; unusable names become ''."""
+    text = _AUTO_UNSAFE.sub("_", text)
+    return "" if text in ("", ".", "..") or text.startswith(".") else text
+
+
+def _sanitize_path(text: str) -> str:
+    """Mirror of the bridge's mediastore.SanitizePath: keeps [A-Za-z0-9_@-] per UTF-8 byte, a leading '.' or '-'
+    becomes '_', empty becomes '_'."""
+    if not text:
+        return "_"
+    out = "".join(chr(c) if chr(c) in _SANITIZE_KEEP else "_" for c in text.encode())
+    return "_" + out[1:] if out[0] in ".-" else out
+
+
+def _media_files(store_dir: Path, forms: list[str], msg_id: str | None, filename: str | None) -> Iterator[Path]:
+    """Every place the bridge may have saved a message's media, for each JID form of the chat:
+    auto-download store/<chat>/<filename> and store/<chat>/<msgid>_<filename> (names through safePathPart), and
+    on-demand store/media/<chat>/<msgid><ext> (names through SanitizePath; the extension is globbed)."""
+    mid = _safe_part(msg_id) if msg_id else ""
+    for jid in dict.fromkeys(forms):
+        chat = _safe_part(jid)
+        if chat:
+            name = _safe_part(filename or "") or (f"{mid}.bin" if mid else "")
+            if name:
+                yield store_dir / chat / name
+                if mid:
+                    yield store_dir / chat / f"{mid}_{name}"
+        if msg_id:
+            folder = store_dir / "media" / _sanitize_path(jid)
+            if folder.is_dir():
+                yield from sorted(folder.glob(f"{glob_escape(_sanitize_path(msg_id))}.*"))
+
+
+def _voice_seconds(
+    store_dir: Path | None,
+    chat_jids: list[str],
+    chat_jid: str,
+    filename: str | None,
+    msg_id: str | None = None,
+) -> int | None:
+    """Duration of a voice note that was downloaded (the store keeps no duration column)."""
+    if store_dir is None or not (filename or msg_id):
         return None
-    name = Path(filename).name
-    for jid in dict.fromkeys([chat_jid, *chat_jids]):
-        if "/" in jid or "\\" in jid or jid.startswith("."):
-            continue
-        seconds = ogg_opus_seconds(store_dir / jid / name)
+    for path in _media_files(store_dir, [chat_jid, *chat_jids], msg_id, filename):
+        seconds = ogg_opus_seconds(path)
         if seconds is not None:
             return seconds
     return None
@@ -401,7 +443,11 @@ def list_chats_page(
     if only_jid is not None:
         convs = [c for c in convs if only_jid == c.jid or only_jid in c.forms]
 
-    deleted_sql = "deleted_at" if "deleted_at" in _columns(conn, "messages") else "NULL"
+    mcols = _columns(conn, "messages")
+    deleted_sql = (
+        f"{'deleted_at' if 'deleted_at' in mcols else 'NULL'}, "
+        f"COALESCE({'is_system_message' if 'is_system_message' in mcols else '0'}, 0)"
+    )
     store_dir = _db_dir(conn)
     now = time.time()
 
@@ -421,11 +467,17 @@ def list_chats_page(
     senders = {last[2] for c, last in found if kinds[c.jid] in GROUP_KINDS and last[2] and not last[6]}
     sender_names = resolve_display_names(conn, senders)
 
+    last_ticks = _ticks(
+        conn,
+        [(c.jid, last[0], c.forms) for c, last in found if last[6] and not last[10]],
+    )
     counter = UnreadCounter(conn, appconn)
     community_names: dict[str, str | None] = {}
     summaries: list[ChatSummary] = []
     for conv, last in found:
-        (mid, chat_jid, sender, sender_name, content, stamp, from_me, media_type, filename, deleted_at) = last
+        (mid, chat_jid, sender, sender_name, content, stamp, from_me, media_type, filename, deleted_at, is_system) = (
+            last
+        )
         kind = kinds[conv.jid]
         info = group_infos.get(conv.jid, {})
         state = states.get(conv.jid, _State())
@@ -461,7 +513,9 @@ def list_chats_page(
         if in_group and not from_me:
             prefix = sender_names[sender].name if sender in sender_names else (sender_name or None)
         stamped = parse_ts(stamp)
-        voice = _voice_seconds(store_dir, conv.forms, chat_jid, filename) if media_type in ("audio", "ptt") else None
+        voice = (
+            _voice_seconds(store_dir, conv.forms, chat_jid, filename, mid) if media_type in ("audio", "ptt") else None
+        )
         muted = state.muted_until == -1 or state.muted_until > now
         summaries.append(
             ChatSummary(
@@ -477,6 +531,7 @@ def list_chats_page(
                     media_type=media_type or None,
                     deleted=bool(deleted_at),
                     timestamp_iso=stamped.isoformat() if stamped else str(stamp),
+                    ticks=last_ticks.get(conv.jid),
                 ),
                 unread=counter.count(conv.forms, state.last_read_at, state.history_unread),
                 marked_unread=counter.dot(conv.forms + [conv.jid], state.marked_unread, state.marked_changed_at),
@@ -537,6 +592,8 @@ class MediaView:
     duration_s: int | None
     has_file: bool
     size_bytes: int | None = None
+    # The bridge can fetch it from WhatsApp's CDN without asking the phone (media key and a CDN path/url are stored).
+    downloadable: bool = False
 
 
 @dataclass
@@ -592,7 +649,7 @@ class MessageView:
     contact_cards: list[ContactCard] | None
     # Rows that came from a chat export have no WhatsApp message key: no reply, reaction or read receipt.
     actionable: bool
-    # No delivery receipts are stored, so there is nothing to tick.
+    # Own messages only, from message_receipts when the bridge records them; None otherwise.
     ticks: Literal["sent", "delivered", "read"] | None = None
 
 
@@ -651,24 +708,8 @@ def message_media_type(conn: sqlite3.Connection, chat_jid: str, message_id: str)
 
 
 def _has_file(store_dir: Path | None, forms: list[str], msg_id: str, filename: str | None) -> bool:
-    """Auto-download keeps store/<jid>/<filename>; later downloads keep store/media/<jid>/<msgid><ext>."""
-    if store_dir is None:
-        return False
-    bad = ("/", "\\")
-    for jid in forms:
-        if jid.startswith(".") or any(c in jid for c in bad):
-            continue
-        if (
-            filename
-            and not any(c in Path(filename).name for c in bad)
-            and (store_dir / jid / Path(filename).name).is_file()
-        ):
-            return True
-        if not any(c in msg_id for c in bad):
-            folder = store_dir / "media" / jid
-            if folder.is_dir() and any(folder.glob(f"{glob_escape(msg_id)}.*")):
-                return True
-    return False
+    """True when the bridge already saved the media (see _media_files for the two layouts)."""
+    return store_dir is not None and any(p.is_file() for p in _media_files(store_dir, forms, msg_id, filename))
 
 
 def glob_escape(text: str) -> str:
@@ -695,7 +736,9 @@ def _message_select(cols: set[str], forms: list[str]) -> str:
                {col("quoted_sender_name")}, {col("quoted_text_preview")},
                COALESCE({col("is_edited", "0")}, 0) OR COALESCE({col("edit_count", "0")}, 0) > 0,
                COALESCE({col("is_forwarded", "0")}, 0), COALESCE({col("is_system_message", "0")}, 0),
-               julianday(timestamp), {col("file_length")}
+               julianday(timestamp), {col("file_length")},
+               {col("media_key")} IS NOT NULL AND length({col("media_key")}) > 0
+               AND (COALESCE({col("direct_path", "''")}, '') <> '' OR COALESCE({col("url", "''")}, '') <> '')
         FROM messages
         WHERE chat_jid IN ({_marks(forms)}) AND julianday(timestamp) IS NOT NULL
           AND {NOT_POLL_VOTE}"""
@@ -789,7 +832,7 @@ def _quotes(
             preview = " ".join((stored_text or "").split())[:PREVIEW_MAX] or "Original message unavailable"
             out[row[0]] = QuoteView(qid, stored_name or None, preview)
             continue
-        voice = _voice_seconds(store_dir, forms, q[7], q[5]) if q[4] in ("audio", "ptt") else None
+        voice = _voice_seconds(store_dir, forms, q[7], q[5], q[0]) if q[4] in ("audio", "ptt") else None
         preview = _preview(q[3], q[4], q[5], bool(q[8]), voice)
         who = "You" if q[6] else (row[11] or _sender_label(q[1], q[2], names))
         out[row[0]] = QuoteView(qid, who, preview)
@@ -854,6 +897,50 @@ def _reactions(
     }
 
 
+def _ticks(conn: sqlite3.Connection, items: list[tuple[str, str, list[str]]]) -> dict[str, str]:
+    """Delivery ticks for own messages, from message_receipts (status 1 delivered, 2 read, 3 played), one query per
+    chunk of ids. items: (result key, message id, JID forms of its chat). No table, no ticks (empty result). A
+    private chat reads by the best status; a group is 'read' once every other member read it, which needs the
+    member count (identities.participant_count; ours included) and is never claimed without it."""
+    if not items or not _table_exists(conn, "message_receipts"):
+        return {}
+    by_id: dict[str, list[tuple[str, list[str]]]] = {}
+    for key, mid, forms in items:
+        by_id.setdefault(mid, []).append((key, forms))
+    best: dict[str, int] = {}
+    readers: dict[str, set[str]] = {}
+    for chunk in _chunks(list(by_id)):
+        for mid, chat, participant, status in conn.execute(
+            f"SELECT message_id, chat_jid, participant, status FROM message_receipts WHERE message_id IN ({_marks(chunk)})",
+            chunk,
+        ):
+            for key, forms in by_id[mid]:
+                if chat in forms:
+                    best[key] = max(best.get(key, 0), status or 0)
+                    if (status or 0) >= 2:
+                        readers.setdefault(key, set()).add(participant or "")
+    members: dict[str, int | None] = {}
+    if "participant_count" in _columns(conn, "identities"):
+        groups = {f for _, _, forms in items for f in forms if f.endswith("@g.us")}
+        for chunk in _chunks(sorted(groups)):
+            for jid, count in conn.execute(
+                f"SELECT jid, participant_count FROM identities WHERE jid IN ({_marks(chunk)})", chunk
+            ):
+                members[jid] = count
+    out: dict[str, str] = {}
+    for mid, entries in by_id.items():
+        for key, forms in entries:
+            top = best.get(key, 0)
+            if any(f.endswith("@g.us") for f in forms):
+                counts = [n for f in forms if (n := members.get(f))]
+                others = max(counts) - 1 if counts else 0
+                read = others >= 1 and len(readers.get(key, ())) >= others
+            else:
+                read = top >= 2
+            out[key] = "read" if read else "delivered" if top >= 1 else "sent"
+    return out
+
+
 def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> list[MessageView]:
     store_dir = _db_dir(conn)
     own = _own_ids(conn, store_dir, forms)
@@ -867,6 +954,7 @@ def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> lis
         [r[0] for r in live if not r[7] and (r[4] or "").startswith("[Poll: ") and (r[4] or "").endswith("]")],
     )
     reactions = _reactions(conn, forms, [r[0] for r in live], own)
+    ticks = _ticks(conn, [(r[0], r[0], forms) for r in live if r[6] and not r[15]])
     out: list[MessageView] = []
     for r in rows:
         (mid, chat, sender, sender_name, content, stamp, from_me, media_type, filename, deleted_at) = r[:10]
@@ -877,9 +965,14 @@ def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> lis
         if deleted:
             text = None  # the stored text of a deleted message is never sent to the client
         elif media_type:
-            voice = _voice_seconds(store_dir, forms, chat, filename) if media_type in ("audio", "ptt") else None
+            voice = _voice_seconds(store_dir, forms, chat, filename, mid) if media_type in ("audio", "ptt") else None
             media = MediaView(
-                media_type, filename or None, voice, _has_file(store_dir, forms, mid, filename), r[17] or None
+                media_type,
+                filename or None,
+                voice,
+                _has_file(store_dir, forms, mid, filename),
+                r[17] or None,
+                bool(r[18]),
             )
         elif content and mid in polls:
             poll = polls[mid]
@@ -906,6 +999,7 @@ def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> lis
                 poll=poll,
                 contact_cards=cards,
                 actionable=not mid.startswith(IMPORT_PREFIX),
+                ticks=ticks.get(mid),  # type: ignore[arg-type]
             )
         )
     return out
