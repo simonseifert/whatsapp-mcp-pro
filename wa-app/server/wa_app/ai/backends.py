@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 from dataclasses import dataclass
 
 import httpx2
@@ -52,7 +53,7 @@ async def complete(
 
 async def _post(url: str, headers: dict, body: dict, timeout: float, transport) -> dict:
     try:
-        async with httpx2.AsyncClient(timeout=timeout, transport=transport) as client:
+        async with httpx2.AsyncClient(timeout=timeout, transport=transport, trust_env=False) as client:
             resp = await client.post(url, headers=headers, json=body)
     except httpx2.TimeoutException:
         raise BackendError("AI didn't answer in time") from None
@@ -147,6 +148,7 @@ async def _claude_cli(cfg: BackendCfg, prompt: Prompt, settings: Settings) -> st
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             cwd=cwd,
+            start_new_session=True,
         )
     except OSError:
         raise BackendError("Couldn't start the claude command") from None
@@ -154,7 +156,10 @@ async def _claude_cli(cfg: BackendCfg, prompt: Prompt, settings: Settings) -> st
         out, _ = await proc.communicate(prompt.user.encode())
     finally:
         if proc.returncode is None:  # timed out or cancelled: don't leave it running
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             await proc.wait()
     if proc.returncode != 0:
         raise BackendError("The claude command failed")

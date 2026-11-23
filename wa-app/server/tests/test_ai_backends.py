@@ -200,6 +200,26 @@ def test_claude_cli_timeout_kills(settings, fake_claude, monkeypatch) -> None:
         os.kill(pid, 0)
 
 
+def test_claude_cli_cancel_kills(settings, fake_claude, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_MODE", "hang")
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(backends.complete(_cli(), None, PROMPT, settings))
+        pid_file = Path(str(fake_claude) + ".pid")
+        for _ in range(100):
+            if pid_file.exists() and pid_file.read_text():
+                break
+            await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    _run(scenario())
+    pid = int(Path(str(fake_claude) + ".pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 @pytest.mark.parametrize("mode", ["fail", "garbage", "error"])
 def test_claude_cli_failures_are_backend_errors(settings, fake_claude, monkeypatch, mode) -> None:
     monkeypatch.setenv("FAKE_MODE", mode)

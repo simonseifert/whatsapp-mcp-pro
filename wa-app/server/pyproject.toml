@@ -25,7 +25,6 @@ packages = ["wa_app"]
 
 [dependency-groups]
 dev = [
-    "httpx2",
     "pytest>=9.0.3",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
