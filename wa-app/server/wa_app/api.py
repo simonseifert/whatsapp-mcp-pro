@@ -11,11 +11,12 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, live, media, sending, store, transcripts
+from . import appdb, auth, live, media, push, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
 from .ai import drafts, learning, policy
 from .config import Settings
+from .tokens import token_hash
 
 MEDIA_RETRY_SECONDS = 6 * 3600
 
@@ -116,7 +117,11 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         return start_session(request)
 
     async def logout(request: Request) -> Response:
-        auth.end_session(conn, auth.session_token(request.cookies))
+        token = auth.session_token(request.cookies)
+        if token:
+            with appdb.db_lock:
+                push.drop_for_session(conn, token_hash(token))
+        auth.end_session(conn, token)
         response = JSONResponse({"ok": True})
         _drop_session_cookies(response)
         return response
@@ -125,10 +130,52 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         # /api/auth/* is open to the middleware, so this one checks the session itself.
         if not auth.session_valid(conn, auth.session_token(request.cookies)):
             return _error(401, "Not logged in")
+        with appdb.db_lock:
+            push.drop_all(conn)
         auth.end_all_sessions(conn)
         response = JSONResponse({"ok": True})
         _drop_session_cookies(response)
         return response
+
+    async def push_key(request: Request) -> Response:
+        if not settings.push_subject:
+            return _error(503, "Push not configured")
+        return JSONResponse({"key": await run_in_threadpool(lambda: push.vapid_keys(settings)[1])})
+
+    async def push_subscribe(request: Request) -> Response:
+        body = await body_of(request)
+        keys = body.get("keys") if isinstance(body, dict) else None
+        endpoint = body.get("endpoint") if isinstance(body, dict) else None
+        p256dh = keys.get("p256dh") if isinstance(keys, dict) else None
+        secret = keys.get("auth") if isinstance(keys, dict) else None
+        if not (isinstance(endpoint, str) and isinstance(p256dh, str) and isinstance(secret, str)):
+            return _error(422, "'endpoint' and 'keys' (p256dh, auth) are required")
+        if not push.endpoint_allowed(endpoint):
+            return _error(422, "Unsupported push service")
+        if not (0 < len(p256dh) <= push.MAX_FIELD and 0 < len(secret) <= push.MAX_FIELD):
+            return _error(422, "Invalid keys")
+        token = auth.session_token(request.cookies)
+        with appdb.db_lock:
+            push.save_subscription(
+                conn, endpoint=endpoint, p256dh=p256dh, auth=secret, session_hash=token_hash(token or "")
+            )
+        return JSONResponse({"ok": True})
+
+    async def push_unsubscribe(request: Request) -> Response:
+        body = await body_of(request)
+        endpoint = body.get("endpoint") if isinstance(body, dict) else None
+        if not isinstance(endpoint, str):
+            return _error(422, "'endpoint' is required")
+        with appdb.db_lock:
+            push.drop_subscription(conn, endpoint)
+        return JSONResponse({"ok": True})
+
+    async def push_test(request: Request) -> Response:
+        if not settings.push_subject:
+            return _error(503, "Push not configured")
+        payload = {"title": "wa-app", "body": "Notifications work.", "tag": "test", "url": "/"}
+        sent = await run_in_threadpool(push.send, settings, conn, payload)
+        return JSONResponse({"sent": sent})
 
     async def about(request: Request) -> Response:
         try:
@@ -518,6 +565,10 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/auth/login", login, methods=["POST"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/auth/logout-all", logout_all, methods=["POST"]),
+        Route("/api/push/key", push_key, methods=["GET"]),
+        Route("/api/push/subscribe", push_subscribe, methods=["POST"]),
+        Route("/api/push/unsubscribe", push_unsubscribe, methods=["POST"]),
+        Route("/api/push/test", push_test, methods=["POST"]),
         Route("/api/about", about, methods=["GET"]),
         Route("/api/chats", chats, methods=["GET"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),

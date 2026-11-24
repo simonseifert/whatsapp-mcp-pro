@@ -3,6 +3,7 @@ import { apiFetch, deleteBackend, fetchBackends, saveBackend, setDefaultBackend,
 import type { BackendCfg, BackendInput, BackendTestResult } from '../api-types'
 import { BackendForm } from '../components/BackendForm'
 import { UpdateRow } from '../components/UpdateRow'
+import { disablePush, enablePush, pushState, pushSupport } from '../push'
 import { readTheme, saveTheme, THEMES, type ThemePref } from '../theme'
 
 const KIND_LABEL: Record<BackendCfg['kind'], string> = {
@@ -234,6 +235,83 @@ function AiSection() {
   )
 }
 
+/** Notifications: the permission prompt only ever comes from tapping the switch, after the line that says why. */
+function NotificationsSection() {
+  const support = pushSupport()
+  const [state, setState] = useState<'on' | 'off' | 'denied' | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (support !== 'ok') return
+    let live = true
+    pushState()
+      .then((s) => live && setState(s))
+      .catch(() => live && setState('off'))
+    return () => {
+      live = false
+    }
+  }, [support])
+
+  async function toggle(next: boolean) {
+    setBusy(true)
+    setNote(null)
+    try {
+      if (next) {
+        const result = await enablePush()
+        setState(result === 'on' ? 'on' : result === 'denied' ? 'denied' : 'off')
+        if (result === 'failed') setNote("Couldn't turn notifications on")
+      } else {
+        await disablePush()
+        setState('off')
+      }
+    } catch {
+      setNote("Couldn't change notifications")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function sendTest() {
+    setNote(null)
+    try {
+      const { sent } = await apiFetch<{ sent: number }>('/api/push/test', { method: 'POST' })
+      setNote(sent > 0 ? 'Test sent' : 'No device accepted the test')
+    } catch {
+      setNote("Couldn't send the test")
+    }
+  }
+
+  const disabled = support !== 'ok' || state === null || state === 'denied' || busy
+  return (
+    <div className="settings-group">
+      <label className="sheet-row">
+        <span>Notifications</span>
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label="Notifications"
+          checked={state === 'on'}
+          disabled={disabled}
+          onChange={(e) => void toggle(e.target.checked)}
+        />
+      </label>
+      {support === 'install-first' && <p className="settings-about">Add wa-app to your Home Screen first</p>}
+      {support === 'unsupported' && <p className="settings-about">This browser can&apos;t show notifications</p>}
+      {support === 'ok' && state === 'off' && <p className="settings-about">Get a notification when a message arrives.</p>}
+      {state === 'denied' && <p className="settings-about">Notifications are blocked in this browser&apos;s settings.</p>}
+      {state === 'on' && (
+        <div className="settings-actions">
+          <button className="button-text" type="button" onClick={() => void sendTest()}>
+            Send a test
+          </button>
+        </div>
+      )}
+      {note && <p className="settings-about" role="status">{note}</p>}
+    </div>
+  )
+}
+
 export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void }) {
   const [theme, setTheme] = useState<ThemePref>(readTheme)
   const [version, setVersion] = useState<string | null>(null)
@@ -294,6 +372,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
             )}
           </div>
         </div>
+        <NotificationsSection />
         <AiSection />
         <UpdateRow />
         {version && <p className="settings-about">wa-app {version}</p>}

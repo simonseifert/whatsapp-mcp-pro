@@ -15,6 +15,7 @@ class Settings:
     agent_token: str | None = field(
         default=None, repr=False
     )  # bearer token for /api/agent/*; unset = those routes answer 404
+    push_subject: str | None = None  # VAPID contact (mailto: or https:); unset = push is off
 
 
 def _default_store_path() -> Path:
@@ -50,4 +51,5 @@ def load() -> Settings:
         store_path=Path(store) if store else _default_store_path(),
         secure_cookies=os.getenv("WA_APP_INSECURE_COOKIES") != "1",
         agent_token=_agent_token(),
+        push_subject=(os.getenv("WA_APP_PUSH_SUBJECT") or "").strip() or None,
     )
