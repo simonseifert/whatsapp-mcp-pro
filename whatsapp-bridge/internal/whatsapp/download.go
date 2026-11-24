@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +19,197 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 
 	"whatsapp-bridge/internal/database"
+	"whatsapp-bridge/internal/mediastore"
 )
 
 // ErrNoMedia is returned when the message exists but carries no media.
 var ErrNoMedia = errors.New("message has no media")
+
+// ErrMediaTooLarge is returned when a media file is above MEDIA_MAX_BYTES
+// (mediastore.MaxBytes), by its declared length or by the bytes received.
+var ErrMediaTooLarge = errors.New("media is larger than MEDIA_MAX_BYTES")
+
+// CheckMediaSize refuses a declared file length above the shared media cap.
+// A length of 0 means "not declared" and passes; callers that must not trust
+// a missing length (auto-download) decide that themselves.
+func CheckMediaSize(declared int64) error {
+	if max := mediastore.MaxBytes(); declared > max {
+		return fmt.Errorf("%w: declared %d bytes, limit %d", ErrMediaTooLarge, declared, max)
+	}
+	return nil
+}
+
+// mediaSlots bounds concurrent media downloads. whatsmeow buffers each file
+// whole (and decrypts into a second buffer), and every incoming media message
+// used to start its own download, so a burst of forwarded large files could
+// exhaust memory.
+var (
+	mediaSlotsOnce sync.Once
+	mediaSlots     chan struct{}
+)
+
+// DefaultMediaDownloadConcurrency is MEDIA_DOWNLOAD_CONCURRENCY's default.
+const DefaultMediaDownloadConcurrency = 3
+
+func mediaConcurrency() int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MEDIA_DOWNLOAD_CONCURRENCY"))); err == nil && v > 0 {
+		return v
+	}
+	return DefaultMediaDownloadConcurrency
+}
+
+// acquireMediaSlot waits for a free download slot, or ctx ends. The returned
+// function releases it.
+func acquireMediaSlot(ctx context.Context) (release func(), err error) {
+	mediaSlotsOnce.Do(func() { mediaSlots = make(chan struct{}, mediaConcurrency()) })
+	select {
+	case mediaSlots <- struct{}{}:
+		return func() { <-mediaSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// AcquireMediaSlot takes one of the shared MEDIA_DOWNLOAD_CONCURRENCY download
+// slots, for download paths outside this package (the /api/download CDN
+// branch). It waits until one is free or ctx ends; call the returned function
+// to release it.
+func AcquireMediaSlot(ctx context.Context) (release func(), err error) {
+	return acquireMediaSlot(ctx)
+}
+
+// ResetMediaSlots re-reads MEDIA_DOWNLOAD_CONCURRENCY. Tests only.
+func ResetMediaSlots() { mediaSlotsOnce = sync.Once{} }
+
+// cappedFile is a temp file that refuses to grow past limit bytes. whatsmeow's
+// DownloadToFile copies the response body into it, so the cap holds against
+// the real size of the download, whatever the sender's file_length claims.
+// ReadFrom and WriteString are shadowed on purpose: the embedded *os.File's
+// would let io.Copy bypass Write, and also lets whatsmeow preallocate a size the server names.
+type cappedFile struct {
+	*os.File
+	limit int64
+}
+
+func (f *cappedFile) Write(p []byte) (int, error) {
+	pos, err := f.File.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	if pos+int64(len(p)) > f.limit {
+		return 0, fmt.Errorf("%w: download is larger than %d bytes", ErrMediaTooLarge, f.limit)
+	}
+	return f.File.Write(p)
+}
+
+func (f *cappedFile) WriteAt(p []byte, off int64) (int, error) {
+	if off+int64(len(p)) > f.limit {
+		return 0, fmt.Errorf("%w: download is larger than %d bytes", ErrMediaTooLarge, f.limit)
+	}
+	return f.File.WriteAt(p, off)
+}
+
+func (f *cappedFile) WriteString(str string) (int, error) { return f.Write([]byte(str)) }
+
+func (f *cappedFile) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(struct{ io.Writer }{f}, r)
+}
+
+// mediaWireOverhead is what the encrypted body adds to the plaintext (padding
+// up to a block, plus the 10-byte MAC), so a file at exactly the cap still fits.
+const mediaWireOverhead = 64
+
+// downloadToTemp streams msg into a new 0600 temp file in dir and returns its
+// path. The cap is enforced while bytes arrive: the download is aborted and the
+// partial file deleted as soon as it passes MEDIA_MAX_BYTES, and a finished
+// file is re-checked. The caller removes the file. It does not take a download
+// slot; the caller does.
+func (c *Client) downloadToTemp(ctx context.Context, msg whatsmeow.DownloadableMessage, dir string) (string, error) {
+	if l, ok := msg.(interface{ GetFileLength() uint64 }); ok {
+		if err := CheckMediaSize(int64(l.GetFileLength())); err != nil {
+			return "", err
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("media temp dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".dl-*")
+	if err != nil {
+		return "", fmt.Errorf("create media temp file: %w", err)
+	}
+	path := tmp.Name()
+	max := mediastore.MaxBytes()
+	capped := &cappedFile{File: tmp, limit: max + mediaWireOverhead}
+	download := c.rawDownloadToFile
+	if download == nil {
+		download = c.Client.DownloadToFile
+	}
+	err = download(ctx, msg, capped)
+	if err == nil {
+		var info os.FileInfo
+		if info, err = tmp.Stat(); err == nil && info.Size() > max {
+			err = fmt.Errorf("%w: download is %d bytes, limit %d", ErrMediaTooLarge, info.Size(), max)
+		}
+	}
+	if cerr := tmp.Close(); err == nil && cerr != nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+// CleanStaleDownloadTemps removes download temp files (.dl-*, .autodl-*) older
+// than maxAge from root and its immediate subdirectories, which a crash or a
+// kill mid-download leaves behind. Returns how many it removed.
+func CleanStaleDownloadTemps(root string, maxAge time.Duration) int {
+	removed := 0
+	var scan func(dir string, depth int)
+	scan = func(dir string, depth int) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			path := filepath.Join(dir, e.Name())
+			if e.IsDir() {
+				if depth < 1 {
+					scan(path, depth+1)
+				}
+				continue
+			}
+			if !strings.HasPrefix(e.Name(), ".dl-") && !strings.HasPrefix(e.Name(), ".autodl-") {
+				continue
+			}
+			if info, err := e.Info(); err == nil && info.Mode().IsRegular() && time.Since(info.ModTime()) > maxAge {
+				if os.Remove(path) == nil {
+					removed++
+				}
+			}
+		}
+	}
+	scan(root, 0)
+	return removed
+}
+
+// downloadMedia downloads msg behind the concurrency bound and returns the
+// bytes. It streams to a temp file under the size cap first, so memory holds at
+// most one capped copy per slot instead of whatever the sender serves.
+func (c *Client) downloadMedia(ctx context.Context, msg whatsmeow.DownloadableMessage) ([]byte, error) {
+	release, err := acquireMediaSlot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("waiting for a media download slot: %w", err)
+	}
+	defer release()
+	path, err := c.downloadToTemp(ctx, msg, filepath.Join("store", "tmp"))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(path) }()
+	return os.ReadFile(path)
+}
 
 // ErrMessageNotFound is returned when the message id+jid is not in the store.
 var ErrMessageNotFound = errors.New("message not found")
@@ -39,7 +228,7 @@ func (c *Client) FetchMessageMedia(ctx context.Context, store *database.MessageS
 		return nil, "", "", err
 	}
 
-	data, err = c.Client.Download(ctx, media.msg)
+	data, err = c.downloadMedia(ctx, media.msg)
 	if askPhone && isMediaGone(err) && MediaRetryEnabled() {
 		// Persist the ask before trying it here, so a timeout, an offline
 		// phone or a restart leaves it to the background queue.
@@ -278,7 +467,7 @@ func (c *Client) retryMediaDownload(ctx context.Context, store *database.Message
 	if !setDirectPath(msg, newPath) {
 		return nil, fmt.Errorf("media retry: unsupported message type")
 	}
-	data, err := c.Client.Download(ctx, msg)
+	data, err := c.downloadMedia(ctx, msg)
 	if err != nil {
 		c.markMediaRequest(store.MarkMediaRequestRetry(messageID, chatJID, "download re-uploaded file: "+err.Error(), maxAttempts, time.Now()))
 		return nil, fmt.Errorf("media retry: download re-uploaded file: %w", err)

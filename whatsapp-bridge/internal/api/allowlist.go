@@ -11,8 +11,10 @@ import (
 // comma-separated list of JIDs, every outbound send is checked against it and
 // non-listed recipients are rejected. Unset or empty = allow all (default).
 //
-// Entries match exactly, or by bare number against the JID's user part, so
-// "4915112345678" allows both 4915112345678@s.whatsapp.net and @lid forms.
+// Entries match a full JID exactly, or a bare number against the user part of a
+// phone JID (@s.whatsapp.net) only. A LID's digits can equal someone else's
+// phone number, so a bare number never matches a LID or a group; those need
+// their full JID listed.
 var (
 	sendAllowlistOnce sync.Once
 	sendAllowlist     map[string]bool
@@ -44,6 +46,38 @@ func refuseUnlistedRecipient(w http.ResponseWriter, chatJID string) bool {
 	return true
 }
 
+// refuseUnlisted is refuseUnlistedRecipient for a chat that may be filed under
+// its LID: the LID is also checked as the phone JID the bridge maps it to, so
+// an allowlisted contact stays reachable under either identity.
+func (s *Server) refuseUnlisted(w http.ResponseWriter, chatJID string) bool {
+	if recipientAllowed(chatJID) {
+		return false
+	}
+	if s.sender != nil {
+		if mapped := s.sender.NormalizeChat(chatJID); mapped != chatJID && recipientAllowed(mapped) {
+			return false
+		}
+	}
+	return refuseUnlistedRecipient(w, chatJID)
+}
+
+// refuseUnlistedAll applies refuseUnlisted to every JID an action contacts and
+// stops at the first refusal, which it has already written.
+func (s *Server) refuseUnlistedAll(w http.ResponseWriter, jids ...string) bool {
+	for _, j := range jids {
+		if s.refuseUnlisted(w, j) {
+			return true
+		}
+	}
+	return false
+}
+
+// sendAllowlistActive reports whether SEND_ALLOWED_JIDS is configured.
+func sendAllowlistActive() bool {
+	sendAllowlistOnce.Do(loadSendAllowlist)
+	return sendAllowlist != nil
+}
+
 // recipientAllowed reports whether the recipient passes the send allowlist.
 func recipientAllowed(recipient string) bool {
 	sendAllowlistOnce.Do(loadSendAllowlist)
@@ -53,12 +87,15 @@ func recipientAllowed(recipient string) bool {
 	if sendAllowlist[recipient] {
 		return true
 	}
-	user := recipient
-	if i := strings.IndexByte(user, '@'); i >= 0 {
-		user = user[:i]
-	}
+	user, server, hasServer := strings.Cut(recipient, "@")
 	if j := strings.IndexByte(user, ':'); j >= 0 {
-		user = user[:j]
+		user = user[:j] // device suffix
 	}
-	return sendAllowlist[user]
+	if !hasServer {
+		return sendAllowlist[user] // a bare number is sent as a phone JID
+	}
+	if sendAllowlist[user+"@"+server] {
+		return true
+	}
+	return server == "s.whatsapp.net" && sendAllowlist[user]
 }

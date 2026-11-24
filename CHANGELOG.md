@@ -51,6 +51,19 @@ All notable changes to this fork are recorded here. The format follows
 
 - `MEDIA_RETRY_MAX_PER_HOUR` now defaults to 5 instead of 20.
 - The background queue waits 6 hours before asking about the same file again.
+- CORS: the built-in origins (`localhost:8089`, `localhost:8090`, `127.0.0.1:8089`,
+  `127.0.0.1:8090`) are gone. Only `CORS_ORIGINS` (comma-separated) is trusted, so a
+  browser app on one of those ports now needs its origin listed there.
+- A bare number in `SEND_ALLOWED_JIDS` or `WHATSAPP_ALLOWLIST_JIDS` matches only the
+  phone JID (`@s.whatsapp.net`), never a LID or group with the same digits. List a
+  LID or group by its full JID. `SEND_ALLOWED_JIDS` still lets a LID chat through
+  when the bridge maps it to a listed phone JID.
+- Group create, add members, rename, topic, `/api/disappearing`, `/api/typing` and
+  newsletter create now answer a refused request with `/api/send`'s status, `code` and
+  `retry_after` (403, 429, 400) instead of a flat 500. Other failures stay 500.
+- Webhook deliveries run on a fixed worker pool (`WEBHOOK_WORKERS`, default 8) with a
+  bounded queue (`WEBHOOK_QUEUE_SIZE`, default 1000); when the queue is full a delivery
+  is dropped and logged instead of starting another goroutine.
 
 ### Fixed
 
@@ -88,6 +101,42 @@ All notable changes to this fork are recorded here. The format follows
 
 - Go toolchain 1.27.3 to 1.27.4, which fixes GO-2026-6859 in `net/http`. The
   govulncheck scan failed on 1.27.3.
+- A message that reuses the ID of a stored message from a different sender (or flips
+  the own-message flag) no longer overwrites it. The original row stays, the attempt
+  is logged at warn level with ids only, and the poll options are left alone; the event
+  is still processed (chat row, webhooks). The sender's phone and LID forms count as
+  one author through `identities`, the event's SenderAlt and whatsmeow's LID map.
+  A colliding message starts no media download, stores no reaction or poll vote, and its
+  webhook carries `"id_collision": true` and no `media_download_url` (docs/WEBHOOK.md).
+  Download temp files older than an hour are removed at startup. Before this, any chat member could rewrite someone
+  else's stored message by reusing its ID and then pass the edit/revoke author check.
+  A failed author lookup refuses the overwrite too.
+- Group create, add members, remove members, promote, demote, leave, group rename and
+  topic, the disappearing timer, typing and newsletter create now go through both send allowlists, the antiban caps and the
+  reachout gate like a send does, on every JID they contact. Typing checks the
+  allowlists only. Creating a newsletter is refused while either allowlist is set,
+  since it has no listed recipient.
+- Media downloads are capped: a file whose message declares more than `MEDIA_MAX_BYTES`
+  (default 100 MiB, shared with `/api/download`) is not downloaded by auto-download,
+  the retry queue, the sweep or `/api/download` (413). Auto-download also skips a
+  document or video that declares no length; `/api/download` still fetches those.
+  Downloads stream to a 0600 temp file (`store/tmp`, or next to the auto-download
+  target) through whatsmeow's `DownloadToFile` with the cap enforced as bytes arrive:
+  a sender that declares a small `file_length` and serves more is aborted and the
+  partial file deleted. At most `MEDIA_DOWNLOAD_CONCURRENCY` (default 3) run at once.
+- Webhook address filter: blocks `::`, `0.0.0.0`, IPv4-mapped IPv6, 100.64.0.0/10,
+  198.18.0.0/15, NAT64 and 6to4. Every resolved address is checked and the connection
+  goes to the checked address, so DNS rebinding cannot swap it. A tailnet target now
+  needs `WEBHOOK_ALLOWED_ADDRS` (for example `100.64.0.0/10`).
+- Webhook replay: every delivery carries `X-Webhook-Timestamp`, and with a secret
+  `X-Webhook-Signature-V2` signs `timestamp + "." + body`. `X-Webhook-Signature`
+  (body only) is still sent for existing receivers. See docs/WEBHOOK.md.
+- `webhook_logs` older than `WEBHOOK_LOG_RETENTION_DAYS` (default 30, 0 keeps all) are
+  pruned at start and hourly. They hold message text.
+- New `store/` directories are created 0700 and a new `messages.db` / `whatsapp.db`
+  0600 (SQLite gives the -wal and -shm files the same mode). `scripts/wa-backup.sh`
+  runs with umask 077. Existing files and directories are not changed. A systemd
+  hardening snippet is in docs/REFERENCE.md.
 
 ## [v0.7.2-pro] - 2026-10-23
 

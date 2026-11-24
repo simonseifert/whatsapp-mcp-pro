@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,11 +23,6 @@ import (
 	"whatsapp-bridge/internal/mediastore"
 	"whatsapp-bridge/internal/whatsapp"
 )
-
-// maxMediaBytes caps the encrypted payload accepted from the WhatsApp CDN to
-// bound memory use per request. WhatsApp's largest documented media (documents)
-// is 64 MiB; 100 MiB leaves headroom for the trailing MAC and future limits.
-const maxMediaBytes = 100 << 20
 
 // hkdfInfo maps WhatsApp media types to the HKDF info string used for key derivation.
 var hkdfInfo = map[string][]byte{
@@ -77,13 +74,14 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	var (
 		mediaType, url, filename string
 		mediaKey, fileSHA256     []byte
+		fileLength               int64
 	)
 	row := s.messageStore.GetDB().QueryRow(
-		`SELECT COALESCE(media_type, ''), COALESCE(url, ''), media_key, COALESCE(filename, ''), file_sha256
+		`SELECT COALESCE(media_type, ''), COALESCE(url, ''), media_key, COALESCE(filename, ''), file_sha256, COALESCE(file_length, 0)
 		 FROM messages WHERE id = ? AND chat_jid = ?`,
 		req.MessageID, req.ChatJID,
 	)
-	if err := row.Scan(&mediaType, &url, &mediaKey, &filename, &fileSHA256); err != nil {
+	if err := row.Scan(&mediaType, &url, &mediaKey, &filename, &fileSHA256, &fileLength); err != nil {
 		SendJSONError(w, "message not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
@@ -128,6 +126,12 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "imported media file is missing from the store", http.StatusNotFound)
 		return
 	}
+	// The length the sender's message declares, checked before any network
+	// fetch; the CDN branch below re-checks the bytes it actually reads.
+	if err := whatsapp.CheckMediaSize(fileLength); err != nil {
+		SendJSONError(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
 	if url == "" {
 		s.downloadViaWhatsmeow(w, r, req, "no stored media URL")
 		return
@@ -170,63 +174,40 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		s.downloadViaWhatsmeow(w, r, req, fmt.Sprintf("CDN returned HTTP %d", resp.StatusCode))
 		return
 	}
-	enc, err := io.ReadAll(io.LimitReader(resp.Body, maxMediaBytes+1))
+	// The CDN read and decrypt hold about twice the file in memory, so this path
+	// takes the same download slot as every other download. Taken only now, after
+	// the status check: the whatsmeow fallbacks above take a slot of their own.
+	slotCtx, cancelSlot := context.WithTimeout(r.Context(), 2*time.Minute)
+	release, err := whatsapp.AcquireMediaSlot(slotCtx)
+	cancelSlot()
+	if err != nil {
+		SendJSONError(w, "no download slot free: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer release()
+
+	// MEDIA_MAX_BYTES caps the file itself, not the wire bytes: the encrypted
+	// body is the file plus PKCS#7 padding (up to 16 bytes) and the 10-byte MAC.
+	maxMediaBytes := mediastore.MaxBytes()
+	maxWire := maxMediaBytes + cdnFramingOverhead
+	enc, err := io.ReadAll(io.LimitReader(resp.Body, maxWire+1))
 	if err != nil {
 		SendJSONError(w, "read failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	if int64(len(enc)) > maxMediaBytes {
+	if int64(len(enc)) > maxWire {
 		SendJSONError(w, "media exceeds size limit", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if len(enc) < 26 {
-		SendJSONError(w, "ciphertext too short", http.StatusBadGateway)
+	plain, status, msg := decryptCDNMedia(enc, mediaKey, info)
+	if status != 0 {
+		SendJSONError(w, msg, status)
 		return
 	}
-
-	// Derive keys: HKDF-SHA256(mediaKey, salt=zero32, info, 112 bytes).
-	expanded := make([]byte, 112)
-	kdf := hkdf.New(sha256.New, mediaKey, make([]byte, 32), info)
-	if _, err := io.ReadFull(kdf, expanded); err != nil {
-		SendJSONError(w, "hkdf failed: "+err.Error(), http.StatusInternalServerError)
+	if int64(len(plain)) > maxMediaBytes {
+		SendJSONError(w, "media exceeds size limit", http.StatusRequestEntityTooLarge)
 		return
 	}
-	iv, cipherKey, macKey := expanded[:16], expanded[16:48], expanded[48:80]
-
-	body, mac := enc[:len(enc)-10], enc[len(enc)-10:]
-	hm := hmac.New(sha256.New, macKey)
-	hm.Write(iv)
-	hm.Write(body)
-	expectedMAC := hm.Sum(nil)[:10]
-	if !hmac.Equal(mac, expectedMAC) {
-		SendJSONError(w, "MAC verification failed", http.StatusBadRequest)
-		return
-	}
-
-	block, err := aes.NewCipher(cipherKey)
-	if err != nil {
-		SendJSONError(w, "cipher init: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if len(body) == 0 || len(body)%aes.BlockSize != 0 {
-		SendJSONError(w, "ciphertext not block-aligned", http.StatusBadRequest)
-		return
-	}
-	plain := make([]byte, len(body))
-	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, body)
-	// Strict PKCS#7 unpad: validate every padding byte equals the pad length.
-	pad := int(plain[len(plain)-1])
-	if pad <= 0 || pad > aes.BlockSize || pad > len(plain) {
-		SendJSONError(w, "bad PKCS7 padding", http.StatusInternalServerError)
-		return
-	}
-	for i := len(plain) - pad; i < len(plain); i++ {
-		if int(plain[i]) != pad {
-			SendJSONError(w, "bad PKCS7 padding", http.StatusInternalServerError)
-			return
-		}
-	}
-	plain = plain[:len(plain)-pad]
 
 	outPath, err := saveMedia(req.ChatJID, req.MessageID, mediaType, filename, plain)
 	if err != nil {
@@ -236,12 +217,64 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	writeDownloadResult(w, outPath, "cdn")
 }
 
+// cdnFramingOverhead is what the encrypted body adds to the file: up to 16
+// bytes of PKCS#7 padding and the 10-byte MAC.
+const cdnFramingOverhead = aes.BlockSize + 10
+
+// decryptCDNMedia verifies the MAC and decrypts a WhatsApp CDN payload. On
+// failure it returns the HTTP status and message to answer with.
+func decryptCDNMedia(enc, mediaKey, info []byte) (plain []byte, status int, msg string) {
+	if len(enc) < 26 {
+		return nil, http.StatusBadGateway, "ciphertext too short"
+	}
+	// Derive keys: HKDF-SHA256(mediaKey, salt=zero32, info, 112 bytes).
+	expanded := make([]byte, 112)
+	kdf := hkdf.New(sha256.New, mediaKey, make([]byte, 32), info)
+	if _, err := io.ReadFull(kdf, expanded); err != nil {
+		return nil, http.StatusInternalServerError, "hkdf failed: " + err.Error()
+	}
+	iv, cipherKey, macKey := expanded[:16], expanded[16:48], expanded[48:80]
+
+	body, mac := enc[:len(enc)-10], enc[len(enc)-10:]
+	hm := hmac.New(sha256.New, macKey)
+	hm.Write(iv)
+	hm.Write(body)
+	if !hmac.Equal(mac, hm.Sum(nil)[:10]) {
+		return nil, http.StatusBadRequest, "MAC verification failed"
+	}
+
+	block, err := aes.NewCipher(cipherKey)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "cipher init: " + err.Error()
+	}
+	if len(body) == 0 || len(body)%aes.BlockSize != 0 {
+		return nil, http.StatusBadRequest, "ciphertext not block-aligned"
+	}
+	plain = make([]byte, len(body))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, body)
+	// Strict PKCS#7 unpad: validate every padding byte equals the pad length.
+	pad := int(plain[len(plain)-1])
+	if pad <= 0 || pad > aes.BlockSize || pad > len(plain) {
+		return nil, http.StatusInternalServerError, "bad PKCS7 padding"
+	}
+	for i := len(plain) - pad; i < len(plain); i++ {
+		if int(plain[i]) != pad {
+			return nil, http.StatusInternalServerError, "bad PKCS7 padding"
+		}
+	}
+	return plain[:len(plain)-pad], 0, ""
+}
+
 // downloadViaWhatsmeow is the fallback when the stored CDN URL is unusable. Those
 // URLs carry signed, expiring query params, so anything older than a few weeks
 // 403s. whatsmeow re-resolves the message's direct_path against fresh media
 // hosts, which works for as long as WhatsApp still holds the file.
 func (s *Server) downloadViaWhatsmeow(w http.ResponseWriter, r *http.Request, req downloadRequest, cdnErr string) {
 	data, mediaType, filename, err := s.client.FetchMessageMedia(r.Context(), s.messageStore, req.MessageID, req.ChatJID, !req.NoPhoneRetry)
+	if errors.Is(err, whatsapp.ErrMediaTooLarge) {
+		SendJSONError(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
 	if err != nil {
 		SendJSONError(w, cdnErr+"; whatsmeow fallback: "+err.Error(), http.StatusBadGateway)
 		return

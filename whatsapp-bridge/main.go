@@ -98,6 +98,11 @@ func main() {
 		fireConnectionEvent(webhookManager, client, "circuit_breaker_exhausted", "30 consecutive reconnect failures")
 	})
 
+	// A crash mid-download leaves a temp file behind; drop those older than an hour.
+	if n := whatsapp.CleanStaleDownloadTemps("store", time.Hour); n > 0 {
+		logger.Infof("Removed %d stale download temp files", n)
+	}
+
 	// Identity directory: keeps the unified users/chats table in messages.db in
 	// step with the contact store, the LID map and our own chat history.
 	identitySyncer := client.NewIdentitySyncer(messageStore, cfg.IdentitySyncInterval, cfg.MergeLIDChats)
@@ -359,9 +364,16 @@ func main() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	// The same loop prunes old webhook_logs (they hold message text): once at
+	// start, then hourly. WEBHOOK_LOG_RETENTION_DAYS sets the window.
 	go func() {
+		webhookManager.PruneLogs()
+		ticks := 0
 		for range ticker.C {
 			logger.Debugf("[STATS] Connected: %v, JID: %v", client.IsConnected(), client.Store.ID)
+			if ticks++; ticks%120 == 0 {
+				webhookManager.PruneLogs()
+			}
 		}
 	}()
 

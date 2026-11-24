@@ -78,22 +78,18 @@ func init() {
 	startRateLimitJanitor()
 }
 
-// getAllowedOrigins returns the list of allowed CORS origins
+// getAllowedOrigins returns the CORS origins from CORS_ORIGINS (comma-separated)
+// and nothing else. There are no built-in origins: the old built-in localhost
+// ports trusted whatever happened to listen there (qBittorrent's web UI, on
+// one install), with credentials allowed.
 func getAllowedOrigins() map[string]bool {
-	origins := map[string]bool{
-		"http://localhost:8089": true, // Webhook UI (localhost)
-		"http://localhost:8090": true, // Pairing UI (localhost)
-		"http://127.0.0.1:8089": true, // Webhook UI (IP — browsers use IP when accessed via 127.0.0.1)
-		"http://127.0.0.1:8090": true, // Pairing UI (IP)
-	}
-
-	// Allow additional origins from env var (comma-separated)
-	if extra := os.Getenv("CORS_ORIGINS"); extra != "" {
-		for _, origin := range strings.Split(extra, ",") {
-			origins[strings.TrimSpace(origin)] = true
+	origins := map[string]bool{}
+	for _, origin := range strings.Split(os.Getenv("CORS_ORIGINS"), ",") {
+		// An empty entry would match requests that carry no Origin header.
+		if origin = strings.TrimSpace(origin); origin != "" {
+			origins[origin] = true
 		}
 	}
-
 	return origins
 }
 

@@ -312,7 +312,7 @@ func (s *Server) handleEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if refuseUnlistedRecipient(w, req.ChatJID) {
+	if s.refuseUnlisted(w, req.ChatJID) {
 		return
 	}
 
@@ -388,7 +388,7 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if refuseUnlistedRecipient(w, req.ChatJID) {
+	if s.refuseUnlisted(w, req.ChatJID) {
 		return
 	}
 
@@ -620,9 +620,17 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlistedAll(w, req.Participants...) {
+		return
+	}
+	if len(req.Participants) == 0 && sendAllowlistActive() {
+		SendJSONError(w, "Group creation is not allowed while SEND_ALLOWED_JIDS is set and no listed participant is given", http.StatusForbidden)
+		return
+	}
+
 	groupInfo, err := s.client.CreateGroup(req.Name, req.Participants)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to create group: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to create group: ", err)
 		return
 	}
 
@@ -659,9 +667,13 @@ func (s *Server) handleAddGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlistedAll(w, append([]string{req.GroupJID}, req.Participants...)...) {
+		return
+	}
+
 	results, err := s.client.AddGroupParticipants(req.GroupJID, req.Participants)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to add members: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to add members: ", err)
 		return
 	}
 
@@ -706,9 +718,13 @@ func (s *Server) handleRemoveGroupMembers(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if s.refuseUnlistedAll(w, append([]string{req.GroupJID}, req.Participants...)...) {
+		return
+	}
+
 	results, err := s.client.RemoveGroupParticipants(req.GroupJID, req.Participants)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to remove members: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to remove members: ", err)
 		return
 	}
 
@@ -752,9 +768,13 @@ func (s *Server) handlePromoteAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlistedAll(w, req.GroupJID, req.Participant) {
+		return
+	}
+
 	_, err := s.client.PromoteGroupParticipant(req.GroupJID, req.Participant)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to promote admin: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to promote admin: ", err)
 		return
 	}
 
@@ -792,9 +812,13 @@ func (s *Server) handleDemoteAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlistedAll(w, req.GroupJID, req.Participant) {
+		return
+	}
+
 	_, err := s.client.DemoteGroupParticipant(req.GroupJID, req.Participant)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to demote admin: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to demote admin: ", err)
 		return
 	}
 
@@ -831,9 +855,13 @@ func (s *Server) handleLeaveGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlisted(w, req.GroupJID) {
+		return
+	}
+
 	err := s.client.LeaveGroup(req.GroupJID)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to leave group: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to leave group: ", err)
 		return
 	}
 
@@ -876,16 +904,32 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlisted(w, req.GroupJID) {
+		return
+	}
+
 	var errors []string
 
 	if req.Name != "" {
 		if err := s.client.SetGroupName(req.GroupJID, req.Name); err != nil {
+			if gateRefusal(err) {
+				writeActionFailure(w, "Failed to rename group: ", err)
+				return
+			}
 			errors = append(errors, fmt.Sprintf("name: %v", err))
 		}
 	}
 
 	if req.Topic != "" {
 		if err := s.client.SetGroupTopic(req.GroupJID, req.Topic); err != nil {
+			if gateRefusal(err) {
+				prefix := "Failed to set group topic: "
+				if req.Name != "" && len(errors) == 0 {
+					prefix = "Group name was changed, but setting the topic failed: "
+				}
+				writeActionFailure(w, prefix, err)
+				return
+			}
 			errors = append(errors, fmt.Sprintf("topic: %v", err))
 		}
 	}
@@ -1371,9 +1415,17 @@ func (s *Server) handleCreateNewsletter(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Creating a channel contacts nobody, so no listed recipient can authorise
+	// it: with an allowlist set it is refused (the client repeats this for
+	// WHATSAPP_ALLOWLIST_JIDS and applies the antiban caps).
+	if sendAllowlistActive() {
+		SendJSONError(w, "Recipient not in SEND_ALLOWED_JIDS allowlist", http.StatusForbidden)
+		return
+	}
+
 	info, err := s.client.CreateNewsletterChannel(req.Name, req.Description)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to create newsletter: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to create newsletter: ", err)
 		return
 	}
 
@@ -1418,9 +1470,13 @@ func (s *Server) handleSendTyping(w http.ResponseWriter, r *http.Request) {
 		req.State = "typing"
 	}
 
+	if s.refuseUnlisted(w, req.ChatJID) {
+		return
+	}
+
 	err := s.client.SendTypingIndicator(req.ChatJID, req.State)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to send typing indicator: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to send typing indicator: ", err)
 		return
 	}
 
@@ -1494,9 +1550,13 @@ func (s *Server) handleSetDisappearingTimer(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if s.refuseUnlisted(w, req.ChatJID) {
+		return
+	}
+
 	err := s.client.SetDisappearingTimer(req.ChatJID, req.Duration)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to set disappearing timer: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to set disappearing timer: ", err)
 		return
 	}
 

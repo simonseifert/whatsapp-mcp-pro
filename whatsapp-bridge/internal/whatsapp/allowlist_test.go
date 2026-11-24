@@ -19,6 +19,10 @@ func TestIsRecipientAllowed(t *testing.T) {
 		return types.JID{User: id, Server: "g.us"}
 	}
 
+	lid := func(user string) types.JID {
+		return types.JID{User: user, Server: "lid"}
+	}
+
 	tests := []struct {
 		name      string
 		allowlist []string
@@ -32,6 +36,12 @@ func TestIsRecipientAllowed(t *testing.T) {
 		{"case insensitive", []string{"1203630123456789@G.US"}, group("1203630123456789"), true},
 		{"one of several", []string{"111", "4915112345678", "222"}, pn("4915112345678"), true},
 		{"surrounding whitespace tolerated", []string{" 4915112345678 "}, pn("4915112345678"), true},
+
+		// A bare number is a phone number: never a LID or a group with the same digits.
+		{"bare number does not match a LID", []string{"4915112345678"}, lid("4915112345678"), false},
+		{"bare number does not match a group", []string{"4915112345678"}, group("4915112345678"), false},
+		{"explicit LID entry matches the LID", []string{"4915112345678@lid"}, lid("4915112345678"), true},
+		{"explicit LID entry does not match the phone JID", []string{"4915112345678@lid"}, pn("4915112345678"), false},
 
 		// Plain denials.
 		{"unlisted number denied", []string{"4915112345678"}, pn("4915199999999"), false},

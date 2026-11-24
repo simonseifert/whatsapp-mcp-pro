@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,11 +22,12 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
-// ssrfSafeDialContext rejects connections to private/reserved IPs at the moment
-// of dialing, after DNS has resolved. ValidateWebhookURL checks the hostname's
-// IPs earlier, but that resolution and the actual connect are separate lookups —
-// a short-TTL DNS-rebinding flip between them would otherwise slip a private
-// address through. This closes that window by validating the concrete dialed IP.
+// ssrfSafeDialContext resolves the host itself, checks every address it got,
+// and then connects to one of those checked addresses. Checking a lookup and
+// then letting the dialer do its own is a DNS-rebinding window: a short-TTL
+// answer can be public for the check and loopback for the connect. Dialing the
+// IP we checked closes it; the Control hook re-checks the concrete address as
+// a backstop for redirects and literal IPs.
 func ssrfSafeDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
 	dialer := &net.Dialer{
 		Timeout: 30 * time.Second,
@@ -42,18 +45,115 @@ func ssrfSafeDialContext() func(ctx context.Context, network, addr string) (net.
 			return nil
 		},
 	}
-	return dialer.DialContext
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if os.Getenv("DISABLE_SSRF_CHECK") == "true" {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("bad dial address %q: %w", addr, err)
+		}
+		var ips []net.IP
+		if ip := net.ParseIP(host); ip != nil {
+			if isPrivateIP(ip) && !allowedPrivateTarget(ip, port) {
+				return nil, fmt.Errorf("refusing to dial private address %s", host)
+			}
+			ips = []net.IP{ip}
+		} else if ips, err = resolveChecked(ctx, host, port); err != nil {
+			return nil, err
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
 }
 
-// DeliveryService handles webhook delivery with retry logic
+// Delivery pool defaults. A delivery can live for minutes (five attempts, 30s
+// timeout each, backoff between), so one goroutine per message let a flood of
+// messages against a slow endpoint grow without bound.
+const (
+	defaultDeliveryWorkers = 8
+	defaultDeliveryQueue   = 1000
+)
+
+func envPositiveInt(name string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(name)); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
+
+// deliveryJob is one queued webhook delivery.
+type deliveryJob struct {
+	config    *types.WebhookConfig
+	payload   *types.WebhookPayload
+	messageID string
+	chatJID   string
+	trigger   *types.WebhookTrigger
+}
+
+// DeliveryService handles webhook delivery with retry logic through a fixed
+// worker pool and a bounded queue.
 type DeliveryService struct {
 	messageStore *database.MessageStore
 	logger       waLog.Logger
 	httpClient   *http.Client
+
+	queue   chan deliveryJob
+	dropped atomic.Int64
+	// deliver runs one job; DeliverWebhook in production, a stand-in in tests.
+	deliver func(deliveryJob)
 }
 
-// NewDeliveryService creates a new delivery service
+// NewDeliveryService creates a new delivery service with WEBHOOK_WORKERS
+// workers (default 8) and a queue of WEBHOOK_QUEUE_SIZE jobs (default 1000).
 func NewDeliveryService(messageStore *database.MessageStore, logger waLog.Logger) *DeliveryService {
+	ds := newDeliveryService(messageStore, logger)
+	ds.startWorkers(envPositiveInt("WEBHOOK_WORKERS", defaultDeliveryWorkers), envPositiveInt("WEBHOOK_QUEUE_SIZE", defaultDeliveryQueue))
+	return ds
+}
+
+// startWorkers allocates the queue and starts the workers.
+func (ds *DeliveryService) startWorkers(workers, queueSize int) {
+	ds.queue = make(chan deliveryJob, queueSize)
+	if ds.deliver == nil {
+		ds.deliver = func(j deliveryJob) {
+			ds.DeliverWebhook(j.config, j.payload, j.messageID, j.chatJID, j.trigger)
+		}
+	}
+	for i := 0; i < workers; i++ {
+		go func() {
+			for job := range ds.queue {
+				ds.deliver(job)
+			}
+		}()
+	}
+}
+
+// Submit queues a delivery. When the queue is full the delivery is dropped,
+// counted and logged, and false is returned: dropping under overload is
+// better than letting the backlog take the bridge down.
+func (ds *DeliveryService) Submit(config *types.WebhookConfig, payload *types.WebhookPayload, messageID, chatJID string, trigger *types.WebhookTrigger) bool {
+	select {
+	case ds.queue <- deliveryJob{config, payload, messageID, chatJID, trigger}:
+		return true
+	default:
+		n := ds.dropped.Add(1)
+		ds.logger.Errorf("Webhook delivery queue full: dropped delivery of %s to webhook %q (%d dropped so far)", messageID, config.Name, n)
+		return false
+	}
+}
+
+// Dropped is how many deliveries were dropped because the queue was full.
+func (ds *DeliveryService) Dropped() int64 { return ds.dropped.Load() }
+
+func newDeliveryService(messageStore *database.MessageStore, logger waLog.Logger) *DeliveryService {
 	return &DeliveryService{
 		messageStore: messageStore,
 		logger:       logger,
@@ -154,10 +254,17 @@ func (ds *DeliveryService) sendHTTPRequest(config *types.WebhookConfig, payload 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "WhatsApp-Bridge-Webhook/1.0")
 
-	// Add HMAC signature if secret token is provided
+	// The timestamp is sent whether or not there is a secret, so a receiver can
+	// reject a stale delivery; with a secret it is also signed, which is what
+	// makes a captured delivery useless to replay after the window.
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	req.Header.Set("X-Webhook-Timestamp", ts)
 	if config.SecretToken != "" {
-		signature := ds.generateHMACSignature(payload, config.SecretToken)
-		req.Header.Set("X-Webhook-Signature", signature)
+		// Legacy: HMAC of the body alone, kept so existing receivers keep
+		// working. It does not cover the timestamp and is replayable.
+		req.Header.Set("X-Webhook-Signature", ds.generateHMACSignature(payload, config.SecretToken))
+		// Current: HMAC of "<timestamp>.<body>".
+		req.Header.Set("X-Webhook-Signature-V2", ds.generateTimestampedSignature(ts, payload, config.SecretToken))
 	}
 
 	// Send request
@@ -185,4 +292,14 @@ func (ds *DeliveryService) generateHMACSignature(payload []byte, secret string) 
 	h.Write(payload)
 	signature := hex.EncodeToString(h.Sum(nil))
 	return "sha256=" + signature
+}
+
+// generateTimestampedSignature signs timestamp + "." + body, so the timestamp
+// header cannot be swapped for a fresh one on a captured delivery.
+func (ds *DeliveryService) generateTimestampedSignature(timestamp string, payload []byte, secret string) string {
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(timestamp))
+	h.Write([]byte("."))
+	h.Write(payload)
+	return "sha256=" + hex.EncodeToString(h.Sum(nil))
 }

@@ -134,7 +134,8 @@ when code/data were split as above.)
   the whatsmeow send call. They are not aliases of each other. Matching is
   exact by design — see `IsRecipientAllowed`; a substring match once let an
   entry of `net` allow every recipient. Both gate every message-creating
-  endpoint (send, reaction, poll, edit, delete), not just `/api/send`; a new
+  endpoint (send, reaction, poll, edit, delete, group create/add/rename/topic, disappearing timer; typing and
+  newsletter create too), not just `/api/send`; a bare number matches the phone JID only, never a LID; a new
   endpoint that writes to a chat must call the same checks.
 - **LID vs phone JID.** The same conversation can be filed under
   `…@lid` on one device and `…@s.whatsapp.net` on another. Both identities live

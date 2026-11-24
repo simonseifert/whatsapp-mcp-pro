@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,32 @@ func (wm *Manager) LoadWebhookConfigs() error {
 	}
 
 	return nil
+}
+
+// LogRetentionDays is WEBHOOK_LOG_RETENTION_DAYS: how long webhook_logs rows
+// (which hold message text) are kept. Default 30; 0 keeps them forever.
+func LogRetentionDays() int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("WEBHOOK_LOG_RETENTION_DAYS"))); err == nil && v >= 0 {
+		return v
+	}
+	return 30
+}
+
+// PruneLogs deletes webhook_logs older than the retention window and logs how
+// many it removed. A retention of 0 disables pruning.
+func (wm *Manager) PruneLogs() {
+	days := LogRetentionDays()
+	if wm == nil || days == 0 {
+		return
+	}
+	n, err := wm.messageStore.PruneWebhookLogs(time.Now().Add(-time.Duration(days) * 24 * time.Hour))
+	if err != nil {
+		wm.logger.Warnf("Could not prune webhook logs: %v", err)
+		return
+	}
+	if n > 0 {
+		wm.logger.Infof("Pruned %d webhook log rows older than %d days", n, days)
+	}
 }
 
 // GetWebhookConfigs returns a copy of current webhook configurations
@@ -219,7 +246,7 @@ func (wm *Manager) DeliverConnectionEvent(payload *types.ConnectionEventPayload)
 		}
 		localConfig := config
 		localTrigger := systemTrigger
-		go wm.delivery.DeliverWebhook(localConfig, wp, "system-"+payload.EventType, "", &localTrigger)
+		wm.delivery.Submit(localConfig, wp, "system-"+payload.EventType, "", &localTrigger)
 	}
 }
 
@@ -251,7 +278,7 @@ func (wm *Manager) DeliverEvent(eventType string, info types.WebhookMessageInfo,
 			continue
 		}
 		payload := buildEventPayload(config, matched, eventType, info, call)
-		go wm.delivery.DeliverWebhook(config, payload, eventType+"-"+info.ID, info.ChatJID, matched)
+		wm.delivery.Submit(config, payload, eventType+"-"+info.ID, info.ChatJID, matched)
 	}
 }
 
@@ -310,6 +337,17 @@ func (wm *Manager) senderName(msg *events.Message) string {
 
 // ProcessMessage processes a message and sends webhooks if triggers match
 func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatName string) {
+	wm.processMessage(client, msg, chatName, false)
+}
+
+// ProcessCollidingMessage is ProcessMessage for a message whose ID is already
+// stored for a different sender: the payload carries "id_collision": true and
+// no media download URL.
+func (wm *Manager) ProcessCollidingMessage(client interface{}, msg *events.Message, chatName string) {
+	wm.processMessage(client, msg, chatName, true)
+}
+
+func (wm *Manager) processMessage(client interface{}, msg *events.Message, chatName string, collision bool) {
 	startTime := time.Now()
 
 	chatJID, chatJIDAlt := chatForms(client, msg.Info.Chat)
@@ -324,6 +362,10 @@ func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatN
 
 	basePayload := buildMessagePayload(msg, chatName, wm.senderName(msg), chatJID, chatJIDAlt, wm.downloadBaseURL)
 	basePayload.Metadata.ProcessingTimeMs = time.Since(startTime).Milliseconds()
+	if collision {
+		basePayload.Message.IDCollision = true
+		basePayload.Message.MediaDownloadURL = ""
+	}
 
 	// Send webhooks for each matched configuration
 	for _, config := range matchedConfigs {
@@ -357,7 +399,7 @@ func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatN
 		payload.Metadata.DeliveryAttempt = 1
 
 		// Send webhook asynchronously
-		go wm.delivery.DeliverWebhook(config, &payload, msg.Info.ID, chatJID, matchedTrigger)
+		wm.delivery.Submit(config, &payload, msg.Info.ID, chatJID, matchedTrigger)
 	}
 }
 

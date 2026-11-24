@@ -43,3 +43,36 @@ func TestIsAuthenticatedLoopbackIgnoresForwardedHeader(t *testing.T) {
 		t.Error("a forwarded header must not make a remote caller loopback")
 	}
 }
+
+// Origins come only from CORS_ORIGINS; the old built-in localhost ports, the
+// :8090 one included, are gone (review-bridge #8).
+func TestAllowedOriginsComeOnlyFromConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		allowed []string
+		denied  []string
+	}{
+		{"unset trusts nothing", "", nil,
+			[]string{"http://localhost:8089", "http://localhost:8090", "http://127.0.0.1:8089", "http://127.0.0.1:8090", ""}},
+		{"configured origins only", "https://a.example, https://b.example",
+			[]string{"https://a.example", "https://b.example"}, []string{"http://localhost:8090", "https://c.example"}},
+		{"empty entries ignored", "https://a.example,,", []string{"https://a.example"}, []string{""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CORS_ORIGINS", tt.env)
+			got := getAllowedOrigins()
+			for _, o := range tt.allowed {
+				if !got[o] {
+					t.Errorf("%q not allowed", o)
+				}
+			}
+			for _, o := range tt.denied {
+				if got[o] {
+					t.Errorf("%q allowed", o)
+				}
+			}
+		})
+	}
+}

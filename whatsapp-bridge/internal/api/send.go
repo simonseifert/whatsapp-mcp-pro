@@ -166,6 +166,24 @@ func writeSendFailure(w http.ResponseWriter, prefix string, err error) {
 	writeOutcome(w, out, body)
 }
 
+// gateRefusal reports whether err is a classified send failure (allowlist,
+// reachout lock, antiban cap, bad JID) rather than a plain WhatsApp error.
+func gateRefusal(err error) bool {
+	var se *whatsapp.SendError
+	return errors.As(err, &se)
+}
+
+// writeActionFailure answers a gated non-message action (group, timer, typing,
+// newsletter). A classified failure gets /api/send's status, code and
+// retry_after; anything else keeps the plain 500 these endpoints always gave.
+func writeActionFailure(w http.ResponseWriter, prefix string, err error) {
+	if gateRefusal(err) {
+		writeSendFailure(w, prefix, err)
+		return
+	}
+	SendJSONError(w, prefix+err.Error(), http.StatusInternalServerError)
+}
+
 // payloadHash fingerprints the request minus its idempotency key, so a key
 // reused for a different message is caught.
 func payloadHash(v any) string {
@@ -306,7 +324,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if s.refuseBareLIDRecipient(w, req.Recipient) {
 		return
 	}
-	if refuseUnlistedRecipient(w, req.Recipient) {
+	if s.refuseUnlisted(w, req.Recipient) {
 		return
 	}
 	if req.Message == "" && req.MediaPath == "" {
@@ -405,7 +423,7 @@ func (s *Server) handleReaction(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "chat_jid and message_id are required", http.StatusBadRequest)
 		return
 	}
-	if refuseUnlistedRecipient(w, req.ChatJID) {
+	if s.refuseUnlisted(w, req.ChatJID) {
 		return
 	}
 	if refuseImportedTarget(w, req.MessageID) {
@@ -466,7 +484,7 @@ func (s *Server) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "Maximum 12 options allowed", http.StatusBadRequest)
 		return
 	}
-	if refuseUnlistedRecipient(w, req.ChatJID) {
+	if s.refuseUnlisted(w, req.ChatJID) {
 		return
 	}
 
