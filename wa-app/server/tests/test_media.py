@@ -41,6 +41,17 @@ def downloads(monkeypatch):
     return calls, results
 
 
+def test_media_keeps_its_own_stricter_csp_next_to_the_app_headers(logged_in: TestClient, settings, downloads):
+    _, results = downloads
+    results["M1"] = str(_jpeg(settings.store_path / NIKOLA / "image_1.jpg"))
+    response = logged_in.get(f"/api/media/{NIKOLA}/M1")
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "same-origin"
+    assert response.headers["cross-origin-opener-policy"] == "same-origin"
+
+
 def test_media_missing_returns_404_json(logged_in: TestClient, downloads):
     response = logged_in.get(f"/api/media/{NIKOLA}/M9999")
     assert response.status_code == 404

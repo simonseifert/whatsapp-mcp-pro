@@ -20,6 +20,7 @@ from . import agent_api, api, appdb, auth, config, live
 from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
+from .headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger("wa_app")
 
@@ -99,7 +100,10 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
         routes.append(Route("/{rest:path}", no_build))
     return Starlette(
         routes=routes,
-        middleware=[Middleware(AuthMiddleware, conn=conn, agent_token=settings.agent_token)],
+        middleware=[
+            Middleware(SecurityHeadersMiddleware),
+            Middleware(AuthMiddleware, conn=conn, agent_token=settings.agent_token),
+        ],
         lifespan=lifespan,
     )
 

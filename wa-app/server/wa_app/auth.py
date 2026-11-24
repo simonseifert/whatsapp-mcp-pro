@@ -11,7 +11,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import live
 from .tokens import token_hash
@@ -27,6 +27,10 @@ MIN_PASSPHRASE = 10
 MAX_PASSPHRASE_BYTES = 1024  # argon2 hashes whatever it is given: bound the work an unauthenticated caller can ask for
 MAX_FAILURES = 5
 FAILURE_WINDOW = 15 * 60
+
+MAX_JSON_BODY = 64 * 1024  # every JSON route, login included; a draft is at most 4096 characters
+# Routes that really take bigger bodies get their own cap here, by path prefix. None do today.
+UPLOAD_LIMITS: dict[str, int] = {}
 
 _hasher = PasswordHasher()
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -147,6 +151,14 @@ def _error(status: int, message: str) -> Response:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def body_limit(path: str) -> int:
+    return next((limit for prefix, limit in UPLOAD_LIMITS.items() if path.startswith(prefix)), MAX_JSON_BODY)
+
+
+class _TooLarge(Exception):
+    pass
+
+
 class AuthMiddleware:
     """Origin check on writes; 401 JSON on /api/* without a session (auth and health excepted).
 
@@ -174,6 +186,38 @@ class AuthMiddleware:
             return
         request = Request(scope)
         path = request.url.path
+        limit = body_limit(path)
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            # Refused before a byte is read: nothing buffers a body this size, authenticated or not.
+            await _error(413, "Body too large")(scope, receive, send)
+            return
+        received = 0
+        started = False
+
+        async def counted_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:  # chunked, or a Content-Length that lied
+                    raise _TooLarge
+            return message
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self._route(scope, counted_receive, tracked_send, request, path)
+        except _TooLarge:
+            if started:
+                raise
+            await _error(413, "Body too large")(scope, receive, send)
+
+    async def _route(self, scope: Scope, receive: Receive, send: Send, request: Request, path: str) -> None:
         if path.startswith("/api/agent/"):
             refused = self._agent_response(request)
             if refused is not None:
