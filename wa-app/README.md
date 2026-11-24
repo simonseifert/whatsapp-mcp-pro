@@ -31,8 +31,9 @@ Expose it with `tailscale serve` (never Funnel by default). Session cookies are 
 Cookies are not isolated by port: every service on the same hostname (`host.tailnet.ts.net:8445` next to `:8443`,
 `:10000` and the rest) receives the same cookies and counts as the same site. A bug in any of them could read or record
 wa-app's session cookie, or frame wa-app. So serve wa-app on a hostname of its own (a Tailscale Service or a separate
-tsnet node) and not on a shared one. The code side is done: the cookie is `__Host-wa_session` (Secure, `Path=/`, no
-`Domain`), which a sibling cannot set or overwrite from a subdomain, but a shared hostname is still the weak point.
+tsnet node) and not on a shared one. The cookie is `__Host-wa_session` (Secure, `Path=/`, no
+`Domain`), which stops subdomains and plain-http pages from setting it, but it does not isolate ports: other services on
+the same host still receive it and can set it. **This finding stays open until wa-app has its own hostname.**
 The old `wa_session` name is accepted for one release so existing logins survive; the next login sets the new name.
 Plain-http development (`WA_APP_INSECURE_COOKIES=1`) keeps the old name, because `__Host-` needs `Secure`.
 

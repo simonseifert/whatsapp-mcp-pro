@@ -7,7 +7,7 @@ import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 
 // Files in public/ that belong to the shell (they are not part of the bundle graph, so they are listed here).
-const PUBLIC_SHELL = ['/favicon.svg', '/favicon.ico', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/site.webmanifest']
+const PUBLIC_SHELL = ['/favicon.svg', '/favicon.ico', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/site.webmanifest', '/theme-init.js']
 // Resolved from this file, so a build started from another directory still finds them.
 const PUBLIC_DIR = fileURLToPath(new URL('./public', import.meta.url))
 const SHELL_EXT = /\.(js|css|woff2?|png|svg|ico)$/

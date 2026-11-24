@@ -1959,7 +1959,7 @@ input {
   margin: 0;
   border: solid transparent;
   border-width: 8px 0;
-  border-radius: var(--radius-full);
+  border-radius: 14px / 22px; /* the 8 px vertical borders leave 14 px corners on the 28 px padding-box track: a true pill */
   appearance: none;
   background:
     radial-gradient(circle closest-side, var(--muted) 96%, transparent) 2px center / 24px 24px no-repeat,

@@ -16,9 +16,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import live
 from .tokens import token_hash
 
-COOKIE_HOST = (
-    "__Host-wa_session"  # Secure, Path=/, no Domain: a sibling service on the same hostname cannot set or shadow it
-)
+# Secure, Path=/, no Domain. `__Host-` stops subdomains and plain-http pages from setting it. It does NOT isolate
+# ports: cookies ignore ports, so another service on the same host (:8443, :10000 ...) still receives this cookie and
+# can set it. That part of L3 stays open until wa-app has its own hostname.
+COOKIE_HOST = "__Host-wa_session"
 COOKIE_LEGACY = "wa_session"  # accepted for one release so existing logins survive; the next login sets the new name
 COOKIE = COOKIE_HOST
 COOKIES = (COOKIE_HOST, COOKIE_LEGACY)

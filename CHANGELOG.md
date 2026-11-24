@@ -18,12 +18,13 @@ App and MCP audit fixes (see DECISIONS.md D24):
 - `send_file` and `send_audio_message` answer one generic "Media file not found or not allowed" for a missing and a
   forbidden path, so they no longer reveal which files exist.
 - OAuth: client-supplied values are cleaned before they are logged (no log forgery); `/register` is limited to 10 per
-  hour per source address and `/authorize` to 20; the client cap is 200; unused clients older than 30 days and expired
+  hour per source address (shared connector addresses make it generous) and `/authorize` to 20; the client cap is 200 and a full table drops the oldest never-used client instead of refusing; client names are cut at 200 characters; unused clients older than 30 days and expired
   pending requests are pruned; open pending requests are capped per client and per address and the oldest are
   evicted instead of refusing everyone. X-Forwarded-For is only read from `MCP_TRUSTED_PROXY` peers.
 - wa-app sends a CSP, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options` and COOP on every response, and
   answers 413 to a request body over 64 KB before reading it.
-- wa-app's session cookie is `__Host-wa_session` when cookies are secure. The old name is accepted for one release;
+- wa-app's session cookie is `__Host-wa_session` when cookies are secure (this does not isolate ports: the own-hostname
+  step in the wa-app README is still needed, so the shared-hostname finding stays open). The old name is accepted for one release;
   the next login sets the new one. Everyone is logged in again only if they clear cookies.
 
 ### Changed

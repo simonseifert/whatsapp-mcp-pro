@@ -374,7 +374,9 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
 - Tool errors do not describe the file system. `send_file`, `send_audio_message` and `transcribe_audio_file` check the
   allowed directories first and give one answer for missing and forbidden.
 - Open registration stays open, but small. Connectors have to register themselves, so `/register` stays public with
-  10 registrations and 20 authorizations per address per hour, 200 clients, and clients unused for 30 days dropped.
+  100 registrations and 20 authorizations per address per hour (connectors register from shared addresses, so a
+  tight limit would let anyone lock the owner out of adding one), 200 clients, a full table dropping the oldest client
+  that never got a token instead of refusing, and clients unused for 30 days dropped.
   Open consent requests are capped per client and per address, and a full table drops its oldest rows, so one flooder
   cannot lock the owner out. The address comes from X-Forwarded-For only when the peer is in `MCP_TRUSTED_PROXY`.
   Client-supplied text is cleaned before it is logged.
@@ -382,10 +384,14 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   and COOP on every response. The theme bootstrap moved to a file for that. Request bodies are capped at 64 KB and
   refused with 413 before they are read.
 - The cookie is `__Host-wa_session` when cookies are secure; the old name works for one release. That does not make
-  sharing a hostname with other services safe. wa-app should get its own hostname; that is a deployment change, not
+  sharing a hostname with other services safe: cookies ignore ports, so the other services on the host still receive
+  and can set it. The shared-hostname finding (L3) stays OPEN until wa-app has its own hostname. wa-app should get its own hostname; that is a deployment change, not
   code, and is left to the owner.
 - Design: amber is for unread, the active tab, links and drafts only, so header icons, sheet close, Log out, Cancel and
   the selected theme are neutral. Switches are 44 px high and labelled. A message that blocks Save, such as "Add a
   local AI in Settings first", is shown as a warning with an icon.
+- Local-only voice notes that fail because whisper is down are retried every 10 minutes, and the MCP server fails
+  closed (everything counts as local only) when wa-app is configured but its app.db cannot be read. The default of
+  `TRANSCRIBE_CLOUD_FALLBACK` stays on; whether to make it opt-in is the owner's decision.
 - Not done here: network and account items from the audit (public Funnel exposure of the MCP, send allowlists, a
   separate env file for wa-app) are deployment settings for the owner.

@@ -47,10 +47,9 @@ test('the AI sheet has labelled 44 px switches and shows the warning', async ({ 
   const local = page.getByRole('switch', { name: 'Local only' })
   await local.check()
   const warning = page.getByRole('alert').filter({ hasText: 'Add a local AI in Settings first' })
-  if (await warning.count()) {
-    expect(await style(warning, 'color')).not.toBe(await NEUTRAL_FG(page, '.sheet h2'))
-    await expect(warning.locator('svg')).toBeVisible()
-  }
+  await expect(warning).toBeVisible() // the sandbox has no local AI, so Local only must warn
+  expect(await style(warning, 'color')).not.toBe(await NEUTRAL_FG(page, '.sheet h2'))
+  await expect(warning.locator('svg')).toBeVisible()
 })
 
 test('the draft card stays inside the 760 px column on desktop', async ({ page }) => {
@@ -87,4 +86,9 @@ test('settings: Log out is neutral', async ({ page }) => {
   await expect(logout).toBeVisible()
   expect(await style(logout, 'color')).toMatch(/^rgb/)
   expect(AMBER).not.toContain(await style(logout, 'color'))
+})
+
+test('the service worker caches the theme bootstrap too', async ({ page }) => {
+  const sw = await (await page.request.get('/sw.js')).text()
+  expect(sw).toContain('/theme-init.js')
 })

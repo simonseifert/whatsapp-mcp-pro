@@ -137,3 +137,21 @@ def test_agent_api_is_capped_too(settings):
             "/api/agent/drafts", content=b"x" * (auth.MAX_JSON_BODY + 1), headers={"Authorization": f"Bearer {token}"}
         )
         assert response.status_code == 413
+
+
+def test_log_safe_keeps_chat_controlled_ids_on_one_line():
+    from wa_app.logsafe import log_safe
+
+    forged = "ABC\n2026-11-24 INFO forged\r\x1b[2J" + "x" * 500
+    cleaned = log_safe(forged)
+    assert "\n" not in cleaned and "\r" not in cleaned and "\x1b" not in cleaned
+    assert len(cleaned) <= 83
+
+
+def test_media_log_line_cannot_be_forged(settings, monkeypatch, caplog):
+    from wa_app import mcp_lib, media
+
+    monkeypatch.setattr(mcp_lib, "download_media", lambda *a, **k: "/etc/hostname")
+    with caplog.at_level("WARNING"):
+        media.file_for(settings, "ID\nforged line", "x@s.whatsapp.net")
+    assert caplog.records and not any("\n" in r.getMessage() for r in caplog.records)

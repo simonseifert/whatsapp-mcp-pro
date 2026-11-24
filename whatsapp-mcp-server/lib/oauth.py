@@ -90,13 +90,14 @@ LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 MAX_CLIENTS = 200
 UNAPPROVED_CLIENT_TTL = 3600  # DCR is open to anyone; drop clients nobody consented to
 UNUSED_CLIENT_TTL = 30 * 86400  # a client that never got a token in 30 days is dropped, approved or not
-REGISTRATIONS_PER_IP = 10  # POST /register per source address (backoff_key) per REGISTRATION_WINDOW
+REGISTRATIONS_PER_IP = 100  # POST /register per source address (backoff_key) per REGISTRATION_WINDOW
 REGISTRATION_WINDOW = 3600
 MAX_PENDING = 200  # open consent requests, all clients: when full, the oldest are evicted
 PENDING_PER_PRINCIPAL = 5  # open consent requests per client_id and per source address; the oldest are evicted
 AUTHORIZES_PER_IP = 20  # GET/POST /authorize per source address per REGISTRATION_WINDOW
 _source_ip: contextvars.ContextVar[str] = contextvars.ContextVar("oauth_source_ip", default="unknown")
 LOG_VALUE_MAX = 80
+CLIENT_NAME_MAX = 200  # stored client_name length; a registrant picks it, so it is bounded
 PENDING_TTL = 600
 CODE_TTL = 300
 ATTEMPTS_PER_CONSENT = 3
@@ -112,8 +113,9 @@ CONSENT_COOKIE_PREFIX = "wac_"
 
 
 def log_safe(value: object, limit: int = LOG_VALUE_MAX) -> str:
-    """A client-supplied value made safe for one log line: control and line-separator characters
-    (newlines, ESC, NEL, U+2028/9 ...) become spaces, and the length is capped."""
+    """A client-supplied value made safe for one log line or terminal: control and line-separator characters
+    (newlines, ESC, NEL, U+2028/9 ...) become spaces, and the length is capped. (Same as lib.utils.log_safe; oauth.py
+    stays free of lib.utils, which needs a message store at import.)"""
     text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in str(value))
     return text if len(text) <= limit else text[:limit] + "..."
 
@@ -329,6 +331,18 @@ class OAuthStore:
             self._prune_clients(conn, now)
             (count,) = conn.execute("SELECT COUNT(*) FROM clients").fetchone()
             full = count >= MAX_CLIENTS
+            if full:
+                # Never refuse a new registration while old unused ones exist: a flood must not lock the owner
+                # out of adding a connector. Drop the oldest clients that never got a token (and their pending rows).
+                excess = count - MAX_CLIENTS + 1
+                conn.execute(
+                    "DELETE FROM clients WHERE client_id IN "
+                    "(SELECT client_id FROM clients WHERE last_used_at IS NULL ORDER BY created_at LIMIT ?)",
+                    (excess,),
+                )
+                conn.execute("DELETE FROM pending WHERE client_id NOT IN (SELECT client_id FROM clients)")
+                (count,) = conn.execute("SELECT COUNT(*) FROM clients").fetchone()
+                full = count >= MAX_CLIENTS
             if not full:
                 conn.execute(
                     "INSERT INTO clients (client_id, info_json, created_at) VALUES (?, ?, ?)",
@@ -338,7 +352,7 @@ class OAuthStore:
         # contextmanager cannot re-raise (it sets __traceback__ on them).
         if full:
             raise RegistrationError(
-                "invalid_client_metadata", "too many registered clients; revoke some with python -m lib.oauth"
+                "invalid_client_metadata", "every registered client is in use; revoke some with python -m lib.oauth"
             )
 
     def mark_approved(self, client_id: str) -> None:
@@ -659,6 +673,9 @@ class WAOAuthProvider:
         return self.store.get_client(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        if client_info.client_name:
+            # Bounded and printable before it is stored: it reaches the consent page, logs and the CLI.
+            client_info.client_name = log_safe(client_info.client_name, CLIENT_NAME_MAX)
         for uri in client_info.redirect_uris or []:
             # https (or loopback http) to an allowlisted host. Anything else
             # either hands the code to whoever controls that target or lets a
@@ -1076,7 +1093,7 @@ class _LimitRegistration:
             wait = self.limit.check(ip)
             if wait:
                 logger.warning("OAuth %s rate limit hit by %s", self.what, log_safe(ip))
-                body = json.dumps({"error": "too_many_requests", "error_description": "Too many registrations"})
+                body = json.dumps({"error": "too_many_requests", "error_description": f"Too many {self.what} requests"})
                 response = Response(
                     body, status_code=429, media_type="application/json", headers={"Retry-After": str(wait)}
                 )
@@ -1254,7 +1271,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write("no clients\n")
         for c in clients:
             sys.stdout.write(
-                f"{c['client_id']}  {c['client_name'] or '(unnamed)'}\n"
+                f"{c['client_id']}  {log_safe(c['client_name'] or '(unnamed)', CLIENT_NAME_MAX)}\n"
                 f"    access: {c['access'] or 'none'}  live tokens: {c['live_tokens']}  "
                 f"registered: {_fmt_time(c['created_at'])}  approved: {_fmt_time(c['approved_at'])}  "
                 f"last token: {_fmt_time(c['last_used_at'])}\n"
@@ -1273,7 +1290,7 @@ def main(argv: list[str] | None = None) -> int:
         store.approve_pending(args.req_id, scope)
         sys.stdout.write(
             f"approved {args.scope} access for {pending.redirect_host} "
-            f"(name: {pending.client_name}, self-declared). Press 'Continue' in the browser.\n"
+            f"(name: {log_safe(pending.client_name, CLIENT_NAME_MAX)}, self-declared). Press 'Continue' in the browser.\n"
         )
         return 0
     if store.revoke_client(args.client_id):

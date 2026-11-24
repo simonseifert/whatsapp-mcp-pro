@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .utils import MESSAGES_DB_PATH, logger
+from .utils import MESSAGES_DB_PATH, log_safe, logger
 
 MLX_MODEL = os.environ.get("MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
 FW_MODEL = os.environ.get("FASTER_WHISPER_MODEL", "large-v3-turbo")
@@ -50,11 +50,19 @@ _fw_lock = threading.Lock()
 _auto_thread: threading.Thread | None = None
 _auto_lock = threading.Lock()
 _failed: set[tuple[str, str]] = set()
+_retry_at: dict[tuple[str, str], float] = {}  # local-only notes that failed: tried again after LOCAL_RETRY_SECONDS
+LOCAL_RETRY_SECONDS = 600
 
 
 def cloud_fallback_enabled() -> bool:
     """False when TRANSCRIBE_CLOUD_FALLBACK is 0/false/no/off. Default on, as before."""
     return os.environ.get("TRANSCRIBE_CLOUD_FALLBACK", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _wa_app_in_use() -> bool:
+    """wa-app is set up when WA_APP_AGENT_TOKEN or WA_APP_DATA is set. Then a missing app.db means this process looks
+    in the wrong place (set WA_APP_DATA in the shared .env to wa-app's data dir), not that no chat is local only."""
+    return bool((os.environ.get("WA_APP_AGENT_TOKEN") or "").strip() or os.environ.get("WA_APP_DATA"))
 
 
 def _wa_app_db_path() -> Path:
@@ -110,6 +118,11 @@ def is_local_only_chat(
         return app_conn.execute(query, sorted(forms)).fetchone() is not None
     path = _wa_app_db_path()
     if not path.exists():
+        if _wa_app_in_use():
+            logger.warning(
+                "[transcribe] wa-app is configured but %s is missing: treating %s as local only", path, chat_jid
+            )
+            return True
         return False
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
@@ -331,7 +344,7 @@ def _auto_tick(limit: int, max_age_days: int) -> None:
     import whatsapp  # lazy: avoid import cycle at module load
 
     for message_id, chat_jid in _pending_voice_notes(limit, max_age_days):
-        if (message_id, chat_jid) in _failed:
+        if (message_id, chat_jid) in _failed or time.time() < _retry_at.get((message_id, chat_jid), 0.0):
             continue
         path = whatsapp.download_media(message_id, chat_jid)
         if not path:
@@ -339,13 +352,18 @@ def _auto_tick(limit: int, max_age_days: int) -> None:
             continue
         result = transcribe_file(path, local_only=is_local_only_chat(chat_jid))
         if not result.get("success") or not result.get("text"):
-            logger.warning("[transcribe] auto: %s failed: %s", message_id, result.get("message"))
-            _failed.add((message_id, chat_jid))
+            logger.warning("[transcribe] auto: %s failed: %s", log_safe(message_id), log_safe(result.get("message")))
+            if result.get("message") == LOCAL_UNAVAILABLE:
+                # Local whisper may be down for a while: try this note again later (it used to fall back to Groq).
+                _retry_at[(message_id, chat_jid)] = time.time() + LOCAL_RETRY_SECONDS
+            else:
+                _failed.add((message_id, chat_jid))
             continue
+        _retry_at.pop((message_id, chat_jid), None)
         _store_transcript(message_id, chat_jid, result["text"])
         logger.info(
             "[transcribe] auto: %s via %s (%d chars)",
-            message_id,
+            log_safe(message_id),
             result.get("backend"),
             len(result["text"]),
         )

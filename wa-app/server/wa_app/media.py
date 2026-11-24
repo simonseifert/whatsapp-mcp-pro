@@ -23,6 +23,7 @@ from PIL import Image, ImageOps
 
 from . import mcp_lib
 from .config import Settings
+from .logsafe import log_safe
 
 logger = logging.getLogger("wa_app.media")
 
@@ -87,7 +88,7 @@ def file_for(settings: Settings, message_id: str, chat_jid: str, *, retry: bool 
     raw = mcp_lib.download_media(message_id, chat_jid, no_phone_retry=not retry)
     path = contained(settings, raw)
     if raw and path is None:
-        logger.warning("download_media returned a path outside the store for %s; not served", message_id)
+        logger.warning("download_media returned a path outside the store for %s; not served", log_safe(message_id))
     return path
 
 
@@ -184,7 +185,7 @@ def _generate(path: Path, ctype: str, max_px: int) -> tuple[bytes, str] | None:
         else:
             return None
     except Exception:  # noqa: BLE001 - Pillow raises many types on hostile or truncated files
-        logger.info("no thumbnail for %s", path.name)
+        logger.info("no thumbnail for %s", log_safe(path.name))
         return None
     return data, ext
 

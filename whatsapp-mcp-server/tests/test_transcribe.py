@@ -221,8 +221,21 @@ def test_is_local_only_chat_reads_the_wa_app_flag(monkeypatch, tmp_path):
 
 
 def test_is_local_only_chat_without_wa_app_is_false(monkeypatch, tmp_path):
-    monkeypatch.setenv("WA_APP_DATA", str(tmp_path / "nothing-here"))
+    monkeypatch.delenv("WA_APP_DATA", raising=False)
+    monkeypatch.delenv("WA_APP_AGENT_TOKEN", raising=False)
+    monkeypatch.setattr(transcribe.Path, "home", lambda: tmp_path / "no-home-here")
     assert transcribe.is_local_only_chat("priv@s.whatsapp.net") is False
+
+
+@pytest.mark.parametrize("setting", ["WA_APP_DATA", "WA_APP_AGENT_TOKEN"])
+def test_a_configured_wa_app_with_no_readable_app_db_fails_closed(monkeypatch, tmp_path, setting):
+    """The data-dir dependency is explicit: if wa-app is set up but its app.db is not where this process looks,
+    every chat counts as local only instead of silently none."""
+    monkeypatch.delenv("WA_APP_DATA", raising=False)
+    monkeypatch.delenv("WA_APP_AGENT_TOKEN", raising=False)
+    monkeypatch.setenv(setting, str(tmp_path / "elsewhere") if setting == "WA_APP_DATA" else "t" * 40)
+    monkeypatch.setattr(transcribe.Path, "home", lambda: tmp_path / "no-home-here")
+    assert transcribe.is_local_only_chat("open@s.whatsapp.net") is True
 
 
 def test_is_local_only_chat_fails_closed_on_an_unreadable_db(monkeypatch, tmp_path):
@@ -360,3 +373,58 @@ def test_transcribe_audio_file_never_reaches_groq(groq, monkeypatch, tmp_path):
     result = main.transcribe_audio_file(str(f))
     assert result["message"] == transcribe.LOCAL_UNAVAILABLE
     assert groq.hits == []
+
+
+def test_local_only_voice_note_that_failed_is_retried_after_the_delay(groq, monkeypatch, tmp_path, audio):
+    import whatsapp
+
+    _app_db(tmp_path, 1)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    monkeypatch.setattr(transcribe, "_failed", set())
+    monkeypatch.setattr(transcribe, "_retry_at", {})
+    monkeypatch.setattr(transcribe, "_pending_voice_notes", lambda limit, age: [("m1", "priv@s.whatsapp.net")])
+    monkeypatch.setattr(whatsapp, "download_media", lambda message_id, chat_jid: audio)
+    stored: list[tuple] = []
+    monkeypatch.setattr(transcribe, "_store_transcript", lambda *a: stored.append(a))
+    clock = [1000.0]
+    monkeypatch.setattr(transcribe.time, "time", lambda: clock[0])
+
+    transcribe._auto_tick(3, 3)  # whisper is down: LOCAL_UNAVAILABLE, not a permanent failure
+    assert ("m1", "priv@s.whatsapp.net") not in transcribe._failed
+    calls: list[str] = []
+    real = transcribe.transcribe_file
+
+    def counting(*a, **k):
+        calls.append("x")
+        return real(*a, **k)
+
+    monkeypatch.setattr(transcribe, "transcribe_file", counting)
+    transcribe._auto_tick(3, 3)  # inside the delay: not tried
+    assert calls == []
+
+    clock[0] += transcribe.LOCAL_RETRY_SECONDS + 1
+    monkeypatch.setattr(transcribe, "WHISPER_SERVER_URL", "http://127.0.0.1:8093")
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, **kw: _Resp(200, {"text": "now it works", "language": "en"}) if "8093" in url else None,
+    )
+    transcribe._auto_tick(3, 3)  # whisper is back: transcribed
+    assert [s[2] for s in stored] == ["now it works"]
+    assert groq.hits == []
+
+
+def test_auto_tick_logs_forged_message_ids_on_one_line(groq, monkeypatch, tmp_path, audio, caplog):
+    import whatsapp
+
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path / "nothing"))
+    monkeypatch.delenv("WA_APP_AGENT_TOKEN", raising=False)
+    monkeypatch.setattr(transcribe.Path, "home", lambda: tmp_path / "h")
+    monkeypatch.setenv("TRANSCRIBE_CLOUD_FALLBACK", "0")
+    monkeypatch.setattr(transcribe, "_failed", set())
+    forged = "AB\n2026-11-24 INFO forged line"
+    monkeypatch.setattr(transcribe, "_pending_voice_notes", lambda limit, age: [(forged, "x@s.whatsapp.net")])
+    monkeypatch.setattr(whatsapp, "download_media", lambda message_id, chat_jid: audio)
+    with caplog.at_level("INFO"):
+        transcribe._auto_tick(3, 3)
+    assert not any("\n" in r.getMessage() for r in caplog.records)

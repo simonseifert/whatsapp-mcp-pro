@@ -849,18 +849,74 @@ def test_registration_limit_window_slides(monkeypatch):
     assert limit.check("203.0.113.1") == 0
 
 
-def test_client_table_cap_is_200(tmp_path):
-    assert oauth.MAX_CLIENTS == 200
-    store = OAuthStore(str(tmp_path / "o.db"))
+def _info(i, name="c"):
     from mcp.shared.auth import OAuthClientInformationFull
 
-    def info(i):
-        return OAuthClientInformationFull(client_id=f"c{i}", redirect_uris=[AnyUrl(REDIRECT)], client_name="c")
+    return OAuthClientInformationFull(client_id=f"c{i}", redirect_uris=[AnyUrl(REDIRECT)], client_name=name)
 
+
+def test_client_table_cap_is_200_and_a_flood_cannot_lock_out_a_new_registration(tmp_path):
+    assert oauth.MAX_CLIENTS == 200
+    store = OAuthStore(str(tmp_path / "o.db"))
     for i in range(oauth.MAX_CLIENTS):
-        store.add_client(info(i))
+        store.add_client(_info(i))
+    # Full of clients that never got a token: the next registration evicts the oldest instead of being refused.
+    store.add_client(_info("legit"))
+    assert store.get_client("clegit") is not None
+    assert store.get_client("c0") is None
+    assert len(store.list_clients()) == oauth.MAX_CLIENTS
+
+
+def test_a_registration_flood_through_the_api_does_not_stop_the_owner(tmp_path):
+    cfg = OAuthConfig(
+        public_url=PUBLIC, passphrase=PASSPHRASE, db_path=str(tmp_path / "o.db"), trusted_proxies=("testclient",)
+    )
+    c = _client(cfg)
+    for i in range(oauth.MAX_CLIENTS + 20):  # many sources, so the per-address limit is not what is tested
+        assert _reg(c, headers={"X-Forwarded-For": f"203.0.{i // 250}.{i % 250 + 1}"}).status_code == 201
+    owner = _reg(c, headers={"X-Forwarded-For": "198.51.100.7"})
+    assert owner.status_code == 201
+
+
+def test_clients_in_use_are_never_evicted(tmp_path):
+    import sqlite3
+
+    store = OAuthStore(str(tmp_path / "o.db"))
+    for i in range(oauth.MAX_CLIENTS):
+        store.add_client(_info(i))
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE clients SET last_used_at = ?", (int(time.time()),))
     with pytest.raises(oauth.RegistrationError):
-        store.add_client(info("one-too-many"))
+        store.add_client(_info("new"))
+    assert store.get_client("c0") is not None
+
+
+def test_registration_limit_is_generous_enough_for_a_shared_connector_address():
+    assert oauth.REGISTRATIONS_PER_IP >= 100
+
+
+def test_client_name_is_capped_and_cleaned_in_storage_and_cli(cfg, capsys):
+    c = _client(cfg)
+    r = c.post(
+        "/register",
+        json={
+            "redirect_uris": [REDIRECT],
+            "client_name": "evil\x1b[31m\rname" + "x" * 5000,
+            "token_endpoint_auth_method": "none",
+        },
+    )
+    assert r.status_code == 201
+    stored = OAuthStore(cfg.db_path).get_client(r.json()["client_id"])
+    assert stored is not None and stored.client_name is not None
+    assert len(stored.client_name) <= oauth.CLIENT_NAME_MAX + 3
+    assert "\x1b" not in stored.client_name and "\r" not in stored.client_name
+    # The CLI prints through log_safe too, whatever is already in the database.
+    import sqlite3
+
+    with sqlite3.connect(cfg.db_path) as conn:
+        conn.execute("UPDATE clients SET info_json = replace(info_json, 'evil', 'evil\\u001b[2J')")
+    main(["--db", cfg.db_path, "list"])
+    assert "\x1b" not in capsys.readouterr().out
 
 
 def test_unused_clients_older_than_30_days_are_pruned(tmp_path):

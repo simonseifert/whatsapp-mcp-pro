@@ -18,6 +18,7 @@ from datetime import datetime
 from . import appdb, mcp_lib, store, unread
 from .ai import learning
 from .config import Settings
+from .logsafe import log_safe
 
 logger = logging.getLogger("wa_app.sending")
 
@@ -73,7 +74,7 @@ def _batches(rows: list[tuple[str, str, str | None]]) -> list[Batch]:
             continue
         if chat.endswith("@g.us"):
             if not sender:
-                logger.info("no receipt for %s: group message without a sender", mid)
+                logger.info("no receipt for %s: group message without a sender", log_safe(mid))
                 continue
             key: tuple[str, str | None] = (chat, sender)
         else:
@@ -112,7 +113,9 @@ def _claim(ro: sqlite3.Connection, appconn: sqlite3.Connection, jid: str, up_to:
             (conv.jid, newest, int(time.time())),
         )
         if len(rows) > RECEIPT_CAP:
-            logger.info("read of %s: %d unread, receipts for the newest %d only", conv.jid, len(rows), RECEIPT_CAP)
+            logger.info(
+                "read of %s: %d unread, receipts for the newest %d only", log_safe(conv.jid), len(rows), RECEIPT_CAP
+            )
             rows = rows[-RECEIPT_CAP:]
         return _batches(rows)
 
@@ -123,12 +126,12 @@ def _send(batches: list[Batch]) -> int:
         try:
             result = mcp_lib.mark_messages_read(chat, ids, sender)
         except Exception:
-            logger.exception("read receipts for %s failed", chat)
+            logger.exception("read receipts for %s failed", log_safe(chat))
             continue
         if result.get("success"):
             sent += len(ids)
         else:
-            logger.warning("read receipts for %s refused: %s", chat, result.get("error"))
+            logger.warning("read receipts for %s refused: %s", log_safe(chat), log_safe(result.get("error")))
     return sent
 
 
