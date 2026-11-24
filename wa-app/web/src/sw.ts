@@ -60,6 +60,17 @@ self.addEventListener('activate', (event) => {
   )
 })
 
+/** Same-origin URL or '/': rejects other origins and tricks like '/\\evil.com' (browsers read the backslash as a slash). */
+function safeUrl(raw: unknown): string {
+  if (typeof raw !== 'string') return '/'
+  try {
+    const parsed = new URL(raw, location.origin)
+    return parsed.origin === location.origin ? parsed.pathname + parsed.search + parsed.hash : '/'
+  } catch {
+    return '/'
+  }
+}
+
 // Payload: {title, body?, tag?, url?}. Without a title there is nothing to show, so it is ignored.
 self.addEventListener('push', (event) => {
   let p: unknown
@@ -70,7 +81,7 @@ self.addEventListener('push', (event) => {
   }
   const fields = p as { title?: unknown; body?: unknown; tag?: unknown; url?: unknown } | null
   if (!fields || typeof fields.title !== 'string' || !fields.title) return
-  const url = typeof fields.url === 'string' && fields.url.startsWith('/') && !fields.url.startsWith('//') ? fields.url : '/'
+  const url = safeUrl(fields.url)
   event.waitUntil(
     self.registration.showNotification(fields.title, {
       body: typeof fields.body === 'string' ? fields.body : undefined,
@@ -83,13 +94,17 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   const raw = event.notification.data?.url
-  const url = typeof raw === 'string' && raw.startsWith('/') && !raw.startsWith('//') ? raw : '/'
+  const url = safeUrl(raw)
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (all) => {
       const open = all[0]
       if (open) {
-        await open.focus()
-        await open.navigate(url)
+        try {
+          await open.focus()
+          await open.navigate(url)
+        } catch {
+          await self.clients.openWindow(url)
+        }
       } else {
         await self.clients.openWindow(url)
       }

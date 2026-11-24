@@ -134,6 +134,7 @@ def test_send_counts_accepted(push_settings: Settings) -> None:
     with patch("wa_app.push.webpush", return_value=MagicMock(status_code=201)) as sent:
         assert push.send(push_settings, conn, {"title": "t", "body": "b"}) == 1
     assert sent.call_args.kwargs["ttl"] == 3600
+    assert sent.call_args.kwargs["timeout"] == 10
     assert sent.call_args.kwargs["headers"] == {"Urgency": "high"}
 
 

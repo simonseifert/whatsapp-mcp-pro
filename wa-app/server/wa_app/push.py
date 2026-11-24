@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_PUSH_HOSTS = ("push.apple.com", "fcm.googleapis.com", "push.services.mozilla.com", "notify.windows.com")
 MAX_FAILURES = 5
+PUSH_TIMEOUT = 10  # seconds; webpush would otherwise wait forever on a stalled endpoint
 GONE = (404, 410)
 MAX_FIELD = 512  # p256dh and auth are ~87 and ~22 characters
 MAX_ENDPOINT = 2048
@@ -92,6 +93,7 @@ def send(settings: Settings, appconn: sqlite3.Connection, payload: dict) -> int:
                 vapid_private_key=key_path,
                 vapid_claims={"sub": settings.push_subject},
                 ttl=3600,
+                timeout=PUSH_TIMEOUT,
                 headers={"Urgency": "high"},
             )
         except (WebPushException, OSError) as exc:  # requests errors are OSError subclasses
