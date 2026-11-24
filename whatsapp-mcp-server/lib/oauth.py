@@ -28,6 +28,7 @@ Off unless MCP_OAUTH_ENABLED=true. CLI: python -m lib.oauth list|revoke|approve.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 import hmac
 import html
@@ -91,7 +92,10 @@ UNAPPROVED_CLIENT_TTL = 3600  # DCR is open to anyone; drop clients nobody conse
 UNUSED_CLIENT_TTL = 30 * 86400  # a client that never got a token in 30 days is dropped, approved or not
 REGISTRATIONS_PER_IP = 10  # POST /register per source address (backoff_key) per REGISTRATION_WINDOW
 REGISTRATION_WINDOW = 3600
-MAX_PENDING = 200  # open consent requests, all clients
+MAX_PENDING = 200  # open consent requests, all clients: when full, the oldest are evicted
+PENDING_PER_PRINCIPAL = 5  # open consent requests per client_id and per source address; the oldest are evicted
+AUTHORIZES_PER_IP = 20  # GET/POST /authorize per source address per REGISTRATION_WINDOW
+_source_ip: contextvars.ContextVar[str] = contextvars.ContextVar("oauth_source_ip", default="unknown")
 LOG_VALUE_MAX = 80
 PENDING_TTL = 600
 CODE_TTL = 300
@@ -288,10 +292,13 @@ class OAuthStore:
                     nonce_hash  TEXT NOT NULL,
                     created_at  REAL NOT NULL,
                     failures    INTEGER NOT NULL DEFAULT 0,
-                    cli_scope   TEXT
+                    cli_scope   TEXT,
+                    src         TEXT NOT NULL DEFAULT ''
                 );
                 """
             )
+            if "src" not in {r["name"] for r in conn.execute("PRAGMA table_info(pending)")}:
+                conn.execute("ALTER TABLE pending ADD COLUMN src TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -424,31 +431,39 @@ class OAuthStore:
 
     # pending consents
 
-    def add_pending(self, req_id: str, p: _Pending) -> None:
+    def add_pending(self, req_id: str, p: _Pending, src: str = "") -> None:
+        """Store an open consent request. Nobody is refused: a principal (client_id, or source
+        address) over PENDING_PER_PRINCIPAL loses its own oldest, and a full table loses its oldest
+        overall, so one flooder cannot lock the operator out of /authorize."""
         with self._conn() as conn:
             conn.execute("DELETE FROM pending WHERE created_at < ?", (time.time() - PENDING_TTL,))
-            (open_requests,) = conn.execute("SELECT COUNT(*) FROM pending").fetchone()
-            full = open_requests >= MAX_PENDING
-            if not full:
-                self._insert_pending(conn, req_id, p)
-        if full:
-            raise AuthorizeError("temporarily_unavailable", "too many open authorization requests; retry shortly")
-
-    @staticmethod
-    def _insert_pending(conn: sqlite3.Connection, req_id: str, p: _Pending) -> None:
-        conn.execute(
-            "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                req_id,
-                p.client_id,
-                p.client_name,
-                p.params.model_dump_json(),
-                " ".join(p.offered),
-                p.nonce_hash,
-                p.created,
-            ),
-        )
+            keep = PENDING_PER_PRINCIPAL - 1
+            for column, value in (("client_id", p.client_id), ("src", src)):
+                if column == "src" and not src:
+                    continue
+                conn.execute(
+                    f"DELETE FROM pending WHERE {column} = ? AND req_id NOT IN "
+                    f"(SELECT req_id FROM pending WHERE {column} = ? ORDER BY created_at DESC LIMIT ?)",
+                    (value, value, keep),
+                )
+            conn.execute(
+                "DELETE FROM pending WHERE req_id NOT IN (SELECT req_id FROM pending ORDER BY created_at DESC LIMIT ?)",
+                (MAX_PENDING - 1,),
+            )
+            conn.execute(
+                "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at, src)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    req_id,
+                    p.client_id,
+                    p.client_name,
+                    p.params.model_dump_json(),
+                    " ".join(p.offered),
+                    p.nonce_hash,
+                    p.created,
+                    src,
+                ),
+            )
 
     def get_pending(self, req_id: str) -> _Pending | None:
         with self._conn() as conn:
@@ -636,6 +651,7 @@ class WAOAuthProvider:
         self.backoff = IPBackoff(config.failure_window)
         self.budget = FailureBudget(config.failure_budget, config.failure_window)
         self.registrations = RegistrationLimit(trusted_proxies=config.trusted_proxies)
+        self.authorizations = RegistrationLimit(AUTHORIZES_PER_IP, trusted_proxies=config.trusted_proxies)
 
     # registration
 
@@ -695,6 +711,7 @@ class WAOAuthProvider:
                 offered=offered,
                 nonce_hash=_hash(nonce),
             ),
+            _source_ip_key(),
         )
         self.fresh_nonces[req_id] = nonce
         return f"{self.config.public_url}{CONSENT_PATH}?req={req_id}"
@@ -1035,19 +1052,30 @@ class RegistrationLimit:
         return 0
 
 
-class _LimitRegistration:
-    """Wrap the SDK's /register endpoint with RegistrationLimit (429 + Retry-After when exceeded)."""
+def _source_ip_key() -> str:
+    return backoff_key(_source_ip.get())
 
-    def __init__(self, app: Any, limit: RegistrationLimit):
+
+class _LimitRegistration:
+    """Wrap the SDK's /register or /authorize endpoint with a RegistrationLimit (429 + Retry-After
+    when exceeded). Also records the source address for the pending-request caps."""
+
+    def __init__(
+        self, app: Any, limit: RegistrationLimit, methods: tuple[str, ...] = ("POST",), what: str = "registration"
+    ):
         self.app = app
         self.limit = limit
+        self.methods = methods
+        self.what = what
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope["method"] == "POST":
+        if scope["type"] == "http":
             ip = client_ip(scope, self.limit.trusted_proxies)
+            _source_ip.set(ip)
+        if scope["type"] == "http" and scope["method"] in self.methods:
             wait = self.limit.check(ip)
             if wait:
-                logger.warning("OAuth registration rate limit hit by %s", log_safe(ip))
+                logger.warning("OAuth %s rate limit hit by %s", self.what, log_safe(ip))
                 body = json.dumps({"error": "too_many_requests", "error_description": "Too many registrations"})
                 response = Response(
                     body, status_code=429, media_type="application/json", headers={"Retry-After": str(wait)}
@@ -1115,7 +1143,12 @@ def auth_settings(config: OAuthConfig) -> AuthSettings:
 
 def _wrap(route: Any, provider: WAOAuthProvider) -> Any:
     if route.path == "/authorize":
-        return Route(route.path, _BindConsentCookie(route.endpoint, provider), methods=route.methods)
+        bound = _BindConsentCookie(route.endpoint, provider)
+        return Route(
+            route.path,
+            _LimitRegistration(bound, provider.authorizations, ("GET", "POST"), "authorize"),
+            methods=route.methods,
+        )
     if route.path == "/register":
         return Route(route.path, _LimitRegistration(route.endpoint, provider.registrations), methods=route.methods)
     return route

@@ -85,6 +85,19 @@ def _authorize(c, client_id, challenge, **extra):
     return c.get("/authorize", params=params)
 
 
+def _authorize_h(c, client_id, challenge, headers):
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": REDIRECT,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": "s",
+        "resource": PUBLIC + "/mcp",
+    }
+    return c.get("/authorize", params=params, headers=headers)
+
+
 def _consent(c, location, scope="wa:read", passphrase=PASSPHRASE, decision="approve", headers=None):
     req = parse_qs(urlparse(location).query)["req"][0]
     return c.post(
@@ -876,30 +889,74 @@ def test_unused_clients_older_than_30_days_are_pruned(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0
 
 
-def test_expired_pending_authorizations_are_pruned_and_open_ones_capped(cfg):
-    import sqlite3
+def _pending_rows(path):
+    with sqlite3.connect(path) as conn:
+        return conn.execute("SELECT req_id, client_id, src FROM pending").fetchall()
 
+
+def test_expired_pending_authorizations_are_pruned(cfg):
     c = _client(cfg)
     client_id = _register(c).json()["client_id"]
     _, challenge = _pkce()
-    store = OAuthStore(cfg.db_path)
     with sqlite3.connect(cfg.db_path) as conn:
         for i in range(oauth.MAX_PENDING):
             conn.execute(
                 "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
-                " VALUES (?, ?, 'c', '{}', 'wa:read', 'h', ?)",
-                (f"old{i}", client_id, time.time() - oauth.PENDING_TTL - 5),
+                " VALUES (?, 'other', 'c', '{}', 'wa:read', 'h', ?)",
+                (f"old{i}", time.time() - oauth.PENDING_TTL - 5),
             )
-    # Expired rows do not count against the cap and are deleted by the next authorize.
     assert _authorize(c, client_id, challenge).status_code == 302
+    assert len(_pending_rows(cfg.db_path)) == 1
+
+
+def test_one_ip_flooding_authorize_blocks_neither_another_ip_nor_another_client(tmp_path):
+    cfg = OAuthConfig(
+        public_url=PUBLIC, passphrase=PASSPHRASE, db_path=str(tmp_path / "o.db"), trusted_proxies=("testclient",)
+    )
+    c = _client(cfg)
+    flood = {"X-Forwarded-For": "203.0.113.9"}
+    _, challenge = _pkce()
+    flooder = c.post(
+        "/register",
+        json={"redirect_uris": [REDIRECT], "client_name": "f", "token_endpoint_auth_method": "none"},
+        headers=flood,
+    ).json()["client_id"]
+    for _ in range(oauth.PENDING_PER_PRINCIPAL + 4):
+        assert _authorize_h(c, flooder, challenge, flood).status_code == 302
+    mine = [r for r in _pending_rows(cfg.db_path) if r[1] == flooder]
+    assert len(mine) == oauth.PENDING_PER_PRINCIPAL  # its own oldest were evicted, nobody was refused
+    # The flooder's address is now rate limited; the operator on another address is not.
+    for _ in range(oauth.AUTHORIZES_PER_IP):
+        _authorize_h(c, flooder, challenge, flood)
+    blocked = _authorize_h(c, flooder, challenge, flood)
+    assert blocked.status_code == 429 and int(blocked.headers["retry-after"]) > 0
+    other_client = c.post(
+        "/register",
+        json={"redirect_uris": [REDIRECT], "client_name": "op", "token_endpoint_auth_method": "none"},
+        headers={"X-Forwarded-For": "198.51.100.7"},
+    ).json()["client_id"]
+    ok = _authorize_h(c, other_client, challenge, {"X-Forwarded-For": "198.51.100.7"})
+    assert ok.status_code == 302 and "/oauth/consent?req=" in ok.headers["location"]
+    # Even from the flooder's address, a different client is not shut out by the flooder's pending rows
+    # (it is only slowed by the per-address rate limit, which has not run out for a fresh address).
+    again = _authorize_h(c, other_client, challenge, {"X-Forwarded-For": "198.51.100.8"})
+    assert again.status_code == 302
+
+
+def test_a_full_pending_table_evicts_the_oldest_instead_of_refusing(cfg):
+    c = _client(cfg)
+    client_id = _register(c).json()["client_id"]
+    _, challenge = _pkce()
     with sqlite3.connect(cfg.db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 1
         for i in range(oauth.MAX_PENDING):
             conn.execute(
-                "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
-                " VALUES (?, ?, 'c', '{}', 'wa:read', 'h', ?)",
-                (f"live{i}", client_id, time.time()),
+                "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at, src)"
+                " VALUES (?, ?, 'c', '{}', 'wa:read', 'h', ?, ?)",
+                (f"live{i}", f"other{i}", time.time() - 100 + i * 0.01, f"ip{i}"),
             )
     r = _authorize(c, client_id, challenge)
-    assert r.status_code == 302 and "error=temporarily_unavailable" in r.headers["location"]
-    assert store is not None
+    assert r.status_code == 302 and "/oauth/consent?req=" in r.headers["location"]
+    rows = _pending_rows(cfg.db_path)
+    assert len(rows) == oauth.MAX_PENDING
+    assert "live0" not in {x[0] for x in rows}  # the oldest went
+    assert client_id in {x[1] for x in rows}
