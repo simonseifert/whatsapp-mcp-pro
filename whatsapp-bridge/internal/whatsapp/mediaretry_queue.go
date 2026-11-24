@@ -425,7 +425,11 @@ func (c *Client) resolveMediaRequest(ctx context.Context, q *MediaRetryQueue, re
 		c.markMediaRequest(q.store.MarkMediaRequestFailed(req.MessageID, req.ChatJID, "unsupported message type", now))
 		return
 	}
-	data, err := c.Client.Download(ctx, media.msg)
+	data, err := c.downloadMedia(ctx, media.msg)
+	if errors.Is(err, ErrMediaTooLarge) {
+		c.markMediaRequest(q.store.MarkMediaRequestFailed(req.MessageID, req.ChatJID, err.Error(), q.now()))
+		return
+	}
 	if err != nil {
 		reason := fmt.Sprintf("download re-uploaded file: %v", err)
 		c.markMediaRequest(q.store.MarkMediaRequestRetry(req.MessageID, req.ChatJID, reason, q.cfg.MaxAttempts, q.now()))

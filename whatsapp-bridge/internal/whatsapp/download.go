@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +18,85 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 
 	"whatsapp-bridge/internal/database"
+	"whatsapp-bridge/internal/mediastore"
 )
 
 // ErrNoMedia is returned when the message exists but carries no media.
 var ErrNoMedia = errors.New("message has no media")
+
+// ErrMediaTooLarge is returned when a media file is above MEDIA_MAX_BYTES
+// (mediastore.MaxBytes), by its declared length or by the bytes received.
+var ErrMediaTooLarge = errors.New("media is larger than MEDIA_MAX_BYTES")
+
+// CheckMediaSize refuses a declared file length above the shared media cap.
+// A length of 0 means "not declared" and passes; callers that must not trust
+// a missing length (auto-download) decide that themselves.
+func CheckMediaSize(declared int64) error {
+	if max := mediastore.MaxBytes(); declared > max {
+		return fmt.Errorf("%w: declared %d bytes, limit %d", ErrMediaTooLarge, declared, max)
+	}
+	return nil
+}
+
+// mediaSlots bounds concurrent media downloads. whatsmeow buffers each file
+// whole (and decrypts into a second buffer), and every incoming media message
+// used to start its own download, so a burst of forwarded large files could
+// exhaust memory.
+var (
+	mediaSlotsOnce sync.Once
+	mediaSlots     chan struct{}
+)
+
+// DefaultMediaDownloadConcurrency is MEDIA_DOWNLOAD_CONCURRENCY's default.
+const DefaultMediaDownloadConcurrency = 3
+
+func mediaConcurrency() int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MEDIA_DOWNLOAD_CONCURRENCY"))); err == nil && v > 0 {
+		return v
+	}
+	return DefaultMediaDownloadConcurrency
+}
+
+// acquireMediaSlot waits for a free download slot, or ctx ends. The returned
+// function releases it.
+func acquireMediaSlot(ctx context.Context) (release func(), err error) {
+	mediaSlotsOnce.Do(func() { mediaSlots = make(chan struct{}, mediaConcurrency()) })
+	select {
+	case mediaSlots <- struct{}{}:
+		return func() { <-mediaSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// downloadMedia is whatsmeow's Download behind the concurrency bound and the
+// size cap. whatsmeow has no streaming download in this version (no
+// DownloadToFile), so the cap is checked on the declared length before and on
+// the bytes after; the slot bound is what limits peak memory.
+func (c *Client) downloadMedia(ctx context.Context, msg whatsmeow.DownloadableMessage) ([]byte, error) {
+	if l, ok := msg.(interface{ GetFileLength() uint64 }); ok {
+		if err := CheckMediaSize(int64(l.GetFileLength())); err != nil {
+			return nil, err
+		}
+	}
+	release, err := acquireMediaSlot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("waiting for a media download slot: %w", err)
+	}
+	defer release()
+	download := c.rawDownload
+	if download == nil {
+		download = c.Client.Download
+	}
+	data, err := download(ctx, msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckMediaSize(int64(len(data))); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
 
 // ErrMessageNotFound is returned when the message id+jid is not in the store.
 var ErrMessageNotFound = errors.New("message not found")
@@ -39,7 +115,7 @@ func (c *Client) FetchMessageMedia(ctx context.Context, store *database.MessageS
 		return nil, "", "", err
 	}
 
-	data, err = c.Client.Download(ctx, media.msg)
+	data, err = c.downloadMedia(ctx, media.msg)
 	if askPhone && isMediaGone(err) && MediaRetryEnabled() {
 		// Persist the ask before trying it here, so a timeout, an offline
 		// phone or a restart leaves it to the background queue.
@@ -278,7 +354,7 @@ func (c *Client) retryMediaDownload(ctx context.Context, store *database.Message
 	if !setDirectPath(msg, newPath) {
 		return nil, fmt.Errorf("media retry: unsupported message type")
 	}
-	data, err := c.Client.Download(ctx, msg)
+	data, err := c.downloadMedia(ctx, msg)
 	if err != nil {
 		c.markMediaRequest(store.MarkMediaRequestRetry(messageID, chatJID, "download re-uploaded file: "+err.Error(), maxAttempts, time.Now()))
 		return nil, fmt.Errorf("media retry: download re-uploaded file: %w", err)

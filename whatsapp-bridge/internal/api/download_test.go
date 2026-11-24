@@ -1,9 +1,11 @@
 package api
 
 import (
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateCDNURL(t *testing.T) {
@@ -74,5 +76,30 @@ func TestSaveMediaReturnsAbsolutePathInsideStore(t *testing.T) {
 	}
 	if !strings.HasSuffix(path, ".pdf") {
 		t.Errorf("path %q lost the document extension", path)
+	}
+}
+
+// /api/download refuses media whose message declares more than MEDIA_MAX_BYTES
+// before it fetches anything (review-bridge #3); the cap is the same constant
+// auto-download uses.
+func TestDownloadRefusesDeclaredOversize(t *testing.T) {
+	t.Setenv("MEDIA_MAX_BYTES", "1000")
+	s := newSendTestServer(t, &fakeSender{})
+	const chat = "4915100000001@s.whatsapp.net"
+	if err := s.messageStore.StoreChat(chat, "c", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id     string
+		length uint64
+	}{{"BIG", 5000}} {
+		if err := s.messageStore.StoreMessage(tc.id, chat, chat, "c", "", time.Now(), false,
+			"document", "x.pdf", "https://mmg.whatsapp.net/x", "/x", []byte("key"), []byte("sha"), []byte("enc"), tc.length); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := post(t, s.handleDownload, map[string]any{"message_id": "BIG", "chat_jid": chat}, nil)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413: %s", rec.Code, rec.Body)
 	}
 }

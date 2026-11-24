@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,11 +22,6 @@ import (
 	"whatsapp-bridge/internal/mediastore"
 	"whatsapp-bridge/internal/whatsapp"
 )
-
-// maxMediaBytes caps the encrypted payload accepted from the WhatsApp CDN to
-// bound memory use per request. WhatsApp's largest documented media (documents)
-// is 64 MiB; 100 MiB leaves headroom for the trailing MAC and future limits.
-const maxMediaBytes = 100 << 20
 
 // hkdfInfo maps WhatsApp media types to the HKDF info string used for key derivation.
 var hkdfInfo = map[string][]byte{
@@ -77,13 +73,14 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	var (
 		mediaType, url, filename string
 		mediaKey, fileSHA256     []byte
+		fileLength               int64
 	)
 	row := s.messageStore.GetDB().QueryRow(
-		`SELECT COALESCE(media_type, ''), COALESCE(url, ''), media_key, COALESCE(filename, ''), file_sha256
+		`SELECT COALESCE(media_type, ''), COALESCE(url, ''), media_key, COALESCE(filename, ''), file_sha256, COALESCE(file_length, 0)
 		 FROM messages WHERE id = ? AND chat_jid = ?`,
 		req.MessageID, req.ChatJID,
 	)
-	if err := row.Scan(&mediaType, &url, &mediaKey, &filename, &fileSHA256); err != nil {
+	if err := row.Scan(&mediaType, &url, &mediaKey, &filename, &fileSHA256, &fileLength); err != nil {
 		SendJSONError(w, "message not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
@@ -128,6 +125,12 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		SendJSONError(w, "imported media file is missing from the store", http.StatusNotFound)
 		return
 	}
+	// The length the sender's message declares, checked before any network
+	// fetch; the CDN branch below re-checks the bytes it actually reads.
+	if err := whatsapp.CheckMediaSize(fileLength); err != nil {
+		SendJSONError(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
 	if url == "" {
 		s.downloadViaWhatsmeow(w, r, req, "no stored media URL")
 		return
@@ -170,6 +173,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		s.downloadViaWhatsmeow(w, r, req, fmt.Sprintf("CDN returned HTTP %d", resp.StatusCode))
 		return
 	}
+	maxMediaBytes := mediastore.MaxBytes()
 	enc, err := io.ReadAll(io.LimitReader(resp.Body, maxMediaBytes+1))
 	if err != nil {
 		SendJSONError(w, "read failed: "+err.Error(), http.StatusBadGateway)
@@ -242,6 +246,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 // hosts, which works for as long as WhatsApp still holds the file.
 func (s *Server) downloadViaWhatsmeow(w http.ResponseWriter, r *http.Request, req downloadRequest, cdnErr string) {
 	data, mediaType, filename, err := s.client.FetchMessageMedia(r.Context(), s.messageStore, req.MessageID, req.ChatJID, !req.NoPhoneRetry)
+	if errors.Is(err, whatsapp.ErrMediaTooLarge) {
+		SendJSONError(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
 	if err != nil {
 		SendJSONError(w, cdnErr+"; whatsmeow fallback: "+err.Error(), http.StatusBadGateway)
 		return

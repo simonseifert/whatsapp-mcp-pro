@@ -12,8 +12,25 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+// DefaultMaxBytes is the largest media file the bridge downloads: 100 MiB.
+// WhatsApp documents can be up to 2 GB and whatsmeow buffers a whole download
+// in memory (twice, with decryption), so an uncapped download is a way for one
+// forwarded file to take the bridge down.
+const DefaultMaxBytes int64 = 100 << 20
+
+// MaxBytes is the single size cap shared by auto-download, the media retry
+// queue, the sweep and /api/download: MEDIA_MAX_BYTES, or DefaultMaxBytes when
+// unset or not a positive integer.
+func MaxBytes() int64 {
+	if v, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("MEDIA_MAX_BYTES")), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return DefaultMaxBytes
+}
 
 var mediaExt = map[string]string{
 	"image":    ".jpg",

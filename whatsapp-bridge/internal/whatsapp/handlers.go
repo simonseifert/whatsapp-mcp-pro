@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"whatsapp-bridge/internal/database"
+	"whatsapp-bridge/internal/mediastore"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waCommon"
@@ -675,6 +676,14 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 		return
 	}
 
+	// Refuse before anything is fetched: the message itself says how big the
+	// file is. It stays fetchable through /api/download if only the length was
+	// missing; a file over the cap is never downloaded.
+	if reason := autoDownloadRefusal(mediaType, fileLength); reason != "" {
+		c.logger.Infof("auto-download: skipping %s/%s: %s", chatJID, msgID, reason)
+		return
+	}
+
 	// Resolve directPath from URL if not provided
 	if directPath == "" {
 		directPath = autoDownloadExtractDirectPath(rawURL)
@@ -696,10 +705,24 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 		mediaType:     wmMediaType,
 	}
 
+	// Queue for a download slot for a while, then give up (the sweep retries);
+	// the 60s download budget starts once a slot is held.
+	slotCtx, slotCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	release, err := acquireMediaSlot(slotCtx)
+	slotCancel()
+	if err != nil {
+		c.logger.Warnf("auto-download: %s/%s: no download slot free: %v", chatJID, msgID, err)
+		return
+	}
+	defer release()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	data, err := c.Download(ctx, dl)
+	data, err := c.Client.Download(ctx, dl)
+	if err == nil {
+		err = CheckMediaSize(int64(len(data)))
+	}
 	if err != nil {
 		c.logger.Warnf("auto-download: %s/%s: %v", chatJID, msgID, err)
 		return
@@ -712,6 +735,20 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 	}
 
 	c.logger.Infof("auto-download: saved %s (%d bytes)", outPath, len(data))
+}
+
+// autoDownloadRefusal says why a message's media must not be auto-downloaded,
+// or "" when it may. A missing declared length is not trusted for documents and
+// video, the types that grow large; real clients always set it.
+func autoDownloadRefusal(mediaType string, declared uint64) string {
+	max := mediastore.MaxBytes()
+	if declared > uint64(max) {
+		return fmt.Sprintf("declared size %d bytes is above MEDIA_MAX_BYTES (%d)", declared, max)
+	}
+	if declared == 0 && (mediaType == "document" || mediaType == "video") {
+		return "no declared file length for a " + mediaType
+	}
+	return ""
 }
 
 // autoDownloadableMedia implements whatsmeow.DownloadableMessage for auto-download.
