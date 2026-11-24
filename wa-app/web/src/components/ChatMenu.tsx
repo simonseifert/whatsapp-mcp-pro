@@ -7,7 +7,7 @@ export function ChatMenu({ onAi, onClose }: { onAi: () => void; onClose: () => v
   const dialog = useRef<HTMLDivElement>(null)
   useDialog(dialog, onClose)
   return (
-    <div className="menu-wrap">
+    <div className="menu-wrap menu-wrap-top-right">
       <button className="menu-backdrop" type="button" aria-label="Close menu" onClick={onClose} tabIndex={-1} />
       <div className="menu" role="dialog" aria-modal="true" aria-label="Chat actions" ref={dialog}>
         <button className="menu-item" type="button" onClick={onAi}>

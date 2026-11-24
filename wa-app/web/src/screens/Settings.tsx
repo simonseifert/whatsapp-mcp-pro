@@ -172,7 +172,7 @@ function AiSection() {
                         <button className="button-text danger" type="button" onClick={() => void remove(b.id)}>
                           Yes, delete
                         </button>
-                        <button className="button-text" type="button" onClick={() => setDeleting(null)}>
+                        <button className="button-text neutral" type="button" onClick={() => setDeleting(null)}>
                           Cancel
                         </button>
                       </>
@@ -274,7 +274,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
         <div className="settings-group">
           <div className="settings-label">Session</div>
           <div className="settings-actions">
-            <button className="button-text" type="button" onClick={() => onLogout(false)}>
+            <button className="button-text neutral" type="button" onClick={() => onLogout(false)}>
               Log out
             </button>
             {confirming ? (
@@ -283,7 +283,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
                 <button className="button-text danger" type="button" onClick={() => onLogout(true)}>
                   Yes, log out everywhere
                 </button>
-                <button className="button-text" type="button" onClick={() => setConfirming(false)}>
+                <button className="button-text neutral" type="button" onClick={() => setConfirming(false)}>
                   Cancel
                 </button>
               </>

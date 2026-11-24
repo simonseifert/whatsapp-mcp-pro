@@ -165,7 +165,7 @@ export function BackendForm({ backend, onSave, onCancel, error, saving }: Props)
         <button className="button-primary" type="submit" disabled={saving}>
           Save
         </button>
-        <button className="button-text" type="button" onClick={onCancel}>
+        <button className="button-text neutral" type="button" onClick={onCancel}>
           Cancel
         </button>
       </div>

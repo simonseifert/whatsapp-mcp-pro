@@ -279,7 +279,8 @@ Two themes from one set of roles. Dark is the default; light follows
   amber tint with their own text and meta colours.
 - **draft-surface**: a faint amber wash behind the draft card, plus a dashed
   `primary` outline.
-- **danger**: only for destructive confirmations and failed sends.
+- **danger**: only for destructive confirmations, failed sends and the one-line warning that blocks a Save
+  (for example "Add a local AI in Settings first"), shown on surface-2 with an icon.
 
 Hierarchy never relies on colour alone: unread is also bold name plus a numbered
 badge, the draft is also dashed, labelled and full width.
