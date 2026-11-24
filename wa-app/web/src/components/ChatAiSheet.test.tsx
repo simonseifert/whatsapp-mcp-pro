@@ -49,6 +49,24 @@ describe('ChatAiSheet', () => {
     expect(screen.getByRole('dialog').getAttribute('aria-modal')).toBe('true')
   })
 
+  it('exposes both toggles as labelled switches', async () => {
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    const drafts = await screen.findByRole('switch', { name: 'Drafts in this chat' })
+    const local = screen.getByRole('switch', { name: 'Local only' })
+    expect((drafts as HTMLInputElement).checked).toBe(false)
+    fireEvent.click(local)
+    expect((local as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('shows the missing-local-AI notice as a warning with an icon', async () => {
+    vi.spyOn(api, 'fetchBackends').mockResolvedValue({ default_id: 2, backends: [backends.backends[1]] } as never)
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    fireEvent.click(await screen.findByLabelText('Local only'))
+    const warning = screen.getByRole('alert')
+    expect(warning.className).toContain('sheet-warning')
+    expect(warning.querySelector('svg')).toBeTruthy()
+  })
+
   it('saves the chosen settings', async () => {
     const save = vi.spyOn(api, 'saveChatAi').mockResolvedValue(ai)
     const onClose = vi.fn()

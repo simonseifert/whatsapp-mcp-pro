@@ -4,29 +4,50 @@ import hmac
 import secrets
 import sqlite3
 import time
+from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import live
 from .tokens import token_hash
 
-COOKIE = "wa_session"
+# Secure, Path=/, no Domain. `__Host-` stops subdomains and plain-http pages from setting it. It does NOT isolate
+# ports: cookies ignore ports, so another service on the same host (:8443, :10000 ...) still receives this cookie and
+# can set it. That part of L3 stays open until wa-app has its own hostname.
+COOKIE_HOST = "__Host-wa_session"
+COOKIE_LEGACY = "wa_session"  # accepted for one release so existing logins survive; the next login sets the new name
+COOKIE = COOKIE_HOST
+COOKIES = (COOKIE_HOST, COOKIE_LEGACY)
 SESSION_SECONDS = 30 * 24 * 3600
 MIN_PASSPHRASE = 10
 MAX_PASSPHRASE_BYTES = 1024  # argon2 hashes whatever it is given: bound the work an unauthenticated caller can ask for
 MAX_FAILURES = 5
 FAILURE_WINDOW = 15 * 60
 
+MAX_JSON_BODY = 64 * 1024  # every JSON route, login included; a draft is at most 4096 characters
+# Routes that really take bigger bodies get their own cap here, by path prefix. None do today.
+UPLOAD_LIMITS: dict[str, int] = {}
+
 _hasher = PasswordHasher()
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 _hash_token = token_hash
+
+
+def cookie_name(secure: bool) -> str:
+    """The `__Host-` prefix needs Secure, so plain-http dev setups (WA_APP_INSECURE_COOKIES=1) keep the old name."""
+    return COOKIE_HOST if secure else COOKIE_LEGACY
+
+
+def session_token(cookies: Mapping[str, str]) -> str | None:
+    """The session cookie value: the `__Host-` name first, the legacy name second."""
+    return cookies.get(COOKIE_HOST) or cookies.get(COOKIE_LEGACY)
 
 
 def passphrase_is_set(conn: sqlite3.Connection) -> bool:
@@ -131,6 +152,14 @@ def _error(status: int, message: str) -> Response:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def body_limit(path: str) -> int:
+    return next((limit for prefix, limit in UPLOAD_LIMITS.items() if path.startswith(prefix)), MAX_JSON_BODY)
+
+
+class _TooLarge(Exception):
+    pass
+
+
 class AuthMiddleware:
     """Origin check on writes; 401 JSON on /api/* without a session (auth and health excepted).
 
@@ -158,6 +187,38 @@ class AuthMiddleware:
             return
         request = Request(scope)
         path = request.url.path
+        limit = body_limit(path)
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            # Refused before a byte is read: nothing buffers a body this size, authenticated or not.
+            await _error(413, "Body too large")(scope, receive, send)
+            return
+        received = 0
+        started = False
+
+        async def counted_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:  # chunked, or a Content-Length that lied
+                    raise _TooLarge
+            return message
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self._route(scope, counted_receive, tracked_send, request, path)
+        except _TooLarge:
+            if started:
+                raise
+            await _error(413, "Body too large")(scope, receive, send)
+
+    async def _route(self, scope: Scope, receive: Receive, send: Send, request: Request, path: str) -> None:
         if path.startswith("/api/agent/"):
             refused = self._agent_response(request)
             if refused is not None:
@@ -169,7 +230,7 @@ class AuthMiddleware:
             await _error(403, "Bad origin")(scope, receive, send)
             return
         open_path = path.startswith("/api/auth/") or path == "/api/health"
-        if path.startswith("/api/") and not open_path and not session_valid(self.conn, request.cookies.get(COOKIE)):
+        if path.startswith("/api/") and not open_path and not session_valid(self.conn, session_token(request.cookies)):
             await _error(401, "Not logged in")(scope, receive, send)
             return
         await self.app(scope, receive, send)

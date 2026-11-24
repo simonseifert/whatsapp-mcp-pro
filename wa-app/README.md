@@ -26,6 +26,32 @@ The login rate limit keys on the client address; behind a loopback proxy (tailsc
 
 Expose it with `tailscale serve` (never Funnel by default). Session cookies are `Secure`, so they need https.
 
+### Give wa-app its own hostname
+
+Cookies are not isolated by port: every service on the same hostname (`host.tailnet.ts.net:8445` next to `:8443`,
+`:10000` and the rest) receives the same cookies and counts as the same site. A bug in any of them could read or record
+wa-app's session cookie, or frame wa-app. So serve wa-app on a hostname of its own (a Tailscale Service or a separate
+tsnet node) and not on a shared one. The cookie is `__Host-wa_session` (Secure, `Path=/`, no
+`Domain`), which stops subdomains and plain-http pages from setting it, but it does not isolate ports: other services on
+the same host still receive it and can set it. **This finding stays open until wa-app has its own hostname.**
+The old `wa_session` name is accepted for one release so existing logins survive; the next login sets the new name.
+Plain-http development (`WA_APP_INSECURE_COOKIES=1`) keeps the old name, because `__Host-` needs `Secure`.
+
+## Security headers and limits
+
+Every response carries `Content-Security-Policy` (`default-src 'self'`, images and media from `self`, `blob:` and
+`data:`, no inline script or style, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: same-origin`, `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`. The media routes
+keep their own stricter `sandbox` CSP. The theme bootstrap is a file (`web/public/theme-init.js`) for this reason.
+Request bodies over 64 KB get `413` before they are read (`auth.MAX_JSON_BODY`; `auth.UPLOAD_LIMITS` holds per-path caps
+for any future upload route).
+
+## Voice notes and local-only chats
+
+A voice note from a chat marked local only is only ever transcribed by a local backend (whisper server, mlx,
+faster-whisper). If none works the request fails with "Local transcription unavailable"; it never falls back to Groq.
+`TRANSCRIBE_CLOUD_FALLBACK=0` in the shared `.env` turns the Groq fallback off for every chat.
+
 ## AI drafts
 
 The app can suggest a reply in chats you switch on. A draft shows as a card above the composer with one or two alternatives. Tap one to put it in the composer, edit it, and send it yourself. **Nothing is sent without your tap**: the server has no path from a draft to a send.

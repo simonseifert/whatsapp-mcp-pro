@@ -108,6 +108,7 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
               <input
                 type="checkbox"
                 role="switch"
+                aria-label="Drafts in this chat"
                 checked={form.enabled}
                 onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
               />
@@ -135,6 +136,7 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
               <input
                 type="checkbox"
                 role="switch"
+                aria-label="Local only"
                 checked={form.localOnly}
                 onChange={(e) => setLocalOnly(e.target.checked)}
               />
@@ -159,7 +161,12 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
                 onChange={(e) => setForm({ ...form, rules: e.target.value })}
               />
             </label>
-            {form.localOnly && !hasLocal && <p role="alert">Add a local AI in Settings first</p>}
+            {form.localOnly && !hasLocal && (
+              <p className="sheet-warning" role="alert">
+                <Icon name="ban" size={18} />
+                <span>Add a local AI in Settings first</span>
+              </p>
+            )}
             {saveError && <p role="alert">{saveError}</p>}
             <button className="sheet-save" type="button" disabled={saving || cloudChoice} onClick={() => void save()}>
               Save

@@ -110,6 +110,15 @@ def to_sql_utc(value: str | None) -> str | None:
 _MAX_MERGE_HOPS = 8
 
 
+def log_safe(value: object, limit: int = 80) -> str:
+    """A caller-supplied value made safe for one log line: control and line-separator characters become spaces
+    and the length is capped."""
+    import unicodedata
+
+    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in str(value))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def canonical_chat_jid(conn: sqlite3.Connection, jid: str) -> str:
     """Follow chats.merged_into from ``jid`` to the chat that now holds its messages.
 

@@ -9,12 +9,14 @@ from typing import Any
 from . import appdb, mcp_lib
 from .config import Settings
 from .media import file_for
+from .store import open_ro
 
 logger = logging.getLogger("wa_app.transcripts")
 
 NO_BACKEND = "No transcription backend"
 NO_AUDIO = "Audio not available"
 FAILED = "Transcription failed"
+LOCAL_UNAVAILABLE = "Local transcription unavailable"
 
 _db_lock = appdb.db_lock
 _transcribe_slot = threading.Semaphore(1)  # whisper is heavy: one transcription at a time
@@ -40,10 +42,26 @@ def get_or_make(conn: sqlite3.Connection, settings: Settings, message_id: str, c
         path = file_for(settings, message_id, chat_jid)
         if path is None:
             return {"error": NO_AUDIO}
+        try:
+            ro = open_ro(settings)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "cannot open the message store to resolve chat aliases (%s): treating as local only", type(exc).__name__
+            )
+            local_only = True
+        else:
+            try:
+                with _db_lock:  # the flag counts under any form of the chat: LID, phone JID, merged twin
+                    local_only = mcp_lib.is_local_only_chat(ro, conn, chat_jid)
+            finally:
+                ro.close()
         with _transcribe_slot:
-            result = mcp_lib.transcribe_file(str(path), None)
+            # A chat marked local only never sends its audio to a cloud transcriber, and never falls back to one.
+            result = mcp_lib.transcribe_file(str(path), None, local_only=local_only)
         if not result.get("success"):
             logger.warning("transcription failed (%s): %s", result.get("backend"), result.get("message"))
+            if local_only:
+                return {"error": LOCAL_UNAVAILABLE}
             return {"error": NO_BACKEND if result.get("backend") == "none" else FAILED}
         text = str(result.get("text") or "").strip()
         language = result.get("language")

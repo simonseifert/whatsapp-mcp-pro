@@ -27,6 +27,7 @@ from lib.utils import logger
 from lib.wa_app import get_auto_drafts as wa_app_get_auto_drafts
 from lib.wa_app import push_draft as wa_app_push_draft
 from lib.wa_app import set_auto_drafts as wa_app_set_auto_drafts
+from whatsapp import MEDIA_UNAVAILABLE, validate_outgoing_media_path
 
 # Phase 2: Group Management
 from whatsapp import add_group_members as whatsapp_add_group_members
@@ -1171,9 +1172,10 @@ def transcribe_audio(
     file_path = whatsapp_download_media(message_id, chat_jid)
     if not file_path:
         return {"success": False, "message": "Failed to download media"}
-    from lib.transcribe import transcribe_file
+    from lib.transcribe import is_local_only_chat, transcribe_file
 
-    result = transcribe_file(file_path, language)
+    # A chat marked local only in wa-app never sends its audio to a cloud backend.
+    result = transcribe_file(file_path, language, local_only=is_local_only_chat(chat_jid))
     result.setdefault("file_path", file_path)
     return result
 
@@ -1197,7 +1199,15 @@ def transcribe_audio_file(
     """
     from lib.transcribe import transcribe_file
 
-    return transcribe_file(file_path, language)
+    # Same path guard as send_file: allowed directories only, symlinks resolved.
+    # The owning chat of an arbitrary path cannot be known, so this tool never uses a cloud backend.
+    try:
+        checked = validate_outgoing_media_path(file_path)
+    except ValueError:
+        return {"success": False, "backend": "none", "message": MEDIA_UNAVAILABLE}
+    if not os.path.isfile(checked):
+        return {"success": False, "backend": "none", "message": MEDIA_UNAVAILABLE}
+    return transcribe_file(checked, language, local_only=True)
 
 
 # ----- Pro: semantic recall over message history --------------------------

@@ -103,9 +103,11 @@ test('theme choice applies at once, persists over a reload and is set before fir
   await expect(page.getByLabel('Light')).toBeChecked()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 
-  // The inline script in index.html (not the app bundle) sets it first: it is in the served HTML.
+  // A blocking script file (not the app bundle, and not inline: the CSP forbids inline scripts) sets it first.
   const html = await (await page.request.get('/')).text()
-  expect(html).toContain("localStorage.getItem('wa-theme')")
+  expect(html).toContain('<script src="/theme-init.js"></script>')
+  expect(html.indexOf('/theme-init.js')).toBeLessThan(html.indexOf('type="module"'))
+  expect(await (await page.request.get('/theme-init.js')).text()).toContain("localStorage.getItem('wa-theme')")
 
   await page.getByLabel('Dark').check()
   await page.reload()

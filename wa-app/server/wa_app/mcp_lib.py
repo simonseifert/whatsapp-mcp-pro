@@ -68,16 +68,25 @@ def send_reaction(chat_jid: str, message_id: str, emoji: str, idempotency_key: s
     return whatsapp.send_reaction(chat_jid, message_id, emoji, idempotency_key=idempotency_key)
 
 
-def transcribe_file(path: str, language: str | None = None) -> dict:
+def transcribe_file(path: str, language: str | None = None, *, local_only: bool = False) -> dict:
+    """Transcribe with the MCP server's backends. `local_only` keeps the audio off every cloud backend."""
     from lib.transcribe import transcribe_file as transcribe
 
-    return transcribe(path, language)
+    return transcribe(path, language, local_only=local_only)
+
+
+def is_local_only_chat(messages_conn, app_conn, chat_jid: str) -> bool:
+    """True when the chat is flagged local only under any of its forms (LID, phone JID, merged chats)."""
+    from lib.transcribe import is_local_only_chat as check
+
+    return check(chat_jid, messages_conn=messages_conn, app_conn=app_conn)
 
 
 __all__ = [
     "canonical_chat_jid",
     "chat_forms",
     "download_media",
+    "is_local_only_chat",
     "get_profile_picture",
     "mark_messages_read",
     "resolve_display_names",

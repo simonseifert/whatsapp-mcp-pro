@@ -225,11 +225,14 @@ async def sse_stream(
         hub.unsubscribe(client)
 
 
-def routes(hub: Hub, still_valid: Callable[[str], bool] | None = None, cookie: str = "") -> list[Route]:
+def routes(
+    hub: Hub, still_valid: Callable[[str], bool] | None = None, cookie: str | tuple[str, ...] = ""
+) -> list[Route]:
     async def stream(request: Request) -> Response:
         raw = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
         last = int(raw) if raw and raw.isdigit() else None
-        token = request.cookies.get(cookie) if cookie else None
+        names = (cookie,) if isinstance(cookie, str) else cookie
+        token = next((request.cookies[n] for n in names if n and request.cookies.get(n)), None)
         return StreamingResponse(
             sse_stream(hub, last, session=auth_hash(token) if token else None, still_valid=still_valid),
             media_type="text/event-stream",
