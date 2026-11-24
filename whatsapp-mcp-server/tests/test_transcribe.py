@@ -80,3 +80,187 @@ def test_local_failure_without_groq_key_reports_local_error(monkeypatch, audio):
     assert not result["success"]
     assert result["backend"] == "whisper-server"
     assert "500" in result["message"]
+
+
+# ---------- local-only chats and the cloud switch ----------
+
+
+class _StandInGroq:
+    """A local HTTP server in Groq's place. Any request it receives is recorded."""
+
+    def __init__(self) -> None:
+        import http.server
+        import threading
+
+        outer = self
+        self.hits: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                outer.hits.append(self.path)
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                body = b'{"text": "from stand-in groq", "language": "en"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/transcribe"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def groq(monkeypatch):
+    stand_in = _StandInGroq()
+    monkeypatch.setattr(transcribe, "GROQ_URL", stand_in.url)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.setenv("WHISPER_BACKEND", "whisper-server")
+    # A closed port: the local server is down, which is when the fallback fires.
+    monkeypatch.setattr(transcribe, "WHISPER_SERVER_URL", "http://127.0.0.1:9")
+    yield stand_in
+    stand_in.close()
+
+
+def test_stand_in_groq_is_reached_by_the_default_fallback(groq, audio):
+    result = transcribe.transcribe_file(audio)
+    assert result["backend"] == "groq"
+    assert groq.hits == ["/transcribe"]
+
+
+def test_local_only_never_calls_groq_when_whisper_fails(groq, audio):
+    result = transcribe.transcribe_file(audio, local_only=True)
+
+    assert result["success"] is False
+    assert result["message"] == transcribe.LOCAL_UNAVAILABLE == "Local transcription unavailable"
+    assert groq.hits == []
+
+
+def test_local_only_refuses_an_explicit_groq_backend(groq, monkeypatch, audio):
+    monkeypatch.setenv("WHISPER_BACKEND", "groq")
+    result = transcribe.transcribe_file(audio, local_only=True)
+    assert result["message"] == transcribe.LOCAL_UNAVAILABLE
+    assert groq.hits == []
+
+
+def test_local_only_never_auto_picks_groq(groq, monkeypatch, audio):
+    monkeypatch.setenv("WHISPER_BACKEND", "auto")
+    monkeypatch.setattr(transcribe, "WHISPER_SERVER_URL", "")
+    monkeypatch.setitem(__import__("sys").modules, "mlx_whisper", None)
+    monkeypatch.setitem(__import__("sys").modules, "faster_whisper", None)
+    assert transcribe.available_backend() == "groq"
+    assert transcribe.available_backend(local_only=True) == "none"
+    result = transcribe.transcribe_file(audio, local_only=True)
+    assert result["message"] == transcribe.LOCAL_UNAVAILABLE
+    assert groq.hits == []
+
+
+def test_local_only_still_uses_a_working_local_backend(groq, monkeypatch, audio):
+    monkeypatch.setattr(transcribe, "WHISPER_SERVER_URL", "http://127.0.0.1:8093")
+    real_post = requests.post
+
+    def fake_post(url, **kwargs):
+        if "8093" in url:
+            return _Resp(200, {"text": "local text", "language": "en"})
+        return real_post(url, **kwargs)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    result = transcribe.transcribe_file(audio, local_only=True)
+    assert result["success"] and result["backend"] == "whisper-server"
+    assert groq.hits == []
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "OFF"])
+def test_cloud_fallback_switch_disables_the_groq_fallback(groq, monkeypatch, audio, value):
+    monkeypatch.setenv("TRANSCRIBE_CLOUD_FALLBACK", value)
+    result = transcribe.transcribe_file(audio)
+    assert result["success"] is False
+    assert result["backend"] == "whisper-server"
+    assert groq.hits == []
+
+
+def test_cloud_fallback_switch_stops_auto_from_choosing_groq(groq, monkeypatch):
+    monkeypatch.setenv("WHISPER_BACKEND", "auto")
+    monkeypatch.setattr(transcribe, "WHISPER_SERVER_URL", "")
+    monkeypatch.setitem(__import__("sys").modules, "mlx_whisper", None)
+    monkeypatch.setitem(__import__("sys").modules, "faster_whisper", None)
+    monkeypatch.setenv("TRANSCRIBE_CLOUD_FALLBACK", "0")
+    assert transcribe.available_backend() == "none"
+
+
+def test_cloud_fallback_defaults_to_on(monkeypatch):
+    monkeypatch.delenv("TRANSCRIBE_CLOUD_FALLBACK", raising=False)
+    assert transcribe.cloud_fallback_enabled() is True
+
+
+def _app_db(tmp_path, local_only: int):
+    import sqlite3
+
+    conn = sqlite3.connect(tmp_path / "app.db")
+    conn.execute("CREATE TABLE chat_ai (chat_jid TEXT PRIMARY KEY, local_only INTEGER NOT NULL DEFAULT 0)")
+    conn.execute("INSERT INTO chat_ai VALUES ('priv@s.whatsapp.net', ?)", (local_only,))
+    conn.execute("INSERT INTO chat_ai VALUES ('open@s.whatsapp.net', 0)")
+    conn.commit()
+    conn.close()
+
+
+def test_is_local_only_chat_reads_the_wa_app_flag(monkeypatch, tmp_path):
+    _app_db(tmp_path, 1)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    assert transcribe.is_local_only_chat("priv@s.whatsapp.net") is True
+    assert transcribe.is_local_only_chat("open@s.whatsapp.net") is False
+    assert transcribe.is_local_only_chat("unknown@s.whatsapp.net") is False
+
+
+def test_is_local_only_chat_without_wa_app_is_false(monkeypatch, tmp_path):
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path / "nothing-here"))
+    assert transcribe.is_local_only_chat("priv@s.whatsapp.net") is False
+
+
+def test_is_local_only_chat_fails_closed_on_an_unreadable_db(monkeypatch, tmp_path):
+    (tmp_path / "app.db").write_bytes(b"this is not a sqlite file" * 10)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    assert transcribe.is_local_only_chat("open@s.whatsapp.net") is True
+
+
+def test_auto_tick_keeps_local_only_chats_off_groq(groq, monkeypatch, tmp_path, audio):
+    import whatsapp
+
+    _app_db(tmp_path, 1)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    monkeypatch.setattr(transcribe, "_failed", set())
+    monkeypatch.setattr(transcribe, "_pending_voice_notes", lambda limit, age: [("m1", "priv@s.whatsapp.net")])
+    monkeypatch.setattr(whatsapp, "download_media", lambda message_id, chat_jid: audio)
+    stored: list[tuple] = []
+    monkeypatch.setattr(transcribe, "_store_transcript", lambda *a: stored.append(a))
+
+    transcribe._auto_tick(3, 3)
+
+    assert groq.hits == []
+    assert stored == []
+
+
+def test_transcribe_audio_tool_passes_the_chat_flag(monkeypatch, tmp_path, audio):
+    import main
+
+    _app_db(tmp_path, 1)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    monkeypatch.setattr(main, "whatsapp_download_media", lambda message_id, chat_jid: audio)
+    seen: list[bool] = []
+
+    def fake(path, language=None, *, local_only=False):
+        seen.append(local_only)
+        return {"success": False, "backend": "local", "message": transcribe.LOCAL_UNAVAILABLE}
+
+    monkeypatch.setattr(transcribe, "transcribe_file", fake)
+    main.transcribe_audio("m1", "priv@s.whatsapp.net")
+    main.transcribe_audio("m1", "open@s.whatsapp.net")
+    assert seen == [True, False]

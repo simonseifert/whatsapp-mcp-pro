@@ -11,6 +11,12 @@ Backend selection via WHISPER_BACKEND (default "auto"):
 
 If the chosen local backend fails and GROQ_API_KEY is set, the file is retried
 on Groq, so a stopped GPU server degrades to the cloud instead of to nothing.
+TRANSCRIBE_CLOUD_FALLBACK=0 turns that off: Groq is then used only when
+WHISPER_BACKEND=groq names it.
+
+Voice notes from a chat marked "local only" in wa-app never go to a cloud
+backend, whatever the settings above say (see is_local_only_chat). If no local
+backend can handle such a file the call fails with LOCAL_UNAVAILABLE.
 
 The auto-transcribe pipeline (start_auto_transcribe, opt-in via
 AUTO_TRANSCRIBE_VOICE=true in the shared server) transcribes incoming voice
@@ -26,6 +32,7 @@ import os
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from .utils import MESSAGES_DB_PATH, logger
@@ -36,6 +43,7 @@ GROQ_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 WHISPER_SERVER_URL = os.environ.get("WHISPER_SERVER_URL", "").rstrip("/")
 VOICE_PREFIX = "\U0001f3a4 "  # 🎤 marks auto-transcribed content
+LOCAL_UNAVAILABLE = "Local transcription unavailable"
 
 _fw_model = None
 _fw_lock = threading.Lock()
@@ -44,8 +52,43 @@ _auto_lock = threading.Lock()
 _failed: set[tuple[str, str]] = set()
 
 
-def available_backend() -> str:
-    """Resolve WHISPER_BACKEND, probing availability for "auto"."""
+def cloud_fallback_enabled() -> bool:
+    """False when TRANSCRIBE_CLOUD_FALLBACK is 0/false/no/off. Default on, as before."""
+    return os.environ.get("TRANSCRIBE_CLOUD_FALLBACK", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _wa_app_db_path() -> Path:
+    data = os.environ.get("WA_APP_DATA")
+    return (Path(data) if data else Path.home() / ".local" / "share" / "wa-app") / "app.db"
+
+
+def is_local_only_chat(chat_jid: str) -> bool:
+    """True when wa-app marks the chat local only (its app.db, read-only).
+
+    No app.db means no wa-app and so no such setting: False. An app.db that
+    exists but cannot be read fails closed (True), because a wrong "no" would
+    send a private voice note to a cloud service.
+    """
+    path = _wa_app_db_path()
+    if not path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT local_only FROM chat_ai WHERE chat_jid=?", (chat_jid,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        logger.warning("[transcribe] cannot read wa-app local-only flag, treating %s as local only", chat_jid)
+        return True
+    return bool(row and row[0])
+
+
+def available_backend(local_only: bool = False) -> str:
+    """Resolve WHISPER_BACKEND, probing availability for "auto".
+
+    Auto never picks Groq when the chat is local only or TRANSCRIBE_CLOUD_FALLBACK is off.
+    """
     b = os.environ.get("WHISPER_BACKEND", "auto").lower()
     if b != "auto":
         return b
@@ -63,18 +106,35 @@ def available_backend() -> str:
         return "faster-whisper"
     except ImportError:
         pass
-    if os.environ.get("GROQ_API_KEY"):
+    if os.environ.get("GROQ_API_KEY") and not local_only and cloud_fallback_enabled():
         return "groq"
     return "none"
 
 
-def transcribe_file(file_path: str, language: str | None = None) -> dict[str, Any]:
-    """Transcribe an audio file with whichever backend is available."""
-    backend = available_backend()
+def _local_unavailable(backend: str, detail: object = None) -> dict[str, Any]:
+    if detail:
+        logger.warning("[transcribe] local-only chat: %s failed (%s)", backend, detail)
+    return {"success": False, "backend": "local", "message": LOCAL_UNAVAILABLE}
+
+
+def transcribe_file(file_path: str, language: str | None = None, *, local_only: bool = False) -> dict[str, Any]:
+    """Transcribe an audio file with whichever backend is available.
+
+    local_only=True never touches a cloud backend: no Groq, not as the chosen
+    backend and not as a fallback. Any failure becomes LOCAL_UNAVAILABLE.
+    """
+    backend = available_backend(local_only)
+    if local_only:
+        if backend in ("groq", "none"):
+            return _local_unavailable(backend)
+        result = _run_backend(backend, file_path, language)
+        if result is None or not result.get("success"):
+            return _local_unavailable(backend, result.get("message") if result else "unknown backend")
+        return result
     result = _run_backend(backend, file_path, language)
     if result is None:
         return _no_backend()
-    if not result.get("success") and backend != "groq" and os.environ.get("GROQ_API_KEY"):
+    if not result.get("success") and backend != "groq" and os.environ.get("GROQ_API_KEY") and cloud_fallback_enabled():
         logger.warning("[transcribe] %s failed (%s), retrying on groq", backend, result.get("message"))
         fallback = _run_backend("groq", file_path, language)
         if fallback is not None and fallback.get("success"):
@@ -239,7 +299,7 @@ def _auto_tick(limit: int, max_age_days: int) -> None:
         if not path:
             _failed.add((message_id, chat_jid))
             continue
-        result = transcribe_file(path)
+        result = transcribe_file(path, local_only=is_local_only_chat(chat_jid))
         if not result.get("success") or not result.get("text"):
             logger.warning("[transcribe] auto: %s failed: %s", message_id, result.get("message"))
             _failed.add((message_id, chat_jid))

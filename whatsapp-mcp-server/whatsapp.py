@@ -137,6 +137,9 @@ def _is_sensitive_name(name: str) -> bool:
     return any(fnmatch.fnmatchcase(lowered, pattern) for pattern in _SENSITIVE_BASENAMES)
 
 
+MEDIA_UNAVAILABLE = "Media file not found or not allowed"
+
+
 def validate_outgoing_media_path(media_path: str) -> str:
     """Check a caller-supplied path may be sent, and return it with symlinks resolved.
 
@@ -1389,16 +1392,17 @@ def send_file(
                 "error": "Either media_path or file_content_base64 must be provided",
             }
 
-        if not os.path.isfile(media_path):
-            return {"success": False, "error": f"Media file not found: {media_path}"}
-
         # A staged base64 upload is bytes the caller already holds, written by
         # us under /tmp; only a caller-chosen path can reach someone else's file.
+        # Validate before checking existence, and answer both failures alike, so
+        # the reply says nothing about files outside the allowed directories.
         if temp_path is None:
             try:
                 media_path = validate_outgoing_media_path(media_path)
-            except ValueError as e:
-                return {"success": False, "error": str(e)}
+            except ValueError:
+                return {"success": False, "error": MEDIA_UNAVAILABLE}
+        if not os.path.isfile(media_path):
+            return {"success": False, "error": MEDIA_UNAVAILABLE}
 
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
@@ -1448,16 +1452,17 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
         if not media_path:
             return {"success": False, "error": "Media path must be provided"}
 
-        if not os.path.isfile(media_path):
-            return {"success": False, "error": f"Media file not found: {media_path}"}
-
         # Must run on the source, before conversion: the bridge only ever sees
         # the converted file under /tmp, which its allowlist always accepts, so
         # its own check cannot stop an arbitrary file going out as a voice note.
+        # It also runs before the existence check, with one shared error, so the
+        # reply is no oracle for files outside the allowed directories.
         try:
             media_path = validate_outgoing_media_path(media_path)
-        except ValueError as e:
-            return {"success": False, "error": str(e)}
+        except ValueError:
+            return {"success": False, "error": MEDIA_UNAVAILABLE}
+        if not os.path.isfile(media_path):
+            return {"success": False, "error": MEDIA_UNAVAILABLE}
 
         # Keyed on the source bytes: conversion writes a new temp file each call.
         key = resolve_idempotency_key(idempotency_key, "send_audio_message", recipient, file_sha256(media_path))

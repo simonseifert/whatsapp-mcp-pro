@@ -270,3 +270,97 @@ def test_send_file_refuses_a_secret_inside_the_allowlist(media_dirs, bridge_call
 
     assert result["success"] is False
     assert bridge_calls == []
+
+
+# ---------- transcribe_audio_file uses the same guard (L1) ----------
+
+
+@pytest.fixture
+def transcribed(monkeypatch):
+    from lib import transcribe
+
+    calls: list[str] = []
+
+    def fake(path, language=None, **kw):
+        calls.append(path)
+        return {"success": True, "text": "ok"}
+
+    monkeypatch.setattr(transcribe, "transcribe_file", fake)
+    return calls
+
+
+def test_transcribe_audio_file_accepts_an_allowed_file(media_dirs, transcribed):
+    import main
+
+    allowed, _ = media_dirs
+    f = allowed / "note.ogg"
+    f.write_bytes(b"OggS")
+
+    assert main.transcribe_audio_file(str(f))["success"] is True
+    assert transcribed == [os.path.realpath(f)]
+
+
+def test_transcribe_audio_file_refuses_outside_the_allowlist(media_dirs, transcribed):
+    import main
+
+    _, outside = media_dirs
+    f = outside / "note.ogg"
+    f.write_bytes(b"OggS")
+
+    result = main.transcribe_audio_file(str(f))
+
+    assert result["success"] is False
+    assert result["message"] == whatsapp.MEDIA_UNAVAILABLE
+    assert transcribed == []
+
+
+def test_transcribe_audio_file_refuses_a_symlink_escape(media_dirs, transcribed):
+    import main
+
+    allowed, outside = media_dirs
+    target = outside / "key.ogg"
+    target.write_bytes(b"OggS")
+    link = allowed / "innocent.ogg"
+    link.symlink_to(target)
+
+    assert main.transcribe_audio_file(str(link))["success"] is False
+    assert transcribed == []
+
+
+def test_transcribe_audio_file_missing_and_forbidden_look_alike(media_dirs, transcribed):
+    import main
+
+    allowed, outside = media_dirs
+    missing_allowed = main.transcribe_audio_file(str(allowed / "gone.ogg"))
+    missing_outside = main.transcribe_audio_file(str(outside / "gone.ogg"))
+    assert missing_allowed == missing_outside
+
+
+# ---------- no file-existence oracle (L2) ----------
+
+
+def test_send_file_gives_one_error_for_missing_and_forbidden(media_dirs, bridge_calls):
+    allowed, outside = media_dirs
+    real_outside = outside / "exists.txt"
+    real_outside.write_text("x")
+
+    exists = whatsapp.send_file("123", media_path=str(real_outside))
+    absent = whatsapp.send_file("123", media_path=str(outside / "absent.txt"))
+    absent_allowed = whatsapp.send_file("123", media_path=str(allowed / "absent.txt"))
+
+    assert exists == absent == absent_allowed == {"success": False, "error": whatsapp.MEDIA_UNAVAILABLE}
+    assert str(outside) not in exists["error"]
+    assert bridge_calls == []
+
+
+def test_send_audio_gives_one_error_for_missing_and_forbidden(media_dirs, bridge_calls, conversions):
+    allowed, outside = media_dirs
+    real_outside = outside / "exists.mp3"
+    real_outside.write_bytes(b"x")
+
+    exists = whatsapp.send_audio_message("123", str(real_outside))
+    absent = whatsapp.send_audio_message("123", str(outside / "absent.mp3"))
+    absent_allowed = whatsapp.send_audio_message("123", str(allowed / "absent.mp3"))
+
+    assert exists == absent == absent_allowed == {"success": False, "error": whatsapp.MEDIA_UNAVAILABLE}
+    assert bridge_calls == [] and conversions == []
