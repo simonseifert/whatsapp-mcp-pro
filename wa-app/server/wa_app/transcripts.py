@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from . import appdb, mcp_lib
+from .ai.config import chat_ai
 from .config import Settings
 from .media import file_for
 
@@ -15,6 +16,7 @@ logger = logging.getLogger("wa_app.transcripts")
 NO_BACKEND = "No transcription backend"
 NO_AUDIO = "Audio not available"
 FAILED = "Transcription failed"
+LOCAL_UNAVAILABLE = "Local transcription unavailable"
 
 _db_lock = appdb.db_lock
 _transcribe_slot = threading.Semaphore(1)  # whisper is heavy: one transcription at a time
@@ -40,10 +42,15 @@ def get_or_make(conn: sqlite3.Connection, settings: Settings, message_id: str, c
         path = file_for(settings, message_id, chat_jid)
         if path is None:
             return {"error": NO_AUDIO}
+        with _db_lock:
+            local_only = chat_ai(conn, chat_jid).local_only
         with _transcribe_slot:
-            result = mcp_lib.transcribe_file(str(path), None)
+            # A chat marked local only never sends its audio to a cloud transcriber, and never falls back to one.
+            result = mcp_lib.transcribe_file(str(path), None, local_only=local_only)
         if not result.get("success"):
             logger.warning("transcription failed (%s): %s", result.get("backend"), result.get("message"))
+            if local_only:
+                return {"error": LOCAL_UNAVAILABLE}
             return {"error": NO_BACKEND if result.get("backend") == "none" else FAILED}
         text = str(result.get("text") or "").strip()
         language = result.get("language")

@@ -281,6 +281,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         if "error" in result:
             status = {
                 transcripts.NO_BACKEND: 503,
+                transcripts.LOCAL_UNAVAILABLE: 503,
                 transcripts.NO_AUDIO: 404,
             }.get(result["error"], 502)
             return _error(status, result["error"])

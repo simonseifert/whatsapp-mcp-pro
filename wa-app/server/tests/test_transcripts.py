@@ -24,7 +24,7 @@ def transcriber(monkeypatch, settings, voice_id):
     calls: list[str] = []
     answer = {"success": True, "text": "Kupi kruh i mlijeko.", "language": "hr"}
 
-    def fake(path, language=None):
+    def fake(path, language=None, *, local_only=False):
         calls.append(path)
         return answer
 
@@ -102,7 +102,7 @@ def test_transcriptions_run_one_at_a_time(settings, monkeypatch):
     running = peak = 0
     lock = threading.Lock()
 
-    def slow(path, language=None):
+    def slow(path, language=None, *, local_only=False):
         nonlocal running, peak
         with lock:
             running += 1
@@ -122,3 +122,82 @@ def test_transcriptions_run_one_at_a_time(settings, monkeypatch):
         t.join()
     assert peak == 1
     assert conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0] == 4
+
+
+# ---------- local-only chats never reach a cloud transcriber ----------
+
+
+@pytest.fixture
+def groq_stand_in(monkeypatch):
+    """The real MCP transcriber, local whisper down, Groq replaced by a local server that records every hit."""
+    import http.server
+    import sys
+    import threading
+
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            hits.append(self.path)
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = b'{"text": "from stand-in groq", "language": "en"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    mcp_lib._ensure_path()
+    from lib import transcribe as lib_transcribe
+
+    monkeypatch.setattr(lib_transcribe, "GROQ_URL", f"http://127.0.0.1:{server.server_port}/transcribe")
+    monkeypatch.setattr(lib_transcribe, "WHISPER_SERVER_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("WHISPER_BACKEND", "whisper-server")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.delenv("TRANSCRIBE_CLOUD_FALLBACK", raising=False)
+    assert "lib.transcribe" in sys.modules
+    yield hits
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture
+def real_audio(monkeypatch, settings):
+    monkeypatch.setattr(
+        mcp_lib,
+        "download_media",
+        lambda message_id, chat_jid, *, no_phone_retry: str(
+            settings.store_path / FAMILY.replace("@", "_") / "audio_20261122_204800.ogg"
+        ),
+    )
+
+
+def test_local_only_chat_never_reaches_groq(logged_in: TestClient, groq_stand_in, real_audio, voice_id):
+    assert logged_in.put(f"/api/chats/{FAMILY}/ai", json={"local_only": True}).status_code == 200
+
+    response = logged_in.post(f"/api/transcripts/{FAMILY}/{voice_id}")
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "Local transcription unavailable"}
+    assert groq_stand_in == []
+
+
+def test_other_chats_still_fall_back_to_groq_by_default(logged_in: TestClient, groq_stand_in, real_audio, voice_id):
+    response = logged_in.post(f"/api/transcripts/{FAMILY}/{voice_id}")
+    assert response.status_code == 200
+    assert response.json()["text"] == "from stand-in groq"
+    assert groq_stand_in == ["/transcribe"]
+
+
+def test_cloud_fallback_switch_applies_in_wa_app(
+    logged_in: TestClient, groq_stand_in, real_audio, voice_id, monkeypatch
+):
+    monkeypatch.setenv("TRANSCRIBE_CLOUD_FALLBACK", "0")
+    response = logged_in.post(f"/api/transcripts/{FAMILY}/{voice_id}")
+    assert response.status_code == 502
+    assert groq_stand_in == []

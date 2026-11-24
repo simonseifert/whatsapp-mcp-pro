@@ -68,10 +68,11 @@ def send_reaction(chat_jid: str, message_id: str, emoji: str, idempotency_key: s
     return whatsapp.send_reaction(chat_jid, message_id, emoji, idempotency_key=idempotency_key)
 
 
-def transcribe_file(path: str, language: str | None = None) -> dict:
+def transcribe_file(path: str, language: str | None = None, *, local_only: bool = False) -> dict:
+    """Transcribe with the MCP server's backends. `local_only` keeps the audio off every cloud backend."""
     from lib.transcribe import transcribe_file as transcribe
 
-    return transcribe(path, language)
+    return transcribe(path, language, local_only=local_only)
 
 
 __all__ = [
