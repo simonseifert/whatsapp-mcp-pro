@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"os"
 	"testing"
+	"time"
+
 	"whatsapp-bridge/internal/types"
 )
 
@@ -124,4 +126,32 @@ func TestUpdateWebhookConfig(t *testing.T) {
 	}
 
 	t.Log("✓ Webhook update test passed successfully")
+}
+
+func TestPruneWebhookLogsRemovesOnlyOldRows(t *testing.T) {
+	store := newTestMessageStore(t)
+	cfg := &types.WebhookConfig{Name: "w", WebhookURL: "http://example.com", Enabled: true}
+	if err := store.StoreWebhookConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(id string, age time.Duration) {
+		t.Helper()
+		at := time.Now().UTC().Add(-age).Format("2006-01-02 15:04:05")
+		if _, err := store.db.Exec(`INSERT INTO webhook_logs (webhook_config_id, message_id, chat_jid, trigger_type, trigger_value, payload, response_status, response_body, attempt_count, created_at)
+			VALUES (?, ?, 'c', 'all', '', 'secret text', 200, '', 1, ?)`, cfg.ID, id, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("old", 40*24*time.Hour)
+	insert("edge", 29*24*time.Hour)
+	insert("new", time.Minute)
+
+	n, err := store.PruneWebhookLogs(time.Now().Add(-30 * 24 * time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("pruned %d, %v; want 1", n, err)
+	}
+	var left int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM webhook_logs WHERE message_id IN ('edge','new')`).Scan(&left); err != nil || left != 2 {
+		t.Fatalf("remaining recent rows = %d, %v", left, err)
+	}
 }

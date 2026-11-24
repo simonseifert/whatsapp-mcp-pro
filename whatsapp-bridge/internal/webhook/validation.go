@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -25,11 +26,17 @@ func init() {
 		"127.0.0.0/8",    // Loopback
 		"169.254.0.0/16", // Link-local
 		"0.0.0.0/8",      // Current network
+		"100.64.0.0/10",  // CGNAT, which is every Tailscale address
+		"198.18.0.0/15",  // Benchmarking
 		"224.0.0.0/4",    // Multicast
 		"240.0.0.0/4",    // Reserved
+		"::/128",         // IPv6 unspecified: connecting to it reaches local listeners
 		"::1/128",        // IPv6 loopback
 		"fc00::/7",       // IPv6 unique local
 		"fe80::/10",      // IPv6 link-local
+		"ff00::/8",       // IPv6 multicast
+		"64:ff9b::/96",   // NAT64: embeds an IPv4 address that is not checked
+		"2002::/16",      // 6to4: same
 	}
 
 	for _, cidr := range cidrs {
@@ -42,7 +49,12 @@ func init() {
 
 // isPrivateIP checks if an IP is in a private/reserved range
 func isPrivateIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast() {
+	// An IPv4-mapped IPv6 address (::ffff:a.b.c.d) is dialled as that IPv4
+	// address, so it is judged as one.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsUnspecified() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast() {
 		return true
 	}
 
@@ -122,20 +134,33 @@ func ValidateWebhookURL(webhookURL string) error {
 		}
 	}
 
-	// Resolve hostname to IP addresses
-	ips, err := net.LookupIP(hostname)
-	if err != nil {
-		return fmt.Errorf("failed to resolve webhook URL hostname: %v", err)
-	}
+	_, err = resolveChecked(context.Background(), hostname, urlPort(u))
+	return err
+}
 
-	// Check all resolved IPs
+// lookupIP is the resolver; a variable so tests can stage a DNS answer.
+var lookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+}
+
+// resolveChecked resolves host and returns its addresses, or an error when any
+// one of them is private or reserved (and not allowed by WEBHOOK_ALLOWED_ADDRS).
+// Every address is checked, not just the first: a name that also answers with
+// a loopback address would otherwise be reachable whenever the dialer picks it.
+func resolveChecked(ctx context.Context, host, port string) ([]net.IP, error) {
+	ips, err := lookupIP(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve webhook URL hostname: %v", err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("failed to resolve webhook URL hostname: no addresses for %s", host)
+	}
 	for _, ip := range ips {
-		if isPrivateIP(ip) && !allowedPrivateTarget(ip, urlPort(u)) {
-			return fmt.Errorf("webhook URL resolves to private/reserved IP: %s -> %s", hostname, ip.String())
+		if isPrivateIP(ip) && !allowedPrivateTarget(ip, port) {
+			return nil, fmt.Errorf("webhook URL resolves to private/reserved IP: %s -> %s", host, ip.String())
 		}
 	}
-
-	return nil
+	return ips, nil
 }
 
 // ValidateWebhookConfig validates a webhook configuration

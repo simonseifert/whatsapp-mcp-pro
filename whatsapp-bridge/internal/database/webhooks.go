@@ -2,6 +2,8 @@ package database
 
 import (
 	"fmt"
+	"time"
+
 	"whatsapp-bridge/internal/types"
 )
 
@@ -281,4 +283,16 @@ func (store *MessageStore) GetWebhookLogs(webhookConfigID int, limit int) ([]*ty
 	}
 
 	return logs, nil
+}
+
+// PruneWebhookLogs deletes webhook_logs rows created before cutoff and returns
+// how many it removed. created_at is stored as UTC text by SQLite, so the
+// comparison is done on its datetime value.
+func (store *MessageStore) PruneWebhookLogs(cutoff time.Time) (int64, error) {
+	res, err := store.db.Exec(`DELETE FROM webhook_logs WHERE datetime(created_at) < datetime(?)`,
+		cutoff.UTC().Format("2006-01-02 15:04:05"))
+	if err != nil {
+		return 0, fmt.Errorf("prune webhook logs: %w", err)
+	}
+	return res.RowsAffected()
 }
