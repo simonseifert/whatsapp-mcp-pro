@@ -213,6 +213,7 @@ def _app_db(tmp_path, local_only: int):
 
 
 def test_is_local_only_chat_reads_the_wa_app_flag(monkeypatch, tmp_path):
+    _use_messages_db(monkeypatch, tmp_path)
     _app_db(tmp_path, 1)
     monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
     assert transcribe.is_local_only_chat("priv@s.whatsapp.net") is True
@@ -221,6 +222,7 @@ def test_is_local_only_chat_reads_the_wa_app_flag(monkeypatch, tmp_path):
 
 
 def test_is_local_only_chat_without_wa_app_is_false(monkeypatch, tmp_path):
+    _use_messages_db(monkeypatch, tmp_path)
     monkeypatch.delenv("WA_APP_DATA", raising=False)
     monkeypatch.delenv("WA_APP_AGENT_TOKEN", raising=False)
     monkeypatch.setattr(transcribe.Path, "home", lambda: tmp_path / "no-home-here")
@@ -262,6 +264,7 @@ def test_auto_tick_keeps_local_only_chats_off_groq(groq, monkeypatch, tmp_path, 
 
 
 def test_transcribe_audio_tool_passes_the_chat_flag(monkeypatch, tmp_path, audio):
+    _use_messages_db(monkeypatch, tmp_path)
     import main
 
     _app_db(tmp_path, 1)
@@ -458,3 +461,64 @@ def test_local_only_retries_stop_after_the_attempt_limit(groq, monkeypatch, tmp_
     assert key in transcribe._failed  # given up on
     assert key not in transcribe._retry_at and key not in transcribe._attempts  # and cleaned up
     assert groq.hits == []
+
+
+def _use_messages_db(monkeypatch, tmp_path):
+    """A readable messages.db, so alias resolution works (an unreadable one fails closed)."""
+    _messages_db(tmp_path / "messages.db").close()
+    monkeypatch.setattr(transcribe, "MESSAGES_DB_PATH", str(tmp_path / "messages.db"))
+
+
+def test_unreadable_messages_db_fails_closed_and_logs_the_exception_type(groq, monkeypatch, tmp_path, audio, caplog):
+    (tmp_path / "messages.db").write_bytes(b"not a database" * 50)
+    monkeypatch.setattr(transcribe, "MESSAGES_DB_PATH", str(tmp_path / "messages.db"))
+    _app_db(tmp_path, 0)
+    monkeypatch.setenv(
+        "WA_APP_DATA", str(tmp_path)
+    )  # a flag exists nowhere for this chat: only failing closed saves it
+    with caplog.at_level("WARNING"):
+        assert transcribe.is_local_only_chat("open@s.whatsapp.net") is True
+    assert any("DatabaseError" in r.getMessage() for r in caplog.records)
+    # and so the cloud fallback never runs for it
+    assert (
+        transcribe.transcribe_file(audio, local_only=transcribe.is_local_only_chat("open@s.whatsapp.net"))["message"]
+        == transcribe.LOCAL_UNAVAILABLE
+    )
+    assert groq.hits == []
+
+
+def test_missing_messages_db_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(transcribe, "MESSAGES_DB_PATH", str(tmp_path / "gone.db"))
+    _app_db(tmp_path, 0)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    assert transcribe.is_local_only_chat("open@s.whatsapp.net") is True
+
+
+def test_unreadable_identity_mapping_fails_closed(monkeypatch, tmp_path):
+    import sqlite3
+
+    real = _messages_db(tmp_path / "messages.db")
+
+    class Flaky:
+        """A messages connection whose identity lookup hits a disk error."""
+
+        def execute(self, sql, args=()):
+            if "identities" in sql:
+                raise sqlite3.DatabaseError("database disk image is malformed")
+            return real.execute(sql, args)
+
+    _app_db(tmp_path, 0)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    assert transcribe.is_local_only_chat("open@s.whatsapp.net", messages_conn=Flaky()) is True  # type: ignore[arg-type]
+
+
+def test_a_store_without_identity_tables_still_works(monkeypatch, tmp_path):
+    import sqlite3
+
+    conn = sqlite3.connect(tmp_path / "messages.db")
+    conn.execute("CREATE TABLE chats (jid TEXT PRIMARY KEY)")  # old store: no merged_into, no identities
+    conn.commit()
+    _app_db(tmp_path, 1)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    assert transcribe.is_local_only_chat("priv@s.whatsapp.net", messages_conn=conn) is True
+    assert transcribe.is_local_only_chat("open@s.whatsapp.net", messages_conn=conn) is False

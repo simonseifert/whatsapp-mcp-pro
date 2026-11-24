@@ -42,12 +42,19 @@ def get_or_make(conn: sqlite3.Connection, settings: Settings, message_id: str, c
         path = file_for(settings, message_id, chat_jid)
         if path is None:
             return {"error": NO_AUDIO}
-        ro = open_ro(settings)
         try:
-            with _db_lock:  # the flag counts under any form of the chat: LID, phone JID, merged twin
-                local_only = mcp_lib.is_local_only_chat(ro, conn, chat_jid)
-        finally:
-            ro.close()
+            ro = open_ro(settings)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "cannot open the message store to resolve chat aliases (%s): treating as local only", type(exc).__name__
+            )
+            local_only = True
+        else:
+            try:
+                with _db_lock:  # the flag counts under any form of the chat: LID, phone JID, merged twin
+                    local_only = mcp_lib.is_local_only_chat(ro, conn, chat_jid)
+            finally:
+                ro.close()
         with _transcribe_slot:
             # A chat marked local only never sends its audio to a cloud transcriber, and never falls back to one.
             result = mcp_lib.transcribe_file(str(path), None, local_only=local_only)

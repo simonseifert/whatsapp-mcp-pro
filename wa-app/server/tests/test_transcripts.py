@@ -225,3 +225,22 @@ def test_flag_on_any_twin_form_keeps_audio_off_groq(settings, groq_stand_in, mon
     assert result == {"error": "Local transcription unavailable"}
     assert groq_stand_in == []
     assert conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0] == 0
+
+
+def test_unreadable_message_store_fails_closed(settings, groq_stand_in, monkeypatch):
+    """If the aliases of a chat cannot be resolved, its voice note is treated as local only: no Groq."""
+    import sqlite3
+
+    from wa_app import appdb, transcripts
+
+    conn = appdb.connect(settings)
+    audio = settings.store_path / FAMILY.replace("@", "_") / "audio_20261122_204800.ogg"
+    monkeypatch.setattr(transcripts, "file_for", lambda *a, **k: audio)
+
+    def broken(_settings):
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(transcripts, "open_ro", broken)
+    result = transcripts.get_or_make(conn, settings, "V1", FAMILY)
+    assert result == {"error": "Local transcription unavailable"}
+    assert groq_stand_in == []

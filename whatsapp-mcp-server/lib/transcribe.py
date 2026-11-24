@@ -72,17 +72,41 @@ def _wa_app_db_path() -> Path:
     return (Path(data).expanduser() if data else Path.home() / ".local" / "share" / "wa-app") / "app.db"
 
 
+def _optional(conn: sqlite3.Connection, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    """Rows, or none when the store simply predates the table or column. Any other error propagates."""
+    try:
+        return conn.execute(sql, args).fetchall()
+    except sqlite3.OperationalError as exc:
+        if str(exc).startswith("no such"):
+            return []
+        raise
+
+
 def chat_forms_with_shells(conn: sqlite3.Connection, chat_jid: str) -> set[str]:
     """Every form the conversation may be filed under: the JID itself, its canonical (merged) chat,
-    its LID and phone twins, and chats that were merged into it."""
-    from lib.changes import chat_forms
+    its LID and phone twins, and chats that were merged into it.
 
-    forms = set(chat_forms(conn, chat_jid))
-    try:
-        marks = ",".join("?" * len(forms))
-        forms.update(r[0] for r in conn.execute(f"SELECT jid FROM chats WHERE merged_into IN ({marks})", sorted(forms)))
-    except sqlite3.Error:
-        pass
+    Raises sqlite3.Error when messages.db or its identity or merge mappings cannot be read: the caller must
+    not guess a smaller set."""
+    forms = {chat_jid}
+    current = chat_jid
+    for _ in range(8):  # follow chats.merged_into like canonical_chat_jid
+        rows = _optional(conn, "SELECT merged_into FROM chats WHERE jid = ?", (current,))
+        nxt = rows[0][0] if rows and rows[0][0] else None
+        if not nxt or nxt in forms:
+            break
+        forms.add(nxt)
+        current = nxt
+    for row in _optional(
+        conn,
+        "SELECT jid, lid, phone_jid FROM identities WHERE ? IN (jid, lid, phone_jid)",
+        (current,),
+    ):
+        forms.update(v for v in row if v)
+    marks = ",".join("?" * len(forms))
+    forms.update(
+        r[0] for r in _optional(conn, f"SELECT jid FROM chats WHERE merged_into IN ({marks})", tuple(sorted(forms)))
+    )
     return forms
 
 
@@ -98,19 +122,27 @@ def is_local_only_chat(
     when it sits on any alias or twin (LID, phone JID, merged chat): a note arriving under one form
     is not a way around a flag set on another.
 
+    If the aliases cannot be resolved (messages.db, identities or merge mappings unreadable) the chat counts as
+    local only: a smaller guess could miss a flag stored under another form.
+
     No app.db means no wa-app and so no such setting: False. An app.db that exists but cannot be
     read fails closed (True), because a wrong "no" would send a private voice note to a cloud service.
     Callers that already hold connections (wa-app) pass them in.
     """
     own_messages = None
-    forms = {chat_jid}
     try:
         if messages_conn is None:
             own_messages = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=5)
             messages_conn = own_messages
-        forms = chat_forms_with_shells(messages_conn, chat_jid) | {chat_jid}
-    except sqlite3.Error:
-        logger.warning("[transcribe] cannot canonicalise %s, checking the JID as given", chat_jid)
+        forms = chat_forms_with_shells(messages_conn, chat_jid)
+    except Exception as exc:
+        # Aliases unknown, so a flag under another form of this chat could be missed: fail closed.
+        logger.warning(
+            "[transcribe] cannot resolve the aliases of %s (%s): treating it as local only",
+            log_safe(chat_jid),
+            type(exc).__name__,
+        )
+        return True
     finally:
         if own_messages is not None:
             own_messages.close()
