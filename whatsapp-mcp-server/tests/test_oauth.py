@@ -20,10 +20,12 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
+from pydantic import AnyUrl
 from starlette.testclient import TestClient
 
 import serve_http
-from lib.oauth import CONSENT_PATH, OAuthConfig, main
+from lib import oauth
+from lib.oauth import CONSENT_PATH, OAuthConfig, OAuthStore, main
 
 PUBLIC = "https://wa.example.com"
 PASSPHRASE = "correct horse battery staple"
@@ -477,7 +479,8 @@ def test_backoff_is_per_ip_and_cannot_lock_out_the_operator(tmp_path):
         r = _consent(c, loc, passphrase="nope", headers=attacker)
         assert r.status_code == 429 and int(r.headers["retry-after"]) >= 1
         # Many more failures from other attacker addresses lock nobody else out.
-        for i in range(10):
+        # (8, not more: this test registers every client from one address, and 10 per hour is the cap.)
+        for i in range(8):
             _, _, other = _start(c)
             _consent(c, other, passphrase="nope", headers={"X-Forwarded-For": f"203.0.113.{100 + i}"})
         # The operator, from their own address, still gets in.
@@ -754,3 +757,149 @@ def test_config_reads_failure_budget(tmp_path):
     assert c is not None and (c.failure_budget, c.failure_window) == (5, 600)
     with pytest.raises(ValueError):
         OAuthConfig.from_env({**env, "MCP_OAUTH_FAILURE_BUDGET": "0"})
+
+
+# ---------- log forgery (L4) ----------
+
+
+def test_log_safe_strips_control_characters_and_caps_length():
+    forged = "x\n2026-11-24 12:00:00 INFO OAuth consent granted: client evil\r\x1b[31m end"
+    cleaned = oauth.log_safe(forged)
+    assert "\n" not in cleaned and "\r" not in cleaned and "\x1b" not in cleaned and " " not in cleaned
+    assert len(oauth.log_safe("a" * 1000)) <= oauth.LOG_VALUE_MAX + 3
+
+
+def test_registration_log_line_cannot_be_forged(cfg, caplog):
+    forged = "x\nOAuth consent granted (passphrase): client evil -> claude.ai, scope wa:full" + "y" * 500
+    with caplog.at_level("INFO", logger="whatsapp-mcp.oauth"):
+        r = _client(cfg).post(
+            "/register",
+            json={"redirect_uris": [REDIRECT], "client_name": forged, "token_endpoint_auth_method": "none"},
+        )
+    assert r.status_code == 201
+    lines = [rec.getMessage() for rec in caplog.records if "client registered" in rec.getMessage()]
+    assert len(lines) == 1
+    assert "\n" not in lines[0]
+    assert len(lines[0]) < 300
+
+
+# ---------- open registration (L6) ----------
+
+
+def _reg(c, **kw):
+    return c.post(
+        "/register",
+        json={"redirect_uris": [REDIRECT], "client_name": "c", "token_endpoint_auth_method": "none"},
+        **kw,
+    )
+
+
+def test_registrations_are_rate_limited_per_ip(cfg):
+    c = _client(cfg)
+    assert [_reg(c).status_code for _ in range(oauth.REGISTRATIONS_PER_IP)] == [201] * oauth.REGISTRATIONS_PER_IP
+    blocked = _reg(c)
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) > 0
+    assert blocked.json()["error"] == "too_many_requests"
+
+
+def test_untrusted_peer_cannot_dodge_the_limit_with_forwarded_for(cfg):
+    c = _client(cfg)
+    for i in range(oauth.REGISTRATIONS_PER_IP):
+        assert _reg(c, headers={"X-Forwarded-For": f"203.0.113.{i}"}).status_code == 201
+    assert _reg(c, headers={"X-Forwarded-For": "198.51.100.77"}).status_code == 429
+
+
+def test_trusted_proxy_forwarded_for_gives_each_client_its_own_budget(tmp_path):
+    cfg = OAuthConfig(
+        public_url=PUBLIC,
+        passphrase=PASSPHRASE,
+        db_path=str(tmp_path / "data" / "oauth.db"),
+        trusted_proxies=("testclient",),
+    )
+    c = _client(cfg)
+    for _ in range(oauth.REGISTRATIONS_PER_IP):
+        assert _reg(c, headers={"X-Forwarded-For": "203.0.113.5"}).status_code == 201
+    assert _reg(c, headers={"X-Forwarded-For": "203.0.113.5"}).status_code == 429
+    assert _reg(c, headers={"X-Forwarded-For": "203.0.113.6"}).status_code == 201
+    # A hop the client forged in front of the proxy's own entry is ignored: the nearest untrusted hop counts.
+    assert _reg(c, headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.5"}).status_code == 429
+
+
+def test_registration_limit_window_slides(monkeypatch):
+    limit = oauth.RegistrationLimit(limit=2, window=100)
+    now = [1000.0]
+    monkeypatch.setattr(oauth.time, "time", lambda: now[0])
+    assert limit.check("203.0.113.1") == 0 and limit.check("203.0.113.1") == 0
+    assert limit.check("203.0.113.1") > 0
+    now[0] += 101
+    assert limit.check("203.0.113.1") == 0
+
+
+def test_client_table_cap_is_200(tmp_path):
+    assert oauth.MAX_CLIENTS == 200
+    store = OAuthStore(str(tmp_path / "o.db"))
+    from mcp.shared.auth import OAuthClientInformationFull
+
+    def info(i):
+        return OAuthClientInformationFull(client_id=f"c{i}", redirect_uris=[AnyUrl(REDIRECT)], client_name="c")
+
+    for i in range(oauth.MAX_CLIENTS):
+        store.add_client(info(i))
+    with pytest.raises(oauth.RegistrationError):
+        store.add_client(info("one-too-many"))
+
+
+def test_unused_clients_older_than_30_days_are_pruned(tmp_path):
+    import sqlite3
+
+    from mcp.shared.auth import OAuthClientInformationFull
+
+    store = OAuthStore(str(tmp_path / "o.db"))
+    for cid in ("old-unused", "old-used", "new-unused"):
+        store.add_client(OAuthClientInformationFull(client_id=cid, redirect_uris=[AnyUrl(REDIRECT)], client_name="c"))
+        store.mark_approved(cid)
+    old = int(time.time()) - oauth.UNUSED_CLIENT_TTL - 60
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE clients SET created_at = ? WHERE client_id LIKE 'old-%'", (old,))
+        conn.execute("UPDATE clients SET last_used_at = ? WHERE client_id = 'old-used'", (int(time.time()),))
+        conn.execute(
+            "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
+            " VALUES ('r1', 'old-unused', 'c', '{}', 'wa:read', 'h', ?)",
+            (time.time(),),
+        )
+    store.prune()
+    assert store.get_client("old-unused") is None
+    assert store.get_client("old-used") is not None
+    assert store.get_client("new-unused") is not None
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0
+
+
+def test_expired_pending_authorizations_are_pruned_and_open_ones_capped(cfg):
+    import sqlite3
+
+    c = _client(cfg)
+    client_id = _register(c).json()["client_id"]
+    _, challenge = _pkce()
+    store = OAuthStore(cfg.db_path)
+    with sqlite3.connect(cfg.db_path) as conn:
+        for i in range(oauth.MAX_PENDING):
+            conn.execute(
+                "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
+                " VALUES (?, ?, 'c', '{}', 'wa:read', 'h', ?)",
+                (f"old{i}", client_id, time.time() - oauth.PENDING_TTL - 5),
+            )
+    # Expired rows do not count against the cap and are deleted by the next authorize.
+    assert _authorize(c, client_id, challenge).status_code == 302
+    with sqlite3.connect(cfg.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 1
+        for i in range(oauth.MAX_PENDING):
+            conn.execute(
+                "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
+                " VALUES (?, ?, 'c', '{}', 'wa:read', 'h', ?)",
+                (f"live{i}", client_id, time.time()),
+            )
+    r = _authorize(c, client_id, challenge)
+    assert r.status_code == 302 and "error=temporarily_unavailable" in r.headers["location"]
+    assert store is not None

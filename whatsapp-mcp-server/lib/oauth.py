@@ -39,6 +39,7 @@ import secrets
 import sqlite3
 import sys
 import time
+import unicodedata
 import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
@@ -85,8 +86,13 @@ LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 # One operator, so these are small on purpose: they bound what an anonymous
 # caller on the public URL can make the server hold or store.
-MAX_CLIENTS = 50
+MAX_CLIENTS = 200
 UNAPPROVED_CLIENT_TTL = 3600  # DCR is open to anyone; drop clients nobody consented to
+UNUSED_CLIENT_TTL = 30 * 86400  # a client that never got a token in 30 days is dropped, approved or not
+REGISTRATIONS_PER_IP = 10  # POST /register per source address (backoff_key) per REGISTRATION_WINDOW
+REGISTRATION_WINDOW = 3600
+MAX_PENDING = 200  # open consent requests, all clients
+LOG_VALUE_MAX = 80
 PENDING_TTL = 600
 CODE_TTL = 300
 ATTEMPTS_PER_CONSENT = 3
@@ -99,6 +105,13 @@ MIN_PASSPHRASE_LEN = 12
 # identity that means anything, so only known connector hosts get a consent page.
 DEFAULT_REDIRECT_HOSTS = ("claude.ai", "claude.com", "chatgpt.com", "localhost", "127.0.0.1")
 CONSENT_COOKIE_PREFIX = "wac_"
+
+
+def log_safe(value: object, limit: int = LOG_VALUE_MAX) -> str:
+    """A client-supplied value made safe for one log line: control and line-separator characters
+    (newlines, ESC, NEL, U+2028/9 ...) become spaces, and the length is capped."""
+    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in str(value))
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _truthy(value: str | None) -> bool:
@@ -297,20 +310,28 @@ class OAuthStore:
             row = conn.execute("SELECT info_json FROM clients WHERE client_id = ?", (client_id,)).fetchone()
         return OAuthClientInformationFull.model_validate_json(row["info_json"]) if row else None
 
+    @staticmethod
+    def _prune_clients(conn: sqlite3.Connection, now: int) -> None:
+        conn.execute("DELETE FROM clients WHERE approved_at IS NULL AND created_at < ?", (now - UNAPPROVED_CLIENT_TTL,))
+        conn.execute("DELETE FROM clients WHERE last_used_at IS NULL AND created_at < ?", (now - UNUSED_CLIENT_TTL,))
+        conn.execute("DELETE FROM pending WHERE client_id NOT IN (SELECT client_id FROM clients)")
+
     def add_client(self, info: OAuthClientInformationFull) -> None:
         now = int(time.time())
         with self._conn() as conn:
-            conn.execute(
-                "DELETE FROM clients WHERE approved_at IS NULL AND created_at < ?", (now - UNAPPROVED_CLIENT_TTL,)
-            )
+            self._prune_clients(conn, now)
             (count,) = conn.execute("SELECT COUNT(*) FROM clients").fetchone()
-            if count >= MAX_CLIENTS:
-                raise RegistrationError(
-                    "invalid_client_metadata", "too many registered clients; revoke some with python -m lib.oauth"
+            full = count >= MAX_CLIENTS
+            if not full:
+                conn.execute(
+                    "INSERT INTO clients (client_id, info_json, created_at) VALUES (?, ?, ?)",
+                    (info.client_id, info.model_dump_json(exclude_none=True), now),
                 )
-            conn.execute(
-                "INSERT INTO clients (client_id, info_json, created_at) VALUES (?, ?, ?)",
-                (info.client_id, info.model_dump_json(exclude_none=True), now),
+        # Raised outside the connection context: these errors are frozen dataclasses, which a
+        # contextmanager cannot re-raise (it sets __traceback__ on them).
+        if full:
+            raise RegistrationError(
+                "invalid_client_metadata", "too many registered clients; revoke some with python -m lib.oauth"
             )
 
     def mark_approved(self, client_id: str) -> None:
@@ -399,25 +420,35 @@ class OAuthStore:
         with self._conn() as conn:
             conn.execute("DELETE FROM tokens WHERE expires_at < ?", (int(time.time()),))
             conn.execute("DELETE FROM pending WHERE created_at < ?", (time.time() - PENDING_TTL,))
+            self._prune_clients(conn, int(time.time()))
 
     # pending consents
 
     def add_pending(self, req_id: str, p: _Pending) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM pending WHERE created_at < ?", (time.time() - PENDING_TTL,))
-            conn.execute(
-                "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    req_id,
-                    p.client_id,
-                    p.client_name,
-                    p.params.model_dump_json(),
-                    " ".join(p.offered),
-                    p.nonce_hash,
-                    p.created,
-                ),
-            )
+            (open_requests,) = conn.execute("SELECT COUNT(*) FROM pending").fetchone()
+            full = open_requests >= MAX_PENDING
+            if not full:
+                self._insert_pending(conn, req_id, p)
+        if full:
+            raise AuthorizeError("temporarily_unavailable", "too many open authorization requests; retry shortly")
+
+    @staticmethod
+    def _insert_pending(conn: sqlite3.Connection, req_id: str, p: _Pending) -> None:
+        conn.execute(
+            "INSERT INTO pending (req_id, client_id, client_name, params_json, offered, nonce_hash, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                req_id,
+                p.client_id,
+                p.client_name,
+                p.params.model_dump_json(),
+                " ".join(p.offered),
+                p.nonce_hash,
+                p.created,
+            ),
+        )
 
     def get_pending(self, req_id: str) -> _Pending | None:
         with self._conn() as conn:
@@ -604,6 +635,7 @@ class WAOAuthProvider:
         self.fresh_nonces: dict[str, str] = {}
         self.backoff = IPBackoff(config.failure_window)
         self.budget = FailureBudget(config.failure_budget, config.failure_window)
+        self.registrations = RegistrationLimit(trusted_proxies=config.trusted_proxies)
 
     # registration
 
@@ -622,7 +654,9 @@ class WAOAuthProvider:
                     f"({', '.join(self.config.allowed_redirect_hosts)}); see MCP_OAUTH_ALLOWED_REDIRECT_HOSTS",
                 )
         self.store.add_client(client_info)
-        logger.info("OAuth client registered: %s (%s)", client_info.client_id, client_info.client_name)
+        logger.info(
+            "OAuth client registered: %s (%s)", log_safe(client_info.client_id), log_safe(client_info.client_name)
+        )
 
     # authorization
 
@@ -699,7 +733,9 @@ class WAOAuthProvider:
             # OAuth 2.1 §4.1.2: a replayed code means it leaked; revoke what it bought.
             grant_id, _ = self.used_codes.pop(authorization_code)
             self.store.revoke_grant(grant_id)
-            logger.warning("OAuth: authorization code replayed; revoked its tokens (client %s)", client.client_id)
+            logger.warning(
+                "OAuth: authorization code replayed; revoked its tokens (client %s)", log_safe(client.client_id)
+            )
             return None
         code = self.codes.get(authorization_code)
         return code if code and code.client_id == client.client_id else None
@@ -730,7 +766,9 @@ class WAOAuthProvider:
             # Reuse of a rotated refresh token: either the client or a thief
             # holds a stale copy. Kill the whole grant; the operator re-consents.
             self.store.revoke_grant(row["grant_id"])
-            logger.warning("OAuth: rotated refresh token reused; revoked grant for client %s", client.client_id)
+            logger.warning(
+                "OAuth: rotated refresh token reused; revoked grant for client %s", log_safe(client.client_id)
+            )
             return None
         if row["expires_at"] < time.time():
             return None
@@ -880,7 +918,7 @@ def consent_routes(provider: WAOAuthProvider) -> list[Route]:
         logger.info(
             "OAuth consent granted (%s): client %s -> %s, scope %s",
             how,
-            pending.client_id,
+            log_safe(pending.client_id),
             pending.redirect_host,
             " ".join(scopes),
         )
@@ -914,7 +952,7 @@ def consent_routes(provider: WAOAuthProvider) -> list[Route]:
         if pending is None:
             return _plain(_EXPIRED, 400)
         if not _bound(request, req_id, pending):
-            logger.warning("OAuth consent POST without the binding cookie (client %s)", pending.client_id)
+            logger.warning("OAuth consent POST without the binding cookie (client %s)", log_safe(pending.client_id))
             return _plain(_UNBOUND, 403)
 
         decision = form.get("decision")
@@ -948,7 +986,7 @@ def consent_routes(provider: WAOAuthProvider) -> list[Route]:
             provider.backoff.fail(ip)
             provider.budget.fail()
             failures = store.pending_failed(req_id)
-            logger.warning("OAuth consent: wrong passphrase from %s for client %s", ip, pending.client_id)
+            logger.warning("OAuth consent: wrong passphrase from %s for client %s", ip, log_safe(pending.client_id))
             if failures >= ATTEMPTS_PER_CONSENT:
                 store.delete_pending(req_id)
                 return _plain("Too many wrong passphrases for this request. Start again from the client.", 403)
@@ -961,6 +999,62 @@ def consent_routes(provider: WAOAuthProvider) -> list[Route]:
         return _finish(req_id, pending, choice, "passphrase")
 
     return [Route(CONSENT_PATH, consent, methods=["GET", "POST"])]
+
+
+class RegistrationLimit:
+    """Sliding-window cap on POST /register per source address (REGISTRATIONS_PER_IP per hour).
+
+    The address is client_ip(): the socket peer, or the nearest untrusted X-Forwarded-For hop only when
+    the peer is in MCP_TRUSTED_PROXY. A header sent by any other peer is ignored, so it cannot be
+    rotated to dodge the limit. In memory: a restart resets it, which is fine for a spam brake.
+    """
+
+    def __init__(
+        self,
+        limit: int = REGISTRATIONS_PER_IP,
+        window: int = REGISTRATION_WINDOW,
+        trusted_proxies: tuple[str, ...] = (),
+    ) -> None:
+        self.limit = limit
+        self.window = window
+        self.trusted_proxies = trusted_proxies
+        self.hits: dict[str, deque[float]] = {}
+
+    def check(self, ip: str) -> int:
+        """0 when allowed (and counted), else seconds until the oldest registration leaves the window."""
+        now = time.time()
+        key = backoff_key(ip)
+        if len(self.hits) > MAX_TRACKED_IPS:
+            self.hits = {k: q for k, q in self.hits.items() if q and now - q[-1] <= self.window}
+        q = self.hits.setdefault(key, deque())
+        while q and now - q[0] > self.window:
+            q.popleft()
+        if len(q) >= self.limit:
+            return max(1, int(q[0] + self.window - now + 0.999))
+        q.append(now)
+        return 0
+
+
+class _LimitRegistration:
+    """Wrap the SDK's /register endpoint with RegistrationLimit (429 + Retry-After when exceeded)."""
+
+    def __init__(self, app: Any, limit: RegistrationLimit):
+        self.app = app
+        self.limit = limit
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope["method"] == "POST":
+            ip = client_ip(scope, self.limit.trusted_proxies)
+            wait = self.limit.check(ip)
+            if wait:
+                logger.warning("OAuth registration rate limit hit by %s", log_safe(ip))
+                body = json.dumps({"error": "too_many_requests", "error_description": "Too many registrations"})
+                response = Response(
+                    body, status_code=429, media_type="application/json", headers={"Retry-After": str(wait)}
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class _BindConsentCookie:
@@ -1019,12 +1113,20 @@ def auth_settings(config: OAuthConfig) -> AuthSettings:
     )
 
 
+def _wrap(route: Any, provider: WAOAuthProvider) -> Any:
+    if route.path == "/authorize":
+        return Route(route.path, _BindConsentCookie(route.endpoint, provider), methods=route.methods)
+    if route.path == "/register":
+        return Route(route.path, _LimitRegistration(route.endpoint, provider.registrations), methods=route.methods)
+    return route
+
+
 def build_oauth_app(provider: WAOAuthProvider) -> Starlette:
     """Starlette app serving the metadata, OAuth endpoints and the consent page."""
     settings = auth_settings(provider.config)
     assert settings.resource_server_url is not None
     routes = [
-        Route(r.path, _BindConsentCookie(r.endpoint, provider), methods=r.methods) if r.path == "/authorize" else r
+        _wrap(r, provider)
         for r in create_auth_routes(
             provider=provider,
             issuer_url=settings.issuer_url,
