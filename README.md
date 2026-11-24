@@ -141,7 +141,9 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
 - **`transcribe_audio`, voice notes.** Local transcription. With
   `AUTO_TRANSCRIBE_VOICE=true` incoming voice notes are transcribed in the
   background and written into the store, so speech is searchable by `recall`
-  too. `WHISPER_BACKEND=auto` tries, in order:
+  too. Voice notes from a chat marked local only in wa-app never go to a cloud
+  backend, and `TRANSCRIBE_CLOUD_FALLBACK=0` turns the Groq fallback off for all
+  chats. `WHISPER_BACKEND=auto` tries, in order:
 
   | Backend | Runs where | Notes |
   |---|---|---|
@@ -193,7 +195,9 @@ Every WhatsApp MCP can send and read. These are the parts that aren't standard.
   by default). Those connectors can't send a static header, so the shared
   server can act as its own single-user OAuth 2.1 server: PKCE, dynamic client
   registration, a consent page guarded by a passphrase, and a CLI approve path
-  so failed guesses can never lock you out. It needs a public HTTPS URL, which
+  so failed guesses can never lock you out. Registration is rate limited per
+  address (set `MCP_TRUSTED_PROXY` behind a proxy so the real address is used).
+  It needs a public HTTPS URL, which
   puts your account on the internet behind that passphrase; grant read-only
   unless the connector has to send. See
   [SETUP.md](SETUP.md#remote-connector-via-oauth-optional).

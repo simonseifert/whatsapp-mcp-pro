@@ -6,6 +6,33 @@ All notable changes to this fork are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+App and MCP audit fixes (see DECISIONS.md D24):
+
+- Voice notes from a chat marked local only never reach Groq or any cloud transcriber, automatically or on tap in
+  wa-app: no cloud backend and no fallback, and the call fails with "Local transcription unavailable". The flag counts
+  under every form of the chat (LID, phone JID, merged twin). New `TRANSCRIBE_CLOUD_FALLBACK=0` turns the Groq fallback
+  off everywhere; the default is unchanged.
+- `transcribe_audio_file` runs the same media path guard as `send_file` and is always local only.
+- `send_file` and `send_audio_message` answer one generic "Media file not found or not allowed" for a missing and a
+  forbidden path, so they no longer reveal which files exist.
+- OAuth: client-supplied values are cleaned before they are logged (no log forgery); `/register` is limited to 10 per
+  hour per source address and `/authorize` to 20; the client cap is 200; unused clients older than 30 days and expired
+  pending requests are pruned; open pending requests are capped per client and per address and the oldest are
+  evicted instead of refusing everyone. X-Forwarded-For is only read from `MCP_TRUSTED_PROXY` peers.
+- wa-app sends a CSP, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options` and COOP on every response, and
+  answers 413 to a request body over 64 KB before reading it.
+- wa-app's session cookie is `__Host-wa_session` when cookies are secure. The old name is accepted for one release;
+  the next login sets the new one. Everyone is logged in again only if they clear cookies.
+
+### Changed
+
+- wa-app: switches are styled to the tokens (52 x 44, labelled), amber is limited to what DESIGN.md allows (header back
+  and menu icons, sheet close, Log out, Cancel and the selected theme are neutral), the chat menu hangs off the kebab,
+  the draft card follows the 760 px column on desktop, and the missing-local-AI notice is a visible warning. The theme
+  bootstrap is now `/theme-init.js` instead of an inline script.
+
 ### Added
 
 - Drafts from Claude: wa-app's `/api/agent/*` routes (bearer `WA_APP_AGENT_TOKEN`, off without it) and an opt-in
