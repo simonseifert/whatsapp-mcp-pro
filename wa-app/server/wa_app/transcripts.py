@@ -7,9 +7,9 @@ import time
 from typing import Any
 
 from . import appdb, mcp_lib
-from .ai.config import chat_ai
 from .config import Settings
 from .media import file_for
+from .store import open_ro
 
 logger = logging.getLogger("wa_app.transcripts")
 
@@ -42,8 +42,12 @@ def get_or_make(conn: sqlite3.Connection, settings: Settings, message_id: str, c
         path = file_for(settings, message_id, chat_jid)
         if path is None:
             return {"error": NO_AUDIO}
-        with _db_lock:
-            local_only = chat_ai(conn, chat_jid).local_only
+        ro = open_ro(settings)
+        try:
+            with _db_lock:  # the flag counts under any form of the chat: LID, phone JID, merged twin
+                local_only = mcp_lib.is_local_only_chat(ro, conn, chat_jid)
+        finally:
+            ro.close()
         with _transcribe_slot:
             # A chat marked local only never sends its audio to a cloud transcriber, and never falls back to one.
             result = mcp_lib.transcribe_file(str(path), None, local_only=local_only)

@@ -1200,13 +1200,14 @@ def transcribe_audio_file(
     from lib.transcribe import transcribe_file
 
     # Same path guard as send_file: allowed directories only, symlinks resolved.
+    # The owning chat of an arbitrary path cannot be known, so this tool never uses a cloud backend.
     try:
         checked = validate_outgoing_media_path(file_path)
     except ValueError:
         return {"success": False, "backend": "none", "message": MEDIA_UNAVAILABLE}
     if not os.path.isfile(checked):
         return {"success": False, "backend": "none", "message": MEDIA_UNAVAILABLE}
-    return transcribe_file(checked, language)
+    return transcribe_file(checked, language, local_only=True)
 
 
 # ----- Pro: semantic recall over message history --------------------------

@@ -75,10 +75,18 @@ def transcribe_file(path: str, language: str | None = None, *, local_only: bool 
     return transcribe(path, language, local_only=local_only)
 
 
+def is_local_only_chat(messages_conn, app_conn, chat_jid: str) -> bool:
+    """True when the chat is flagged local only under any of its forms (LID, phone JID, merged chats)."""
+    from lib.transcribe import is_local_only_chat as check
+
+    return check(chat_jid, messages_conn=messages_conn, app_conn=app_conn)
+
+
 __all__ = [
     "canonical_chat_jid",
     "chat_forms",
     "download_media",
+    "is_local_only_chat",
     "get_profile_picture",
     "mark_messages_read",
     "resolve_display_names",

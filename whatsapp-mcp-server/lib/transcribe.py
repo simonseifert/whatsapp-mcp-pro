@@ -62,26 +62,64 @@ def _wa_app_db_path() -> Path:
     return (Path(data) if data else Path.home() / ".local" / "share" / "wa-app") / "app.db"
 
 
-def is_local_only_chat(chat_jid: str) -> bool:
-    """True when wa-app marks the chat local only (its app.db, read-only).
+def chat_forms_with_shells(conn: sqlite3.Connection, chat_jid: str) -> set[str]:
+    """Every form the conversation may be filed under: the JID itself, its canonical (merged) chat,
+    its LID and phone twins, and chats that were merged into it."""
+    from lib.changes import chat_forms
 
-    No app.db means no wa-app and so no such setting: False. An app.db that
-    exists but cannot be read fails closed (True), because a wrong "no" would
-    send a private voice note to a cloud service.
+    forms = set(chat_forms(conn, chat_jid))
+    try:
+        marks = ",".join("?" * len(forms))
+        forms.update(r[0] for r in conn.execute(f"SELECT jid FROM chats WHERE merged_into IN ({marks})", sorted(forms)))
+    except sqlite3.Error:
+        pass
+    return forms
+
+
+def is_local_only_chat(
+    chat_jid: str,
+    *,
+    messages_conn: sqlite3.Connection | None = None,
+    app_conn: sqlite3.Connection | None = None,
+) -> bool:
+    """True when wa-app marks the chat, under ANY of its forms, local only (its app.db, read-only).
+
+    The JID is canonicalised against messages.db first, as download_media does, and the flag counts
+    when it sits on any alias or twin (LID, phone JID, merged chat): a note arriving under one form
+    is not a way around a flag set on another.
+
+    No app.db means no wa-app and so no such setting: False. An app.db that exists but cannot be
+    read fails closed (True), because a wrong "no" would send a private voice note to a cloud service.
+    Callers that already hold connections (wa-app) pass them in.
     """
+    own_messages = None
+    forms = {chat_jid}
+    try:
+        if messages_conn is None:
+            own_messages = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=5)
+            messages_conn = own_messages
+        forms = chat_forms_with_shells(messages_conn, chat_jid) | {chat_jid}
+    except sqlite3.Error:
+        logger.warning("[transcribe] cannot canonicalise %s, checking the JID as given", chat_jid)
+    finally:
+        if own_messages is not None:
+            own_messages.close()
+    marks = ",".join("?" * len(forms))
+    query = f"SELECT 1 FROM chat_ai WHERE local_only != 0 AND chat_jid IN ({marks}) LIMIT 1"
+    if app_conn is not None:
+        return app_conn.execute(query, sorted(forms)).fetchone() is not None
     path = _wa_app_db_path()
     if not path.exists():
         return False
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         try:
-            row = conn.execute("SELECT local_only FROM chat_ai WHERE chat_jid=?", (chat_jid,)).fetchone()
+            return conn.execute(query, sorted(forms)).fetchone() is not None
         finally:
             conn.close()
     except sqlite3.Error:
         logger.warning("[transcribe] cannot read wa-app local-only flag, treating %s as local only", chat_jid)
         return True
-    return bool(row and row[0])
 
 
 def available_backend(local_only: bool = False) -> str:

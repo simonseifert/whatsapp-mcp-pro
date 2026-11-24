@@ -282,6 +282,7 @@ def transcribed(monkeypatch):
     calls: list[str] = []
 
     def fake(path, language=None, **kw):
+        assert kw == {"local_only": True}
         calls.append(path)
         return {"success": True, "text": "ok"}
 

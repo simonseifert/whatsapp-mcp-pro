@@ -201,3 +201,27 @@ def test_cloud_fallback_switch_applies_in_wa_app(
     response = logged_in.post(f"/api/transcripts/{FAMILY}/{voice_id}")
     assert response.status_code == 502
     assert groq_stand_in == []
+
+
+def _flag(conn, jid):
+    conn.execute("INSERT INTO chat_ai (chat_jid, local_only) VALUES (?, 1)", (jid,))
+
+
+@pytest.mark.parametrize(
+    ("flagged", "asked"),
+    [("IVANA_LID_SHELL", "IVANA"), ("IVANA", "IVANA_LID_SHELL")],
+)
+def test_flag_on_any_twin_form_keeps_audio_off_groq(settings, groq_stand_in, monkeypatch, flagged, asked):
+    from tests import conftest as fx
+    from wa_app import appdb, transcripts
+
+    conn = appdb.connect(settings)
+    _flag(conn, getattr(fx, flagged))
+    audio = settings.store_path / FAMILY.replace("@", "_") / "audio_20261122_204800.ogg"
+    monkeypatch.setattr(transcripts, "file_for", lambda *a, **k: audio)
+
+    result = transcripts.get_or_make(conn, settings, "V1", getattr(fx, asked))
+
+    assert result == {"error": "Local transcription unavailable"}
+    assert groq_stand_in == []
+    assert conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0] == 0
