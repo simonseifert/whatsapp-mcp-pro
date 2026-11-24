@@ -36,3 +36,12 @@ def test_drafts_source_column_is_added_to_an_older_db(settings: Settings) -> Non
         conn = appdb.connect(settings)
         assert conn.execute("SELECT source FROM drafts").fetchall() == [("ai",)]
         conn.close()
+
+
+def test_wa_app_data_expands_a_tilde(monkeypatch, tmp_path):
+    from wa_app import config
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("WA_APP_DATA", "~/wa-data")
+    monkeypatch.setenv("WA_STORE_PATH", str(tmp_path / "store"))
+    assert config.load().data_dir == tmp_path / "wa-data"

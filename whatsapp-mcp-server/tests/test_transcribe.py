@@ -428,3 +428,33 @@ def test_auto_tick_logs_forged_message_ids_on_one_line(groq, monkeypatch, tmp_pa
     with caplog.at_level("INFO"):
         transcribe._auto_tick(3, 3)
     assert not any("\n" in r.getMessage() for r in caplog.records)
+
+
+def test_wa_app_data_expands_a_tilde(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("WA_APP_DATA", "~/wa-data")
+    assert transcribe._wa_app_db_path() == tmp_path / "wa-data" / "app.db"
+
+
+def test_local_only_retries_stop_after_the_attempt_limit(groq, monkeypatch, tmp_path, audio):
+    import whatsapp
+
+    _app_db(tmp_path, 1)
+    monkeypatch.setenv("WA_APP_DATA", str(tmp_path))
+    key = ("m1", "priv@s.whatsapp.net")
+    monkeypatch.setattr(transcribe, "_failed", set())
+    monkeypatch.setattr(transcribe, "_retry_at", {})
+    monkeypatch.setattr(transcribe, "_attempts", {})
+    monkeypatch.setattr(transcribe, "_pending_voice_notes", lambda limit, age: [key])
+    monkeypatch.setattr(whatsapp, "download_media", lambda message_id, chat_jid: audio)
+    clock = [1000.0]
+    monkeypatch.setattr(transcribe.time, "time", lambda: clock[0])
+
+    for _ in range(transcribe.LOCAL_MAX_ATTEMPTS):
+        assert key not in transcribe._failed
+        transcribe._auto_tick(3, 3)
+        clock[0] += transcribe.LOCAL_RETRY_SECONDS + 1
+
+    assert key in transcribe._failed  # given up on
+    assert key not in transcribe._retry_at and key not in transcribe._attempts  # and cleaned up
+    assert groq.hits == []

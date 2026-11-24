@@ -46,7 +46,7 @@ def load() -> Settings:
     return Settings(
         host=os.getenv("WA_APP_HOST", "127.0.0.1"),
         port=int(os.getenv("WA_APP_PORT", "8085")),
-        data_dir=Path(data) if data else Path.home() / ".local" / "share" / "wa-app",
+        data_dir=Path(data).expanduser() if data else Path.home() / ".local" / "share" / "wa-app",
         store_path=Path(store) if store else _default_store_path(),
         secure_cookies=os.getenv("WA_APP_INSECURE_COOKIES") != "1",
         agent_token=_agent_token(),

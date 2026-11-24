@@ -52,6 +52,8 @@ _auto_lock = threading.Lock()
 _failed: set[tuple[str, str]] = set()
 _retry_at: dict[tuple[str, str], float] = {}  # local-only notes that failed: tried again after LOCAL_RETRY_SECONDS
 LOCAL_RETRY_SECONDS = 600
+LOCAL_MAX_ATTEMPTS = 6  # then the note is given up on, like any other failure
+_attempts: dict[tuple[str, str], int] = {}
 
 
 def cloud_fallback_enabled() -> bool:
@@ -67,7 +69,7 @@ def _wa_app_in_use() -> bool:
 
 def _wa_app_db_path() -> Path:
     data = os.environ.get("WA_APP_DATA")
-    return (Path(data) if data else Path.home() / ".local" / "share" / "wa-app") / "app.db"
+    return (Path(data).expanduser() if data else Path.home() / ".local" / "share" / "wa-app") / "app.db"
 
 
 def chat_forms_with_shells(conn: sqlite3.Connection, chat_jid: str) -> set[str]:
@@ -353,13 +355,18 @@ def _auto_tick(limit: int, max_age_days: int) -> None:
         result = transcribe_file(path, local_only=is_local_only_chat(chat_jid))
         if not result.get("success") or not result.get("text"):
             logger.warning("[transcribe] auto: %s failed: %s", log_safe(message_id), log_safe(result.get("message")))
-            if result.get("message") == LOCAL_UNAVAILABLE:
+            key = (message_id, chat_jid)
+            _attempts[key] = _attempts.get(key, 0) + 1
+            if result.get("message") == LOCAL_UNAVAILABLE and _attempts[key] < LOCAL_MAX_ATTEMPTS:
                 # Local whisper may be down for a while: try this note again later (it used to fall back to Groq).
-                _retry_at[(message_id, chat_jid)] = time.time() + LOCAL_RETRY_SECONDS
+                _retry_at[key] = time.time() + LOCAL_RETRY_SECONDS
             else:
-                _failed.add((message_id, chat_jid))
+                _failed.add(key)
+                _retry_at.pop(key, None)
+                _attempts.pop(key, None)
             continue
         _retry_at.pop((message_id, chat_jid), None)
+        _attempts.pop((message_id, chat_jid), None)
         _store_transcript(message_id, chat_jid, result["text"])
         logger.info(
             "[transcribe] auto: %s via %s (%d chars)",
