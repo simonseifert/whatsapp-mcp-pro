@@ -329,9 +329,11 @@ func resolveExistingPrefix(absPath string) string {
 // WHATSAPP_ALLOWLIST_JIDS safety gate.
 //
 // Matching is EXACT (case-insensitive) against either the full JID
-// ("4915112345678@s.whatsapp.net") or its user part ("4915112345678"), which is
-// what the documented syntax describes: "only to specific phone numbers or
-// group JIDs (comma-separated)".
+// ("4915112345678@s.whatsapp.net") or, for a phone JID only, its user part
+// ("4915112345678"), which is what the documented syntax describes: "only to
+// specific phone numbers or group JIDs (comma-separated)". A bare number never
+// matches a LID or a group: a LID's digits can equal someone else's phone
+// number, so those are allowed only by their full JID.
 //
 // It deliberately does NOT substring-match. An earlier version also allowed
 // `strings.Contains(target, entry)`, which silently defeated the gate: because
@@ -346,14 +348,15 @@ func resolveExistingPrefix(absPath string) string {
 // explicit syntax (e.g. a trailing "*") parsed deliberately, never as the
 // default behaviour of a containment check.
 func IsRecipientAllowed(allowlist []string, recipient types.JID) bool {
+	recipient = recipient.ToNonAD()
 	target := recipient.String()
-	user := recipient.User
+	phone := recipient.Server == types.DefaultUserServer
 	for _, entry := range allowlist {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
-		if strings.EqualFold(entry, target) || strings.EqualFold(entry, user) {
+		if strings.EqualFold(entry, target) || (phone && strings.EqualFold(entry, recipient.User)) {
 			return true
 		}
 	}
@@ -878,9 +881,23 @@ func (c *Client) CreateGroup(name string, participants []string) (*types.GroupIn
 	for i, p := range participants {
 		jid, err := types.ParseJID(p)
 		if err != nil {
-			return nil, fmt.Errorf("invalid participant JID %s: %v", p, err)
+			return nil, newSendError(SendErrInvalid, "invalid participant JID %s: %w", p, err)
 		}
 		participantJIDs[i] = jid
+	}
+
+	// Each participant gets a system message on their phone: a first contact
+	// to the allowlists, the reachout gate and the antiban caps.
+	targets, se := parseGateTargets(participants, "participant")
+	if se != nil {
+		return nil, se
+	}
+	if len(targets) == 0 {
+		if se := c.gateWithoutRecipient(context.Background(), antiban.Text); se != nil {
+			return nil, se
+		}
+	} else if se := c.gateContacts(context.Background(), c.gateStore(), antiban.Text, targets); se != nil {
+		return nil, se
 	}
 
 	req := whatsmeow.ReqCreateGroup{
@@ -888,7 +905,9 @@ func (c *Client) CreateGroup(name string, participants []string) (*types.GroupIn
 		Participants: participantJIDs,
 	}
 
-	return c.Client.CreateGroup(context.Background(), req)
+	info, err := c.Client.CreateGroup(context.Background(), req)
+	c.finishGate(antiban.Text, err)
+	return info, err
 }
 
 // AddGroupParticipants adds members to a group
@@ -906,12 +925,24 @@ func (c *Client) AddGroupParticipants(groupJID string, participants []string) ([
 	for i, p := range participants {
 		jid, err := types.ParseJID(p)
 		if err != nil {
-			return nil, fmt.Errorf("invalid participant JID %s: %v", p, err)
+			return nil, newSendError(SendErrInvalid, "invalid participant JID %s: %w", p, err)
 		}
 		participantJIDs[i] = jid
 	}
 
-	return c.UpdateGroupParticipants(context.Background(), group, participantJIDs, whatsmeow.ParticipantChangeAdd)
+	// The group gets a system message and every new member a notification:
+	// gate the group and each participant like a send.
+	targets, se := parseGateTargets(append([]string{groupJID}, participants...), "group or participant")
+	if se != nil {
+		return nil, se
+	}
+	if se := c.gateContacts(context.Background(), c.gateStore(), antiban.Text, targets); se != nil {
+		return nil, se
+	}
+
+	res, err := c.UpdateGroupParticipants(context.Background(), group, participantJIDs, whatsmeow.ParticipantChangeAdd)
+	c.finishGate(antiban.Text, err)
+	return res, err
 }
 
 // RemoveGroupParticipants removes members from a group
@@ -1000,7 +1031,12 @@ func (c *Client) SetGroupName(groupJID string, name string) error {
 		return fmt.Errorf("invalid group JID: %v", err)
 	}
 
-	return c.Client.SetGroupName(context.Background(), group, name)
+	if se := c.gateGroupSetting(groupJID); se != nil {
+		return se
+	}
+	err = c.Client.SetGroupName(context.Background(), group, name)
+	c.finishGate(antiban.Edit, err)
+	return err
 }
 
 // SetGroupTopic updates the group description/topic
@@ -1014,7 +1050,12 @@ func (c *Client) SetGroupTopic(groupJID string, topic string) error {
 		return fmt.Errorf("invalid group JID: %v", err)
 	}
 
-	return c.Client.SetGroupTopic(context.Background(), group, "", "", topic)
+	if se := c.gateGroupSetting(groupJID); se != nil {
+		return se
+	}
+	err = c.Client.SetGroupTopic(context.Background(), group, "", "", topic)
+	c.finishGate(antiban.Edit, err)
+	return err
 }
 
 // Phase 3: Polls

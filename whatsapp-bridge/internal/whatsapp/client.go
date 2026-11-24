@@ -439,12 +439,16 @@ func (c *Client) UnfollowNewsletterChannel(jidStr string) error {
 // CreateNewsletterChannel creates a new WhatsApp newsletter/channel.
 // Returns the created newsletter's JID, name, and description.
 func (c *Client) CreateNewsletterChannel(name, description string) (*localTypes.NewsletterInfo, error) {
+	if se := c.gateWithoutRecipient(context.Background(), antiban.Text); se != nil {
+		return nil, se
+	}
 	params := whatsmeow.CreateNewsletterParams{
 		Name:        name,
 		Description: description,
 	}
 
 	meta, err := c.CreateNewsletter(context.Background(), params)
+	c.finishGate(antiban.Text, err)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create newsletter: %v", err)
 	}
@@ -463,7 +467,13 @@ func (c *Client) CreateNewsletterChannel(name, description string) (*localTypes.
 func (c *Client) SendTypingIndicator(chatJID string, state string) error {
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
-		return fmt.Errorf("invalid chat JID: %v", err)
+		return newSendError(SendErrInvalid, "invalid chat JID: %w", err)
+	}
+	// Typing is shown to the chat, so it needs the allowlist; it is not a
+	// message, so it skips the antiban caps and the reachout gate. The send
+	// paths call this for a chat they already checked.
+	if se := c.checkAllowlist(jid); se != nil {
+		return se
 	}
 
 	var chatState types.ChatPresence
@@ -498,7 +508,7 @@ func (c *Client) SetAboutText(text string) error {
 func (c *Client) SetDisappearingTimer(chatJID string, duration string) error {
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
-		return fmt.Errorf("invalid chat JID: %v", err)
+		return newSendError(SendErrInvalid, "invalid chat JID: %w", err)
 	}
 
 	var timer time.Duration
@@ -515,7 +525,15 @@ func (c *Client) SetDisappearingTimer(chatJID string, duration string) error {
 		return fmt.Errorf("invalid duration: %s (must be 'off', '24h', '7d', or '90d')", duration)
 	}
 
-	return c.Client.SetDisappearingTimer(context.Background(), jid, timer, time.Now())
+	// In a one-to-one chat the timer is a protocol message to that person.
+	msgType := disappearingTimerType(jid)
+	targets := []gateTarget{{jid: jid, raw: chatJID}}
+	if se := c.gateContacts(context.Background(), c.gateStore(), msgType, targets); se != nil {
+		return se
+	}
+	err = c.Client.SetDisappearingTimer(context.Background(), jid, timer, time.Now())
+	c.finishGate(msgType, err)
+	return err
 }
 
 // GetPrivacySettings fetches the current privacy settings for the user.
