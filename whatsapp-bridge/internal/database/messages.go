@@ -2,7 +2,9 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,12 +37,80 @@ func (store *MessageStore) RenameChat(jid, name string) error {
 	return err
 }
 
-// StoreMessage stores a message in the database
+// ErrMessageIDReuse is returned by StoreMessage when a message arrives under an
+// (id, chat) that is already stored for a different sender. The stored row is
+// left untouched.
+var ErrMessageIDReuse = errors.New("message id already stored for a different sender")
+
+// senderConflict reports whether (id, chatJID) is already stored for a
+// different author than sender/isFromMe. WhatsApp keys a message on chat,
+// sender and ID, but the store keys on (id, chat) alone, and IDs are picked by
+// the sending client, so any chat member can send a message that carries
+// someone else's ID. Letting that upsert win would rewrite the stored author
+// and content and hand the attacker the edit/revoke authorship check.
+//
+// A row with no stored sender (the stand-in MarkDeleted creates for a revoke
+// that arrived first) has no author to protect yet, so it never conflicts.
+// Two own-device rows never conflict either: they are all us.
+func (store *MessageStore) senderConflict(id, chatJID, sender string, isFromMe bool) (bool, error) {
+	var storedSender sql.NullString
+	var storedFromMe bool
+	err := store.db.QueryRow(
+		`SELECT sender, COALESCE(is_from_me, 0) FROM messages WHERE id = ? AND chat_jid = ?`, id, chatJID,
+	).Scan(&storedSender, &storedFromMe)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up stored author of %s: %w", id, err)
+	}
+	if !storedSender.Valid || strings.TrimSpace(storedSender.String) == "" {
+		return false, nil
+	}
+	if storedFromMe != isFromMe {
+		return true, nil
+	}
+	if isFromMe || strings.TrimSpace(sender) == "" {
+		return false, nil
+	}
+	stored := accountForms(store.db, storedSenderJID(store.db, storedSender.String, chatJID))
+	for form := range accountForms(store.db, storedSenderJID(store.db, sender, chatJID)) {
+		if stored[form] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// MessageIDReused reports whether a message with this id, chat and author
+// would collide with a stored message by someone else, and logs it at warn
+// level (ids only, never content) when it does. Callers that do more than
+// store the row, such as poll options or webhooks, check it first.
+func (store *MessageStore) MessageIDReused(id, chatJID, sender string, isFromMe bool) bool {
+	conflict, err := store.senderConflict(id, chatJID, sender, isFromMe)
+	if err != nil {
+		log.Printf("WARN message author check failed id=%s chat=%s: %v", id, chatJID, err)
+		return false
+	}
+	if conflict {
+		log.Printf("WARN message id reuse rejected (possible spoof) id=%s chat=%s incoming_sender=%s incoming_from_me=%t",
+			id, chatJID, sender, isFromMe)
+	}
+	return conflict
+}
+
+// StoreMessage stores a message in the database. A message whose (id, chat) is
+// already stored for a different sender is not stored: the original row is
+// kept as is and ErrMessageIDReuse is returned.
 func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content string, timestamp time.Time, isFromMe bool,
 	mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	// Only store if there's actual content or media
 	if content == "" && mediaType == "" {
 		return nil
+	}
+
+	if store.MessageIDReused(id, chatJID, sender, isFromMe) {
+		return ErrMessageIDReuse
 	}
 
 	// Use sender JID as fallback if senderName is empty

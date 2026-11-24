@@ -180,6 +180,13 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 		return
 	}
 
+	// An ID already stored for someone else is a spoof attempt (the store keys
+	// on id + chat, WhatsApp on chat + sender + id). Drop it before it touches
+	// poll options, webhooks or the chat row; the check logs ids only.
+	if messageStore.MessageIDReused(msg.Info.ID, chatJID, sender, msg.Info.IsFromMe) {
+		return
+	}
+
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := c.GetChatName(messageStore, msg.Info.Chat, chatJID, nil, senderUser)
 

@@ -298,3 +298,105 @@ func TestRenameChatOfAnUnknownGroupCreatesNoChat(t *testing.T) {
 		t.Fatalf("chats = %d, want 0", count)
 	}
 }
+
+// An attacker reuses Simon's message ID in the same chat. The stored row must
+// stay Simon's, and the attacker's follow-up edit and revoke must be refused
+// (review-bridge #1).
+func TestStoreMessageIDReuseKeepsOriginalAuthor(t *testing.T) {
+	store := newTestMessageStore(t)
+	const chat = "120363000000000000@g.us"
+	const simon = "4915100000000@s.whatsapp.net"
+	const mallory = "4915199999999@s.whatsapp.net"
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(chat, "Group", at); err != nil {
+		t.Fatalf("store chat: %v", err)
+	}
+
+	if err := store.StoreMessage("ABC123", chat, simon, "Simon", "I owe nobody anything", at, true, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatalf("store original: %v", err)
+	}
+	err := store.StoreMessage("ABC123", chat, mallory, "Mallory", "I owe Mallory 5000 EUR", at.Add(time.Minute), false, "", "", "", "", nil, nil, nil, 0)
+	if !errors.Is(err, ErrMessageIDReuse) {
+		t.Fatalf("colliding store err = %v, want ErrMessageIDReuse", err)
+	}
+
+	var sender, content string
+	var fromMe bool
+	if err := store.db.QueryRow(`SELECT sender, content, is_from_me FROM messages WHERE id = 'ABC123' AND chat_jid = ?`, chat).
+		Scan(&sender, &content, &fromMe); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if sender != simon || content != "I owe nobody anything" || !fromMe {
+		t.Fatalf("row changed: sender=%q content=%q from_me=%t", sender, content, fromMe)
+	}
+
+	res, err := store.ApplyEdit(Edit{
+		MessageID: "ABC123", ChatJIDs: []string{chat}, NewContent: "forged edit", EditedAt: at.Add(2 * time.Minute),
+		Editor: Actor{JID: mallory}, StanzaID: "EDIT1", Source: SourceLive,
+	})
+	if err != nil {
+		t.Fatalf("apply edit: %v", err)
+	}
+	if res.Applied || !res.Rejected {
+		t.Fatalf("attacker edit: applied=%t rejected=%t, want rejected", res.Applied, res.Rejected)
+	}
+	rev, err := store.MarkDeleted(Revoke{MessageID: "ABC123", ChatJIDs: []string{chat}, At: at.Add(3 * time.Minute), By: Actor{JID: mallory}})
+	if err != nil {
+		t.Fatalf("mark deleted: %v", err)
+	}
+	if !rev.Rejected {
+		t.Fatalf("attacker revoke was not rejected: %+v", rev)
+	}
+}
+
+func TestStoreMessageIDReuseCases(t *testing.T) {
+	const chat = "120363000000000000@g.us"
+	tests := []struct {
+		name         string
+		firstSender  string
+		firstFromMe  bool
+		secondSender string
+		secondFromMe bool
+		wantReuse    bool
+		wantContent  string
+	}{
+		{name: "same sender redelivery upserts", firstSender: "111@s.whatsapp.net", secondSender: "111@s.whatsapp.net", wantContent: "second"},
+		{name: "own device history resync upserts", firstSender: "999@s.whatsapp.net", firstFromMe: true, secondSender: "999@s.whatsapp.net", secondFromMe: true, wantContent: "second"},
+		{name: "other sender rejected", firstSender: "111@s.whatsapp.net", secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
+		{name: "attacker claims from-me flag rejected", firstSender: "111@s.whatsapp.net", secondSender: "999@s.whatsapp.net", secondFromMe: true, wantReuse: true, wantContent: "first"},
+		{name: "attacker takes over own message rejected", firstSender: "999@s.whatsapp.net", firstFromMe: true, secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
+		{name: "legacy bare sender matches full JID", firstSender: "111", secondSender: "111@s.whatsapp.net", wantContent: "second"},
+		{name: "empty incoming sender keeps row, upserts", firstSender: "111@s.whatsapp.net", secondSender: "", wantContent: "second"},
+		{name: "stand-in row without sender is claimable", firstSender: "", secondSender: "222@s.whatsapp.net", wantContent: "second"},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestMessageStore(t)
+			id := "ID" + string(rune('A'+i))
+			at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+			if err := store.StoreChat(chat, "Group", at); err != nil {
+				t.Fatalf("store chat: %v", err)
+			}
+			// Insert directly so a NULL/empty sender or a legacy bare one can be set up.
+			if _, err := store.db.Exec(
+				`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, 'first', ?, ?)`,
+				id, chat, tc.firstSender, tc.firstSender, at, tc.firstFromMe); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			err := store.StoreMessage(id, chat, tc.secondSender, "n", "second", at.Add(time.Minute), tc.secondFromMe, "", "", "", "", nil, nil, nil, 0)
+			if got := errors.Is(err, ErrMessageIDReuse); got != tc.wantReuse {
+				t.Fatalf("reuse = %t (err %v), want %t", got, err, tc.wantReuse)
+			}
+			if err != nil && !tc.wantReuse {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var content string
+			if err := store.db.QueryRow(`SELECT content FROM messages WHERE id = ? AND chat_jid = ?`, id, chat).Scan(&content); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if content != tc.wantContent {
+				t.Fatalf("content = %q, want %q", content, tc.wantContent)
+			}
+		})
+	}
+}
