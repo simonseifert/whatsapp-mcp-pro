@@ -84,7 +84,7 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
         hub.close()
 
     routes: list[Route | Mount] = [
-        *live.routes(hub, _session_alive, auth.COOKIE),
+        *live.routes(hub, _session_alive, auth.COOKIES),
         *api.routes(conn, settings, worker),
         *agent_api.routes(conn, settings, worker),
     ]

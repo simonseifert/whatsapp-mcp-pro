@@ -4,6 +4,7 @@ import hmac
 import secrets
 import sqlite3
 import time
+from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher
@@ -15,7 +16,12 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from . import live
 from .tokens import token_hash
 
-COOKIE = "wa_session"
+COOKIE_HOST = (
+    "__Host-wa_session"  # Secure, Path=/, no Domain: a sibling service on the same hostname cannot set or shadow it
+)
+COOKIE_LEGACY = "wa_session"  # accepted for one release so existing logins survive; the next login sets the new name
+COOKIE = COOKIE_HOST
+COOKIES = (COOKIE_HOST, COOKIE_LEGACY)
 SESSION_SECONDS = 30 * 24 * 3600
 MIN_PASSPHRASE = 10
 MAX_PASSPHRASE_BYTES = 1024  # argon2 hashes whatever it is given: bound the work an unauthenticated caller can ask for
@@ -27,6 +33,16 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 _hash_token = token_hash
+
+
+def cookie_name(secure: bool) -> str:
+    """The `__Host-` prefix needs Secure, so plain-http dev setups (WA_APP_INSECURE_COOKIES=1) keep the old name."""
+    return COOKIE_HOST if secure else COOKIE_LEGACY
+
+
+def session_token(cookies: Mapping[str, str]) -> str | None:
+    """The session cookie value: the `__Host-` name first, the legacy name second."""
+    return cookies.get(COOKIE_HOST) or cookies.get(COOKIE_LEGACY)
 
 
 def passphrase_is_set(conn: sqlite3.Connection) -> bool:
@@ -169,7 +185,7 @@ class AuthMiddleware:
             await _error(403, "Bad origin")(scope, receive, send)
             return
         open_path = path.startswith("/api/auth/") or path == "/api/health"
-        if path.startswith("/api/") and not open_path and not session_valid(self.conn, request.cookies.get(COOKIE)):
+        if path.startswith("/api/") and not open_path and not session_valid(self.conn, session_token(request.cookies)):
             await _error(401, "Not logged in")(scope, receive, send)
             return
         await self.app(scope, receive, send)

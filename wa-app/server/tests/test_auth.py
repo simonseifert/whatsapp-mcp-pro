@@ -65,11 +65,11 @@ def test_origin_checked(client: TestClient) -> None:
 
 
 def test_logout_kills_server_session(logged_in: TestClient) -> None:
-    old = logged_in.cookies.get("wa_session")
+    old = logged_in.cookies.get("__Host-wa_session")
     assert old
     assert logged_in.post("/api/auth/logout").status_code == 200
     logged_in.cookies.clear()
-    logged_in.cookies.set("wa_session", old)
+    logged_in.cookies.set("__Host-wa_session", old)
     assert logged_in.get("/api/auth/state").json()["logged_in"] is False
     assert logged_in.get("/api/chats").status_code == 401
 
@@ -186,13 +186,13 @@ def test_forwarded_for_ignored_from_non_loopback_peer(settings: Settings) -> Non
 def test_logout_all_deletes_every_session_and_clears_cookie(logged_in: TestClient) -> None:
     other = logged_in.post("/api/auth/login", json={"passphrase": PASSPHRASE})
     assert other.status_code == 200
-    token_a = logged_in.cookies.get("wa_session")
+    token_a = logged_in.cookies.get("__Host-wa_session")
     assert token_a
     resp = logged_in.post("/api/auth/logout-all")
     assert resp.status_code == 200
     assert "wa_session" in resp.headers["set-cookie"]
     logged_in.cookies.clear()
-    logged_in.cookies.set("wa_session", token_a)
+    logged_in.cookies.set("__Host-wa_session", token_a)
     assert logged_in.get("/api/chats").status_code == 401
 
 
@@ -239,3 +239,54 @@ def test_oversize_passphrase_is_refused_before_hashing(client: TestClient, monke
     for value in (too_long, wide):
         assert client.post("/api/auth/login", json={"passphrase": value}).status_code == 422
     assert hashed == []
+
+
+# ---------- __Host- session cookie (L3) ----------
+
+
+def test_login_sets_the_host_prefixed_cookie(client: TestClient) -> None:
+    client.post("/api/auth/setup", json={"passphrase": PASSPHRASE})
+    resp = client.post("/api/auth/login", json={"passphrase": PASSPHRASE})
+    session = next(c for c in resp.headers.get_list("set-cookie") if c.startswith("__Host-wa_session="))
+    lowered = session.lower()
+    assert "secure" in lowered and "path=/" in lowered and "httponly" in lowered and "samesite=strict" in lowered
+    assert "domain" not in lowered
+
+
+def test_old_cookie_name_still_works_for_one_release_and_login_replaces_it(logged_in: TestClient) -> None:
+    token = logged_in.cookies.get("__Host-wa_session")
+    assert token
+    logged_in.cookies.clear()
+    logged_in.cookies.set("wa_session", token)
+    assert logged_in.get("/api/chats").status_code == 200
+    assert logged_in.get("/api/auth/state").json()["logged_in"] is True
+    # The next login hands out the new name and expires the old one.
+    resp = logged_in.post("/api/auth/login", json={"passphrase": PASSPHRASE})
+    cookies = resp.headers.get_list("set-cookie")
+    assert any(c.startswith("__Host-wa_session=") and "Max-Age=2592000" in c for c in cookies)
+    legacy = next(c for c in cookies if c.startswith("wa_session="))
+    assert "Max-Age=0" in legacy or "1970" in legacy
+
+
+def test_logout_expires_both_cookie_names(logged_in: TestClient) -> None:
+    cookies = " ".join(logged_in.post("/api/auth/logout").headers.get_list("set-cookie"))
+    assert "__Host-wa_session=" in cookies and "wa_session=" in cookies.replace("__Host-wa_session=", "")
+
+
+def test_plain_http_dev_mode_keeps_the_old_name(tmp_path) -> None:
+    from dataclasses import replace
+
+    from tests.conftest import make_store
+    from wa_app.config import Settings
+    from wa_app.main import create_app
+
+    settings = Settings(
+        host="127.0.0.1", port=18085, data_dir=tmp_path / "d", store_path=make_store(tmp_path), secure_cookies=False
+    )
+    assert replace(settings).secure_cookies is False
+    with TestClient(create_app(settings)) as c:
+        c.post("/api/auth/setup", json={"passphrase": PASSPHRASE})
+        resp = c.post("/api/auth/login", json={"passphrase": PASSPHRASE})
+        names = [x.split("=")[0] for x in resp.headers.get_list("set-cookie")]
+        assert names == ["wa_session"]
+        assert c.get("/api/chats").status_code == 200

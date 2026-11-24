@@ -54,7 +54,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         token = auth.new_session(conn, request.headers.get("user-agent"))
         response = JSONResponse({"ok": True})
         response.set_cookie(
-            auth.COOKIE,
+            auth.cookie_name(settings.secure_cookies),
             token,
             max_age=auth.SESSION_SECONDS,
             httponly=True,
@@ -62,7 +62,18 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             samesite="strict",
             path="/",
         )
+        if settings.secure_cookies:  # an old login's cookie is superseded: drop it
+            _drop_cookie(response, auth.COOKIE_LEGACY)
         return response
+
+    def _drop_cookie(response: Response, name: str) -> None:
+        response.delete_cookie(
+            name, path="/", secure=settings.secure_cookies or name == auth.COOKIE_HOST, httponly=True, samesite="strict"
+        )
+
+    def _drop_session_cookies(response: Response) -> None:
+        for name in auth.COOKIES:
+            _drop_cookie(response, name)
 
     async def health(request: Request) -> Response:
         return JSONResponse({"ok": True})
@@ -71,7 +82,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         return JSONResponse(
             {
                 "setup_needed": not auth.passphrase_is_set(conn),
-                "logged_in": auth.session_valid(conn, request.cookies.get(auth.COOKIE)),
+                "logged_in": auth.session_valid(conn, auth.session_token(request.cookies)),
             }
         )
 
@@ -105,18 +116,18 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         return start_session(request)
 
     async def logout(request: Request) -> Response:
-        auth.end_session(conn, request.cookies.get(auth.COOKIE))
+        auth.end_session(conn, auth.session_token(request.cookies))
         response = JSONResponse({"ok": True})
-        response.delete_cookie(auth.COOKIE, path="/", secure=settings.secure_cookies, httponly=True, samesite="strict")
+        _drop_session_cookies(response)
         return response
 
     async def logout_all(request: Request) -> Response:
         # /api/auth/* is open to the middleware, so this one checks the session itself.
-        if not auth.session_valid(conn, request.cookies.get(auth.COOKIE)):
+        if not auth.session_valid(conn, auth.session_token(request.cookies)):
             return _error(401, "Not logged in")
         auth.end_all_sessions(conn)
         response = JSONResponse({"ok": True})
-        response.delete_cookie(auth.COOKIE, path="/", secure=settings.secure_cookies, httponly=True, samesite="strict")
+        _drop_session_cookies(response)
         return response
 
     async def about(request: Request) -> Response:
