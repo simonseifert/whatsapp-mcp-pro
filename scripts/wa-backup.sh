@@ -11,6 +11,8 @@
 #   gunzip -c messages-YYYYMMDD.db.gz > /tmp/t.db
 #   sqlite3 /tmp/t.db "PRAGMA integrity_check; SELECT COUNT(*) FROM messages;"
 set -euo pipefail
+# Backups hold session keys and history: new files 0600, new directories 0700.
+umask 077
 
 STORE="${WA_STORE:-$HOME/whatsapp-mcp-pro/whatsapp-bridge/store}"
 DEST="${WA_BACKUP_DEST:-$HOME/backups/whatsapp}"

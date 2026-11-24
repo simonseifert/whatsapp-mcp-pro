@@ -26,6 +26,7 @@ import (
 
 	"whatsapp-bridge/internal/antiban"
 	"whatsapp-bridge/internal/config"
+	"whatsapp-bridge/internal/security"
 	localTypes "whatsapp-bridge/internal/types"
 )
 
@@ -94,8 +95,12 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
-		return nil, fmt.Errorf("failed to create store directory: %v", err)
+	if err := security.MkdirPrivate("store"); err != nil {
+		return nil, fmt.Errorf("failed to create store directory: %w", err)
+	}
+	// The session database holds the device's Signal keys: owner-only from the start.
+	if err := security.CreatePrivateFile("store/whatsapp.db"); err != nil {
+		return nil, fmt.Errorf("failed to create session database: %w", err)
 	}
 
 	// Configure HistorySyncConfig BEFORE creating device (Phase 4)
