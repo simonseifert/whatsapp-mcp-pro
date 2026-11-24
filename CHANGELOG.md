@@ -103,12 +103,13 @@ All notable changes to this fork are recorded here. The format follows
   govulncheck scan failed on 1.27.3.
 - A message that reuses the ID of a stored message from a different sender (or flips
   the own-message flag) no longer overwrites it. The original row stays, the attempt
-  is logged at warn level with ids only, and the colliding message is dropped before
-  poll options or webhooks see it. Before this, any chat member could rewrite someone
+  is logged at warn level with ids only, and the poll options are left alone; the event
+  is still processed (chat row, webhooks). The sender's phone and LID forms count as
+  one author through `identities`, the event's SenderAlt and whatsmeow's LID map. Before this, any chat member could rewrite someone
   else's stored message by reusing its ID and then pass the edit/revoke author check.
   A failed author lookup refuses the overwrite too.
-- Group create, add members, group rename and topic, the disappearing timer, typing and
-  newsletter create now go through both send allowlists, the antiban caps and the
+- Group create, add members, remove members, promote, demote, leave, group rename and
+  topic, the disappearing timer, typing and newsletter create now go through both send allowlists, the antiban caps and the
   reachout gate like a send does, on every JID they contact. Typing checks the
   allowlists only. Creating a newsletter is refused while either allowlist is set,
   since it has no listed recipient.
@@ -116,8 +117,10 @@ All notable changes to this fork are recorded here. The format follows
   (default 100 MiB, shared with `/api/download`) is not downloaded by auto-download,
   the retry queue, the sweep or `/api/download` (413). Auto-download also skips a
   document or video that declares no length; `/api/download` still fetches those.
-  At most `MEDIA_DOWNLOAD_CONCURRENCY` (default 3) downloads run at once. whatsmeow
-  has no streaming download in the pinned version, so files are still buffered whole.
+  Downloads stream to a 0600 temp file (`store/tmp`, or next to the auto-download
+  target) through whatsmeow's `DownloadToFile` with the cap enforced as bytes arrive:
+  a sender that declares a small `file_length` and serves more is aborted and the
+  partial file deleted. At most `MEDIA_DOWNLOAD_CONCURRENCY` (default 3) run at once.
 - Webhook address filter: blocks `::`, `0.0.0.0`, IPv4-mapped IPv6, 100.64.0.0/10,
   198.18.0.0/15, NAT64 and 6to4. Every resolved address is checked and the connection
   goes to the checked address, so DNS rebinding cannot swap it. A tailnet target now

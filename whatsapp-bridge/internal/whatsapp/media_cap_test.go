@@ -3,6 +3,9 @@ package whatsapp
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,14 +128,14 @@ func TestMediaSlotsBoundConcurrency(t *testing.T) {
 // downloadMedia must call the underlying downloader exactly once, hold one
 // slot while it runs and release it afterwards.
 func TestDownloadMediaCallsDownloaderOnceAndReleasesSlot(t *testing.T) {
+	t.Chdir(t.TempDir())
 	t.Setenv("MEDIA_DOWNLOAD_CONCURRENCY", "1")
 	t.Setenv("MEDIA_MAX_BYTES", "1000")
 	mediaSlotsOnce = sync.Once{}
 	t.Cleanup(func() { mediaSlotsOnce = sync.Once{} })
 
 	var calls int32
-	inFlight := make(chan struct{})
-	c := &Client{rawDownload: func(ctx context.Context, _ whatsmeow.DownloadableMessage) ([]byte, error) {
+	c := &Client{rawDownloadToFile: func(ctx context.Context, _ whatsmeow.DownloadableMessage, f whatsmeow.File) error {
 		atomic.AddInt32(&calls, 1)
 		// The only slot is ours while we run.
 		short, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
@@ -140,16 +143,14 @@ func TestDownloadMediaCallsDownloaderOnceAndReleasesSlot(t *testing.T) {
 		if _, err := acquireMediaSlot(short); err == nil {
 			t.Error("slot was free during the download")
 		}
-		close(inFlight)
-		return []byte("data"), nil
+		_, err := f.Write([]byte("data"))
+		return err
 	}}
 	size := uint64(10)
-	msg := &waE2E.DocumentMessage{FileLength: &size}
-	data, err := c.downloadMedia(context.Background(), msg)
+	data, err := c.downloadMedia(context.Background(), &waE2E.DocumentMessage{FileLength: &size})
 	if err != nil || string(data) != "data" {
 		t.Fatalf("download = %q, %v", data, err)
 	}
-	<-inFlight
 	if n := atomic.LoadInt32(&calls); n != 1 {
 		t.Fatalf("underlying downloads = %d, want 1", n)
 	}
@@ -159,12 +160,76 @@ func TestDownloadMediaCallsDownloaderOnceAndReleasesSlot(t *testing.T) {
 	}
 	release()
 
-	// Over the declared cap: refused without calling the downloader or taking a slot.
+	// Over the declared cap: refused without calling the downloader.
 	big := uint64(5000)
 	if _, err := c.downloadMedia(context.Background(), &waE2E.DocumentMessage{FileLength: &big}); !errors.Is(err, ErrMediaTooLarge) {
 		t.Fatalf("oversize err = %v", err)
 	}
 	if n := atomic.LoadInt32(&calls); n != 1 {
 		t.Fatalf("downloader called for an oversize file (%d calls)", n)
+	}
+}
+
+// A sender can declare 10 bytes and serve far more. The cap is enforced on the
+// bytes as they are written: the download aborts and no partial file is left.
+func TestDownloadToTempEnforcesCapWhateverIsDeclared(t *testing.T) {
+	t.Setenv("MEDIA_MAX_BYTES", "1000")
+	tests := []struct {
+		name    string
+		chunks  []int // sizes of successive writes
+		wantErr bool
+	}{
+		{"within the cap", []int{400, 400}, false},
+		{"exactly the cap", []int{1000}, false},
+		{"one chunk over", []int{1001 + mediaWireOverhead}, true},
+		{"many small writes cross the cap", []int{300, 300, 300, 300, 300}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			lies := uint64(10)
+			wrote := 0
+			c := &Client{rawDownloadToFile: func(_ context.Context, _ whatsmeow.DownloadableMessage, f whatsmeow.File) error {
+				for _, n := range tt.chunks {
+					if _, err := f.Write(make([]byte, n)); err != nil {
+						return err
+					}
+					wrote += n
+				}
+				return nil
+			}}
+			path, err := c.downloadToTemp(context.Background(), &waE2E.DocumentMessage{FileLength: &lies}, dir)
+			if tt.wantErr {
+				if !errors.Is(err, ErrMediaTooLarge) {
+					t.Fatalf("err = %v, want ErrMediaTooLarge", err)
+				}
+				if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+					t.Fatalf("partial file left behind: %v", entries)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info, err := os.Stat(path); err != nil || info.Size() != int64(wrote) || info.Mode().Perm() != 0o600 {
+				t.Fatalf("temp file: %v %v", info, err)
+			}
+		})
+	}
+}
+
+// io.Copy into the capped file must not bypass the limit through ReadFrom.
+func TestCappedFileCopyCannotBypassLimit(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	capped := &cappedFile{File: f, limit: 100}
+	if _, err := io.Copy(capped, strings.NewReader(strings.Repeat("a", 500))); !errors.Is(err, ErrMediaTooLarge) {
+		t.Fatalf("io.Copy err = %v, want ErrMediaTooLarge", err)
+	}
+	if info, _ := f.Stat(); info.Size() > 100 {
+		t.Fatalf("file grew to %d bytes", info.Size())
 	}
 }

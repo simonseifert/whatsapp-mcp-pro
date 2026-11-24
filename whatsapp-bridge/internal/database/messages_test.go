@@ -366,7 +366,7 @@ func TestStoreMessageIDReuseCases(t *testing.T) {
 		{name: "attacker claims from-me flag rejected", firstSender: "111@s.whatsapp.net", secondSender: "999@s.whatsapp.net", secondFromMe: true, wantReuse: true, wantContent: "first"},
 		{name: "attacker takes over own message rejected", firstSender: "999@s.whatsapp.net", firstFromMe: true, secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
 		{name: "legacy bare sender matches full JID", firstSender: "111", secondSender: "111@s.whatsapp.net", wantContent: "second"},
-		{name: "empty incoming sender keeps row, upserts", firstSender: "111@s.whatsapp.net", secondSender: "", wantContent: "second"},
+		{name: "empty incoming sender must not replace another sender's text", firstSender: "111@s.whatsapp.net", secondSender: "", wantReuse: true, wantContent: "first"},
 		{name: "own message with empty sender stays protected", firstSender: "", firstFromMe: true, secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
 		{name: "foreign row with empty sender but content is not claimable", firstSender: "", secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
 	}
@@ -431,5 +431,65 @@ func TestStoreMessageFailsClosedOnLookupError(t *testing.T) {
 	}
 	if !store.MessageIDReused("X1", "c@g.us", "1@s.whatsapp.net", false) {
 		t.Fatal("MessageIDReused must report a conflict when the lookup fails")
+	}
+}
+
+// Our own copy of a message may fill the stand-in an untrusted revoke left.
+func TestStoreMessageOwnCopyFillsStandIn(t *testing.T) {
+	store := newTestMessageStore(t)
+	const chat = "120363000000000000@g.us"
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(chat, "Group", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES ('S2', ?, '', '', '', ?, 0)`, chat, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreMessage("S2", chat, "999@s.whatsapp.net", "Simon", "mine", at, true, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatalf("own copy should fill the stand-in: %v", err)
+	}
+}
+
+// The same person arrives as a LID and as a phone JID with no identities row:
+// the event's SenderAlt (or the LID map) links them, so the echo upserts. With
+// no link at all it is refused but reported as a reuse, never an error.
+func TestStoreMessagePhoneLIDEcho(t *testing.T) {
+	const chat = "120363000000000000@g.us"
+	const lid, phone = "123456789012345@lid", "4915112345678@s.whatsapp.net"
+	tests := []struct {
+		name       string
+		stored     string
+		incoming   string
+		forms      []string
+		wantReuse  bool
+		wantAuthor string
+	}{
+		{"LID stored, phone arrives with SenderAlt", lid, phone, []string{lid}, false, phone},
+		{"phone stored, LID arrives with the phone as alt", phone, lid, []string{phone}, false, lid},
+		{"no link anywhere is refused, row kept", lid, phone, nil, true, lid},
+		{"unrelated alt does not link", lid, phone, []string{"4915100000099@s.whatsapp.net"}, true, lid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestMessageStore(t)
+			at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+			if err := store.StoreChat(chat, "Group", at); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.StoreMessage("E1", chat, tt.stored, "n", "first", at, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+				t.Fatal(err)
+			}
+			if got := store.MessageIDReused("E1", chat, tt.incoming, false, tt.forms...); got != tt.wantReuse {
+				t.Fatalf("MessageIDReused = %v, want %v", got, tt.wantReuse)
+			}
+			err := store.StoreMessageForms(tt.forms, "E1", chat, tt.incoming, "n", "second", at, false, "", "", "", "", nil, nil, nil, 0)
+			if got := errors.Is(err, ErrMessageIDReuse); got != tt.wantReuse || (err != nil && !tt.wantReuse) {
+				t.Fatalf("store err = %v, want reuse=%v", err, tt.wantReuse)
+			}
+			var sender string
+			if err := store.db.QueryRow(`SELECT sender FROM messages WHERE id='E1' AND chat_jid=?`, chat).Scan(&sender); err != nil || sender != tt.wantAuthor {
+				t.Fatalf("stored sender = %q (%v), want %q", sender, err, tt.wantAuthor)
+			}
+		})
 	}
 }

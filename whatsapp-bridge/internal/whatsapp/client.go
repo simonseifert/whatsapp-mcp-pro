@@ -75,8 +75,8 @@ type Client struct {
 
 	// altJIDLookup overrides Store.GetAltJID for capKey; tests only.
 	altJIDLookup func(context.Context, types.JID) (types.JID, error)
-	// rawDownload overrides whatsmeow's Download inside downloadMedia; tests only.
-	rawDownload func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
+	// rawDownloadToFile overrides whatsmeow's DownloadToFile; tests only.
+	rawDownloadToFile func(context.Context, whatsmeow.DownloadableMessage, whatsmeow.File) error
 
 	// Persistent media retry queue; nil unless StartMediaRetryQueue ran.
 	mediaRetryQueue atomic.Pointer[MediaRetryQueue]

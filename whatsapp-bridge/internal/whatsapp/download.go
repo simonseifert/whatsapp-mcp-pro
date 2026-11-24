@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -69,33 +70,101 @@ func acquireMediaSlot(ctx context.Context) (release func(), err error) {
 	}
 }
 
-// downloadMedia is whatsmeow's Download behind the concurrency bound and the
-// size cap. whatsmeow has no streaming download in this version (no
-// DownloadToFile), so the cap is checked on the declared length before and on
-// the bytes after; the slot bound is what limits peak memory.
-func (c *Client) downloadMedia(ctx context.Context, msg whatsmeow.DownloadableMessage) ([]byte, error) {
+// cappedFile is a temp file that refuses to grow past limit bytes. whatsmeow's
+// DownloadToFile copies the response body into it, so the cap holds against
+// the real size of the download, whatever the sender's file_length claims.
+// ReadFrom and WriteString are shadowed on purpose: the embedded *os.File's
+// would let io.Copy bypass Write, and also lets whatsmeow preallocate a size the server names.
+type cappedFile struct {
+	*os.File
+	limit int64
+}
+
+func (f *cappedFile) Write(p []byte) (int, error) {
+	pos, err := f.File.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	if pos+int64(len(p)) > f.limit {
+		return 0, fmt.Errorf("%w: download is larger than %d bytes", ErrMediaTooLarge, f.limit)
+	}
+	return f.File.Write(p)
+}
+
+func (f *cappedFile) WriteAt(p []byte, off int64) (int, error) {
+	if off+int64(len(p)) > f.limit {
+		return 0, fmt.Errorf("%w: download is larger than %d bytes", ErrMediaTooLarge, f.limit)
+	}
+	return f.File.WriteAt(p, off)
+}
+
+func (f *cappedFile) WriteString(str string) (int, error) { return f.Write([]byte(str)) }
+
+func (f *cappedFile) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(struct{ io.Writer }{f}, r)
+}
+
+// mediaWireOverhead is what the encrypted body adds to the plaintext (padding
+// up to a block, plus the 10-byte MAC), so a file at exactly the cap still fits.
+const mediaWireOverhead = 64
+
+// downloadToTemp streams msg into a new 0600 temp file in dir and returns its
+// path. The cap is enforced while bytes arrive: the download is aborted and the
+// partial file deleted as soon as it passes MEDIA_MAX_BYTES, and a finished
+// file is re-checked. The caller removes the file. It does not take a download
+// slot; the caller does.
+func (c *Client) downloadToTemp(ctx context.Context, msg whatsmeow.DownloadableMessage, dir string) (string, error) {
 	if l, ok := msg.(interface{ GetFileLength() uint64 }); ok {
 		if err := CheckMediaSize(int64(l.GetFileLength())); err != nil {
-			return nil, err
+			return "", err
 		}
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("media temp dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".dl-*")
+	if err != nil {
+		return "", fmt.Errorf("create media temp file: %w", err)
+	}
+	path := tmp.Name()
+	max := mediastore.MaxBytes()
+	capped := &cappedFile{File: tmp, limit: max + mediaWireOverhead}
+	download := c.rawDownloadToFile
+	if download == nil {
+		download = c.Client.DownloadToFile
+	}
+	err = download(ctx, msg, capped)
+	if err == nil {
+		var info os.FileInfo
+		if info, err = tmp.Stat(); err == nil && info.Size() > max {
+			err = fmt.Errorf("%w: download is %d bytes, limit %d", ErrMediaTooLarge, info.Size(), max)
+		}
+	}
+	if cerr := tmp.Close(); err == nil && cerr != nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+// downloadMedia downloads msg behind the concurrency bound and returns the
+// bytes. It streams to a temp file under the size cap first, so memory holds at
+// most one capped copy per slot instead of whatever the sender serves.
+func (c *Client) downloadMedia(ctx context.Context, msg whatsmeow.DownloadableMessage) ([]byte, error) {
 	release, err := acquireMediaSlot(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("waiting for a media download slot: %w", err)
 	}
 	defer release()
-	download := c.rawDownload
-	if download == nil {
-		download = c.Client.Download
-	}
-	data, err := download(ctx, msg)
+	path, err := c.downloadToTemp(ctx, msg, filepath.Join("store", "tmp"))
 	if err != nil {
 		return nil, err
 	}
-	if err := CheckMediaSize(int64(len(data))); err != nil {
-		return nil, err
-	}
-	return data, nil
+	defer func() { _ = os.Remove(path) }()
+	return os.ReadFile(path)
 }
 
 // ErrMessageNotFound is returned when the message id+jid is not in the store.

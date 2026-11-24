@@ -181,12 +181,15 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 		return
 	}
 
+	// The sender's other identities (SenderAlt, whatsmeow's LID map), so the
+	// phone and LID forms of one person are one author for the ID-reuse guard.
+	senderForms := c.messageActor(msg, sender).Forms
 	// An ID already stored for someone else is a spoof attempt (the store keys
-	// on id + chat, WhatsApp on chat + sender + id). Drop it before it touches
-	// poll options, webhooks or the chat row; the check logs ids only.
-	if messageStore.MessageIDReused(msg.Info.ID, chatJID, sender, msg.Info.IsFromMe) {
-		return
-	}
+	// on id + chat, WhatsApp on chat + sender + id). Only the overwrite is
+	// refused: the stored row stays as it is and the poll options below are
+	// not touched, but the event is still processed (chat row, webhooks), so a
+	// real message whose sender could not be linked is never lost.
+	idReused := messageStore.MessageIDReused(msg.Info.ID, chatJID, sender, msg.Info.IsFromMe, senderForms...)
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := c.GetChatName(messageStore, msg.Info.Chat, chatJID, nil, senderUser)
@@ -216,7 +219,7 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	// option text, never the text, so resolving a vote to something readable requires knowing
 	// the original options. This covers polls WE create too — CreatePoll sends but does not see
 	// its own message come back as an event, so it stores this itself (see messages.go).
-	if pollCreate := msg.Message.GetPollCreationMessage(); pollCreate != nil {
+	if pollCreate := msg.Message.GetPollCreationMessage(); pollCreate != nil && !idReused {
 		var optionNames []string
 		for _, opt := range pollCreate.GetOptions() {
 			optionNames = append(optionNames, opt.GetOptionName())
@@ -249,7 +252,8 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	}
 
 	// Store message in database
-	err = messageStore.StoreMessage(
+	err = messageStore.StoreMessageForms(
+		senderForms,
 		msg.Info.ID,
 		chatJID,
 		sender,
@@ -592,16 +596,10 @@ func FindAutoDownloaded(paths []string, fileSHA256 []byte) string {
 // concurrently cannot clobber each other the way a stat-then-write did.
 // Returns the path the data now lives at.
 func saveAutoDownload(paths []string, data, fileSHA256 []byte) (string, error) {
-	primary, alt := paths[0], paths[1]
-	// Belt and braces on top of safePathPart: both names must be plain files in
-	// one directory, never "." / ".." / a dotfile that could step out of it.
-	dir := filepath.Dir(primary)
-	for _, p := range []string{primary, alt} {
-		if b := filepath.Base(p); filepath.Dir(p) != dir || b == "." || b == ".." || strings.HasPrefix(b, ".") {
-			return "", fmt.Errorf("refusing auto-download path %q", p)
-		}
+	if err := checkAutoDownloadPaths(paths); err != nil {
+		return "", err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(primary), ".autodl-*")
+	tmp, err := os.CreateTemp(filepath.Dir(paths[0]), ".autodl-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp: %w", err)
 	}
@@ -615,11 +613,34 @@ func saveAutoDownload(paths []string, data, fileSHA256 []byte) (string, error) {
 	if cerr != nil {
 		return "", fmt.Errorf("close temp: %w", cerr)
 	}
+	return linkAutoDownload(paths, tmpPath, fileSHA256)
+}
+
+// checkAutoDownloadPaths: both names must be plain files in one directory,
+// never "." / ".." / a dotfile that could step out of it (belt and braces on
+// top of safePathPart).
+func checkAutoDownloadPaths(paths []string) error {
+	dir := filepath.Dir(paths[0])
+	for _, p := range paths[:2] {
+		if b := filepath.Base(p); filepath.Dir(p) != dir || b == "." || b == ".." || strings.HasPrefix(b, ".") {
+			return fmt.Errorf("refusing auto-download path %q", p)
+		}
+	}
+	return nil
+}
+
+// linkAutoDownload claims the first free AutoDownloadPaths name for the
+// finished temp file at tmpPath (which the caller removes) with os.Link.
+func linkAutoDownload(paths []string, tmpPath string, fileSHA256 []byte) (string, error) {
+	if err := checkAutoDownloadPaths(paths); err != nil {
+		return "", err
+	}
+	primary, alt := paths[0], paths[1]
 	if err := os.Chmod(tmpPath, 0o644); err != nil {
 		return "", fmt.Errorf("chmod temp: %w", err)
 	}
 
-	err = os.Link(tmpPath, primary)
+	err := os.Link(tmpPath, primary)
 	if err == nil {
 		return primary, nil
 	}
@@ -719,22 +740,26 @@ func (c *Client) autoDownloadMedia(msgID, chatJID, mediaType, filename, rawURL, 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	data, err := c.Client.Download(ctx, dl)
-	if err == nil {
-		err = CheckMediaSize(int64(len(data)))
+	// Streamed into a temp file next to the final name, with the size cap
+	// enforced as bytes arrive, then linked into place: nothing is held in memory.
+	tmpPath, err := c.downloadToTemp(ctx, dl, filepath.Dir(paths[0]))
+	if err != nil {
+		c.logger.Warnf("auto-download: %s/%s: %v", chatJID, msgID, err)
+		return
 	}
+	defer func() { _ = os.Remove(tmpPath) }() // the data lives on under the linked name
+
+	outPath, err := linkAutoDownload(paths, tmpPath, fileSHA256)
 	if err != nil {
 		c.logger.Warnf("auto-download: %s/%s: %v", chatJID, msgID, err)
 		return
 	}
 
-	outPath, err := saveAutoDownload(paths, data, fileSHA256)
-	if err != nil {
-		c.logger.Warnf("auto-download: %s/%s: %v", chatJID, msgID, err)
-		return
+	var size int64
+	if info, serr := os.Stat(outPath); serr == nil {
+		size = info.Size()
 	}
-
-	c.logger.Infof("auto-download: saved %s (%d bytes)", outPath, len(data))
+	c.logger.Infof("auto-download: saved %s (%d bytes)", outPath, size)
 }
 
 // autoDownloadRefusal says why a message's media must not be auto-downloaded,

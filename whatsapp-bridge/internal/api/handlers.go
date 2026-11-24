@@ -718,9 +718,13 @@ func (s *Server) handleRemoveGroupMembers(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if s.refuseUnlistedAll(w, append([]string{req.GroupJID}, req.Participants...)...) {
+		return
+	}
+
 	results, err := s.client.RemoveGroupParticipants(req.GroupJID, req.Participants)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to remove members: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to remove members: ", err)
 		return
 	}
 
@@ -764,9 +768,13 @@ func (s *Server) handlePromoteAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlistedAll(w, req.GroupJID, req.Participant) {
+		return
+	}
+
 	_, err := s.client.PromoteGroupParticipant(req.GroupJID, req.Participant)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to promote admin: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to promote admin: ", err)
 		return
 	}
 
@@ -804,9 +812,13 @@ func (s *Server) handleDemoteAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlistedAll(w, req.GroupJID, req.Participant) {
+		return
+	}
+
 	_, err := s.client.DemoteGroupParticipant(req.GroupJID, req.Participant)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to demote admin: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to demote admin: ", err)
 		return
 	}
 
@@ -843,9 +855,13 @@ func (s *Server) handleLeaveGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.refuseUnlisted(w, req.GroupJID) {
+		return
+	}
+
 	err := s.client.LeaveGroup(req.GroupJID)
 	if err != nil {
-		SendJSONError(w, fmt.Sprintf("Failed to leave group: %v", err), http.StatusInternalServerError)
+		writeActionFailure(w, "Failed to leave group: ", err)
 		return
 	}
 
@@ -907,7 +923,11 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if req.Topic != "" {
 		if err := s.client.SetGroupTopic(req.GroupJID, req.Topic); err != nil {
 			if gateRefusal(err) {
-				writeActionFailure(w, "Failed to set group topic: ", err)
+				prefix := "Failed to set group topic: "
+				if req.Name != "" && len(errors) == 0 {
+					prefix = "Group name was changed, but setting the topic failed: "
+				}
+				writeActionFailure(w, prefix, err)
 				return
 			}
 			errors = append(errors, fmt.Sprintf("topic: %v", err))

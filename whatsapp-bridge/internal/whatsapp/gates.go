@@ -119,3 +119,21 @@ func (c *Client) gateGroupSetting(groupJID string) *SendError {
 	}
 	return c.gateContacts(context.Background(), c.gateStore(), antiban.Edit, targets)
 }
+
+// gateGroupAction gates removing, promoting, demoting or leaving: each puts a
+// system message in the group, so the group goes through the allowlists and the
+// antiban caps (an edit to the group). The people it acts on only need to pass
+// the allowlist: they are already members, so it is not a first contact and
+// the reachout gate does not apply.
+func (c *Client) gateGroupAction(groupJID string, people []string) *SendError {
+	targets, se := parseGateTargets(people, "participant")
+	if se != nil {
+		return se
+	}
+	for _, p := range targets {
+		if se := c.checkAllowlist(p.jid); se != nil {
+			return se
+		}
+	}
+	return c.gateGroupSetting(groupJID)
+}

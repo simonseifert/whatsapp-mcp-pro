@@ -49,14 +49,18 @@ var ErrMessageIDReuse = errors.New("message id already stored for a different se
 // someone else's ID. Letting that upsert win would rewrite the stored author
 // and content and hand the attacker the edit/revoke authorship check.
 //
-// The own-message flag is compared first, so a row stored as ours is never
-// claimable by someone else, whatever its sender column holds. The only row
-// anyone may claim is a true stand-in (what MarkDeleted creates for a revoke
-// that arrived first): no sender, not ours, no content. Two own-device rows
-// never conflict: they are all us.
-func (store *MessageStore) senderConflict(id, chatJID, sender string, isFromMe bool) (bool, error) {
-	var storedSender sql.NullString
-	var storedContent sql.NullString
+// senderForms are further identities of the incoming sender the caller knows
+// (the event's SenderAlt, whatsmeow's LID map); they widen the match the same
+// way the edit and revoke author check does, so the phone and LID forms of one
+// person are one author even when the identities table has no link yet.
+//
+// A true stand-in (what MarkDeleted creates for a revoke that arrived first:
+// no sender, not ours, no content) has no author to protect and may be filled
+// by anyone, our own devices included. Otherwise the own-message flag is
+// compared first, so a row stored as ours is never claimable by someone else
+// whatever its sender column holds, and two own-device rows never conflict.
+func (store *MessageStore) senderConflict(id, chatJID, sender string, isFromMe bool, senderForms []string) (bool, error) {
+	var storedSender, storedContent sql.NullString
 	var storedFromMe bool
 	err := store.db.QueryRow(
 		`SELECT sender, content, COALESCE(is_from_me, 0) FROM messages WHERE id = ? AND chat_jid = ?`, id, chatJID,
@@ -67,21 +71,31 @@ func (store *MessageStore) senderConflict(id, chatJID, sender string, isFromMe b
 	if err != nil {
 		return false, fmt.Errorf("look up stored author of %s: %w", id, err)
 	}
+	noSender := !storedSender.Valid || strings.TrimSpace(storedSender.String) == ""
+	noContent := !storedContent.Valid || strings.TrimSpace(storedContent.String) == ""
+	if !storedFromMe && noSender && noContent {
+		return false, nil
+	}
 	if storedFromMe != isFromMe {
 		return true, nil
 	}
 	if isFromMe {
 		return false, nil
 	}
-	if !storedSender.Valid || strings.TrimSpace(storedSender.String) == "" {
-		// Not ours and no author: claimable only as a content-less stand-in.
-		return storedContent.Valid && strings.TrimSpace(storedContent.String) != "", nil
+	if noSender {
+		return true, nil // someone's content with no recorded author: nobody may claim it
 	}
+	// An empty incoming sender proves nothing: it must not replace the text of
+	// a row that has an author.
 	if strings.TrimSpace(sender) == "" {
-		return false, nil
+		return true, nil
 	}
 	stored := accountForms(store.db, storedSenderJID(store.db, storedSender.String, chatJID))
-	for form := range accountForms(store.db, storedSenderJID(store.db, sender, chatJID)) {
+	incoming := []string{storedSenderJID(store.db, sender, chatJID)}
+	for _, f := range senderForms {
+		incoming = append(incoming, storedSenderJID(store.db, f, chatJID))
+	}
+	for form := range accountForms(store.db, incoming...) {
 		if stored[form] {
 			return false, nil
 		}
@@ -90,21 +104,13 @@ func (store *MessageStore) senderConflict(id, chatJID, sender string, isFromMe b
 }
 
 // MessageIDReused reports whether a message with this id, chat and author
-// would collide with a stored message by someone else, and logs it at warn
-// level (ids only, never content) when it does. Callers that do more than
-// store the row, such as poll options or webhooks, check it first.
-func (store *MessageStore) MessageIDReused(id, chatJID, sender string, isFromMe bool) bool {
-	conflict, err := store.senderConflict(id, chatJID, sender, isFromMe)
-	if err != nil {
-		// Fail closed: an unreadable author is not a licence to overwrite.
-		log.Printf("WARN message author check failed, refusing overwrite id=%s chat=%s: %v", id, chatJID, err)
-		return true
-	}
-	if conflict {
-		log.Printf("WARN message id reuse rejected (possible spoof) id=%s chat=%s incoming_sender=%s incoming_from_me=%t",
-			id, chatJID, sender, isFromMe)
-	}
-	return conflict
+// would collide with a stored message by someone else. It is quiet (the store
+// logs the refusal) and fails closed: an unreadable author counts as a
+// collision. Callers that do more than store the row, such as poll options,
+// check it first; they must still process the event itself as usual.
+func (store *MessageStore) MessageIDReused(id, chatJID, sender string, isFromMe bool, senderForms ...string) bool {
+	conflict, err := store.senderConflict(id, chatJID, sender, isFromMe, senderForms)
+	return conflict || err != nil
 }
 
 // StoreMessage stores a message in the database. A message whose (id, chat) is
@@ -112,16 +118,29 @@ func (store *MessageStore) MessageIDReused(id, chatJID, sender string, isFromMe 
 // kept as is and ErrMessageIDReuse is returned.
 func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content string, timestamp time.Time, isFromMe bool,
 	mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
+	return store.StoreMessageForms(nil, id, chatJID, sender, senderName, content, timestamp, isFromMe,
+		mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength)
+}
+
+// StoreMessageForms is StoreMessage with the other known identities of the
+// sender (see senderConflict).
+func (store *MessageStore) StoreMessageForms(senderForms []string, id, chatJID, sender, senderName, content string, timestamp time.Time, isFromMe bool,
+	mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	// Only store if there's actual content or media
 	if content == "" && mediaType == "" {
 		return nil
 	}
 
-	if _, err := store.senderConflict(id, chatJID, sender, isFromMe); err != nil {
+	conflict, err := store.senderConflict(id, chatJID, sender, isFromMe, senderForms)
+	if err != nil {
+		// Fail closed: an unreadable author is not a licence to overwrite.
 		log.Printf("WARN message author check failed, refusing overwrite id=%s chat=%s: %v", id, chatJID, err)
 		return err
 	}
-	if store.MessageIDReused(id, chatJID, sender, isFromMe) {
+	if conflict {
+		// Ids only, never content.
+		log.Printf("WARN message id reuse rejected (possible spoof) id=%s chat=%s incoming_sender=%s incoming_from_me=%t",
+			id, chatJID, sender, isFromMe)
 		return ErrMessageIDReuse
 	}
 
@@ -141,7 +160,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content
 	// Edits are applied by ApplyEdit, and a history-sync or backfill replay of
 	// the original arriving after one would otherwise put the pre-edit text back.
 	// deleted_at/deleted_by are not touched: a replay must not un-delete.
-	_, err := store.db.Exec(
+	_, err = store.db.Exec(
 		`INSERT INTO messages
 		(id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

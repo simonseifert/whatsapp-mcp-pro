@@ -113,3 +113,51 @@ func TestGateWithoutRecipientAndTyping(t *testing.T) {
 		t.Fatalf("group timer type = %v, want edit", got)
 	}
 }
+
+// remove, promote, demote and leave: the group must pass both lists and the
+// antiban caps; the people acted on only need the allowlist.
+func TestGateGroupAction(t *testing.T) {
+	const group, other = "120363000000000001@g.us", "120363000000000002@g.us"
+	const member, outsider = "4915100000001@s.whatsapp.net", "4915199999999@s.whatsapp.net"
+	tests := []struct {
+		name      string
+		allowlist []string
+		group     string
+		people    []string
+		editCap   int
+		want      SendErrorKind
+	}{
+		{name: "no allowlist", group: group, people: []string{outsider}},
+		{name: "listed group and member", allowlist: []string{group, "4915100000001"}, group: group, people: []string{member}},
+		{name: "unlisted group", allowlist: []string{group}, group: other, people: nil, want: SendErrForbidden},
+		{name: "unlisted person", allowlist: []string{group, "4915100000001"}, group: group, people: []string{outsider}, want: SendErrForbidden},
+		{name: "leave has no people", allowlist: []string{group}, group: group},
+		{name: "bad person JID", group: group, people: []string{"1:abc@s.whatsapp.net"}, want: SendErrInvalid},
+		{name: "antiban cap applies", group: group, editCap: 1, want: SendErrCapReached},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newOfflineClient(newReachoutTestStore(t))
+			c.cfg = &config.Config{AllowlistJIDs: tt.allowlist}
+			ic, err := antiban.NewSendInterceptor(&antiban.Config{
+				CapsEnabled: true, FeedbackMaxPerMinute: tt.editCap, CapsStatePath: filepath.Join(t.TempDir(), "caps.json"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.antiban = ic
+			if tt.editCap > 0 { // spend the budget first
+				if se := c.gateGroupAction(tt.group, tt.people); se != nil {
+					t.Fatalf("first action refused: %v", se)
+				}
+			}
+			se := c.gateGroupAction(tt.group, tt.people)
+			switch {
+			case tt.want == "" && se != nil:
+				t.Fatalf("refused: %v", se)
+			case tt.want != "" && (se == nil || se.Kind != tt.want):
+				t.Fatalf("got %v, want %s", se, tt.want)
+			}
+		})
+	}
+}

@@ -965,7 +965,12 @@ func (c *Client) RemoveGroupParticipants(groupJID string, participants []string)
 		participantJIDs[i] = jid
 	}
 
-	return c.UpdateGroupParticipants(context.Background(), group, participantJIDs, whatsmeow.ParticipantChangeRemove)
+	if se := c.gateGroupAction(groupJID, participants); se != nil {
+		return nil, se
+	}
+	res, err := c.UpdateGroupParticipants(context.Background(), group, participantJIDs, whatsmeow.ParticipantChangeRemove)
+	c.finishGate(antiban.Edit, err)
+	return res, err
 }
 
 // PromoteGroupParticipant promotes a participant to admin
@@ -984,7 +989,12 @@ func (c *Client) PromoteGroupParticipant(groupJID string, participant string) ([
 		return nil, fmt.Errorf("invalid participant JID: %v", err)
 	}
 
-	return c.UpdateGroupParticipants(context.Background(), group, []types.JID{jid}, whatsmeow.ParticipantChangePromote)
+	if se := c.gateGroupAction(groupJID, []string{participant}); se != nil {
+		return nil, se
+	}
+	res, err := c.UpdateGroupParticipants(context.Background(), group, []types.JID{jid}, whatsmeow.ParticipantChangePromote)
+	c.finishGate(antiban.Edit, err)
+	return res, err
 }
 
 // DemoteGroupParticipant demotes an admin to regular participant
@@ -1003,7 +1013,12 @@ func (c *Client) DemoteGroupParticipant(groupJID string, participant string) ([]
 		return nil, fmt.Errorf("invalid participant JID: %v", err)
 	}
 
-	return c.UpdateGroupParticipants(context.Background(), group, []types.JID{jid}, whatsmeow.ParticipantChangeDemote)
+	if se := c.gateGroupAction(groupJID, []string{participant}); se != nil {
+		return nil, se
+	}
+	res, err := c.UpdateGroupParticipants(context.Background(), group, []types.JID{jid}, whatsmeow.ParticipantChangeDemote)
+	c.finishGate(antiban.Edit, err)
+	return res, err
 }
 
 // LeaveGroup leaves a WhatsApp group
@@ -1017,7 +1032,12 @@ func (c *Client) LeaveGroup(groupJID string) error {
 		return fmt.Errorf("invalid group JID: %v", err)
 	}
 
-	return c.Client.LeaveGroup(context.Background(), group)
+	if se := c.gateGroupAction(groupJID, nil); se != nil {
+		return se
+	}
+	err = c.Client.LeaveGroup(context.Background(), group)
+	c.finishGate(antiban.Edit, err)
+	return err
 }
 
 // SetGroupName updates the group name
