@@ -367,7 +367,8 @@ func TestStoreMessageIDReuseCases(t *testing.T) {
 		{name: "attacker takes over own message rejected", firstSender: "999@s.whatsapp.net", firstFromMe: true, secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
 		{name: "legacy bare sender matches full JID", firstSender: "111", secondSender: "111@s.whatsapp.net", wantContent: "second"},
 		{name: "empty incoming sender keeps row, upserts", firstSender: "111@s.whatsapp.net", secondSender: "", wantContent: "second"},
-		{name: "stand-in row without sender is claimable", firstSender: "", secondSender: "222@s.whatsapp.net", wantContent: "second"},
+		{name: "own message with empty sender stays protected", firstSender: "", firstFromMe: true, secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
+		{name: "foreign row with empty sender but content is not claimable", firstSender: "", secondSender: "222@s.whatsapp.net", wantReuse: true, wantContent: "first"},
 	}
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -398,5 +399,37 @@ func TestStoreMessageIDReuseCases(t *testing.T) {
 				t.Fatalf("content = %q, want %q", content, tc.wantContent)
 			}
 		})
+	}
+}
+
+// A true stand-in (no sender, not ours, no content) is what a revoke that
+// arrived first leaves behind; the real message may fill it.
+func TestStoreMessageFillsStandIn(t *testing.T) {
+	store := newTestMessageStore(t)
+	const chat = "120363000000000000@g.us"
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	if err := store.StoreChat(chat, "Group", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES ('S1', ?, '', '', '', ?, 0)`, chat, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreMessage("S1", chat, "111@s.whatsapp.net", "n", "real", at, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatalf("stand-in should be fillable: %v", err)
+	}
+}
+
+// If the stored author cannot be read, the overwrite is refused, not allowed.
+func TestStoreMessageFailsClosedOnLookupError(t *testing.T) {
+	store := newTestMessageStore(t)
+	if err := store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err := store.StoreMessage("X1", "c@g.us", "1@s.whatsapp.net", "n", "text", time.Now(), false, "", "", "", "", nil, nil, nil, 0)
+	if err == nil {
+		t.Fatal("store succeeded although the author lookup failed")
+	}
+	if !store.MessageIDReused("X1", "c@g.us", "1@s.whatsapp.net", false) {
+		t.Fatal("MessageIDReused must report a conflict when the lookup fails")
 	}
 }

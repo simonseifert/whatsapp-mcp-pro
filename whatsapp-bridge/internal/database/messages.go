@@ -49,28 +49,35 @@ var ErrMessageIDReuse = errors.New("message id already stored for a different se
 // someone else's ID. Letting that upsert win would rewrite the stored author
 // and content and hand the attacker the edit/revoke authorship check.
 //
-// A row with no stored sender (the stand-in MarkDeleted creates for a revoke
-// that arrived first) has no author to protect yet, so it never conflicts.
-// Two own-device rows never conflict either: they are all us.
+// The own-message flag is compared first, so a row stored as ours is never
+// claimable by someone else, whatever its sender column holds. The only row
+// anyone may claim is a true stand-in (what MarkDeleted creates for a revoke
+// that arrived first): no sender, not ours, no content. Two own-device rows
+// never conflict: they are all us.
 func (store *MessageStore) senderConflict(id, chatJID, sender string, isFromMe bool) (bool, error) {
 	var storedSender sql.NullString
+	var storedContent sql.NullString
 	var storedFromMe bool
 	err := store.db.QueryRow(
-		`SELECT sender, COALESCE(is_from_me, 0) FROM messages WHERE id = ? AND chat_jid = ?`, id, chatJID,
-	).Scan(&storedSender, &storedFromMe)
+		`SELECT sender, content, COALESCE(is_from_me, 0) FROM messages WHERE id = ? AND chat_jid = ?`, id, chatJID,
+	).Scan(&storedSender, &storedContent, &storedFromMe)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("look up stored author of %s: %w", id, err)
 	}
-	if !storedSender.Valid || strings.TrimSpace(storedSender.String) == "" {
-		return false, nil
-	}
 	if storedFromMe != isFromMe {
 		return true, nil
 	}
-	if isFromMe || strings.TrimSpace(sender) == "" {
+	if isFromMe {
+		return false, nil
+	}
+	if !storedSender.Valid || strings.TrimSpace(storedSender.String) == "" {
+		// Not ours and no author: claimable only as a content-less stand-in.
+		return storedContent.Valid && strings.TrimSpace(storedContent.String) != "", nil
+	}
+	if strings.TrimSpace(sender) == "" {
 		return false, nil
 	}
 	stored := accountForms(store.db, storedSenderJID(store.db, storedSender.String, chatJID))
@@ -89,8 +96,9 @@ func (store *MessageStore) senderConflict(id, chatJID, sender string, isFromMe b
 func (store *MessageStore) MessageIDReused(id, chatJID, sender string, isFromMe bool) bool {
 	conflict, err := store.senderConflict(id, chatJID, sender, isFromMe)
 	if err != nil {
-		log.Printf("WARN message author check failed id=%s chat=%s: %v", id, chatJID, err)
-		return false
+		// Fail closed: an unreadable author is not a licence to overwrite.
+		log.Printf("WARN message author check failed, refusing overwrite id=%s chat=%s: %v", id, chatJID, err)
+		return true
 	}
 	if conflict {
 		log.Printf("WARN message id reuse rejected (possible spoof) id=%s chat=%s incoming_sender=%s incoming_from_me=%t",
@@ -109,6 +117,10 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, senderName, content
 		return nil
 	}
 
+	if _, err := store.senderConflict(id, chatJID, sender, isFromMe); err != nil {
+		log.Printf("WARN message author check failed, refusing overwrite id=%s chat=%s: %v", id, chatJID, err)
+		return err
+	}
 	if store.MessageIDReused(id, chatJID, sender, isFromMe) {
 		return ErrMessageIDReuse
 	}
