@@ -203,6 +203,43 @@ def verify_signature(payload, signature, secret):
     return hmac.compare_digest(signature, expected)
 ```
 
+### Replay protection (timestamp signature)
+Every delivery carries `X-Webhook-Timestamp` (Unix seconds, set per attempt). With a
+`secret_token`, `X-Webhook-Signature-V2` signs `timestamp + "." + body`:
+
+```
+X-Webhook-Timestamp: 1790000000
+X-Webhook-Signature-V2: sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">
+```
+
+`X-Webhook-Signature` (HMAC of the body alone) is still sent so existing receivers keep
+working, but it has no timestamp and a captured delivery can be replayed forever. New
+receivers should verify V2 and reject a timestamp more than 5 minutes old:
+
+```python
+import hmac, hashlib, time
+
+def verify_v2(body: bytes, timestamp: str, signature: str, secret: str, window=300):
+    if abs(time.time() - int(timestamp)) > window:
+        return False
+    mac = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256)
+    return hmac.compare_digest(signature, "sha256=" + mac.hexdigest())
+```
+
+Without a secret nothing is signed; the timestamp is still sent.
+
+### Target addresses
+A webhook URL must resolve only to public addresses: private, loopback, link-local,
+unspecified (`::`, `0.0.0.0`), IPv4-mapped IPv6, CGNAT (100.64.0.0/10, every Tailscale
+address) and similar ranges are refused, each resolved address is checked, and the bridge
+connects to the address it checked. Allow a private target with `WEBHOOK_ALLOWED_ADDRS`.
+
+### Delivery queue and log retention
+Deliveries run on a pool of `WEBHOOK_WORKERS` workers (default 8) fed by a queue of
+`WEBHOOK_QUEUE_SIZE` (default 1000). When the queue is full a delivery is dropped and
+logged. `webhook_logs` rows older than `WEBHOOK_LOG_RETENTION_DAYS` (default 30; 0 keeps
+everything) are deleted at start and then hourly.
+
 ### Rate Limiting
 - Webhook delivery does not block message processing
 - Failed deliveries are retried with exponential backoff

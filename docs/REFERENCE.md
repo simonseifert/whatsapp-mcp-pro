@@ -49,7 +49,34 @@ Must be within `/app/media`, `/app/store`, or `/tmp`. Set `DISABLE_PATH_CHECK=tr
 100 requests/minute per IP on bridge API.
 
 ### CORS
-Allowed origins: `localhost:8089`, `localhost:8082`. Configurable in `middleware.go`.
+No built-in origins. Only the comma-separated `CORS_ORIGINS` env var is trusted (an
+origin must match exactly, for example `http://localhost:8089`); unset means no browser
+origin is allowed. Requests without an `Origin` header (curl, the MCP server) are not
+affected.
+
+### File permissions and systemd hardening
+The bridge creates a new `store/` directory 0700 and a new `messages.db` / `whatsapp.db`
+0600; it never changes existing files. To tighten an existing install by hand:
+`chmod 700 store && chmod 600 store/*.db*`, and delete old `whatsapp.db` backups you no
+longer need (they hold session keys).
+
+Optional hardening for `whatsapp-bridge.service` (a suggestion; test it against your
+data dir before adopting, as it restricts what the bridge can write):
+
+```ini
+[Service]
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/<user>/.local/share/whatsapp-mcp-pro
+MemoryMax=2G
+```
+
+`PrivateTmp` hides `/tmp` from the bridge, which `send_file` uses as a media source; leave
+it out if you send files from `/tmp`. `ProtectHome=read-only` still lets the bridge read
+`MEDIA_ALLOWED_DIRS` under your home.
 
 ### Containers
 Run as non-root `appuser` in production.
