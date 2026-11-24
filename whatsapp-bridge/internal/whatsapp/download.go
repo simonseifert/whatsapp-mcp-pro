@@ -150,6 +150,39 @@ func (c *Client) downloadToTemp(ctx context.Context, msg whatsmeow.DownloadableM
 	return path, nil
 }
 
+// CleanStaleDownloadTemps removes download temp files (.dl-*, .autodl-*) older
+// than maxAge from root and its immediate subdirectories, which a crash or a
+// kill mid-download leaves behind. Returns how many it removed.
+func CleanStaleDownloadTemps(root string, maxAge time.Duration) int {
+	removed := 0
+	var scan func(dir string, depth int)
+	scan = func(dir string, depth int) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			path := filepath.Join(dir, e.Name())
+			if e.IsDir() {
+				if depth < 1 {
+					scan(path, depth+1)
+				}
+				continue
+			}
+			if !strings.HasPrefix(e.Name(), ".dl-") && !strings.HasPrefix(e.Name(), ".autodl-") {
+				continue
+			}
+			if info, err := e.Info(); err == nil && info.Mode().IsRegular() && time.Since(info.ModTime()) > maxAge {
+				if os.Remove(path) == nil {
+					removed++
+				}
+			}
+		}
+	}
+	scan(root, 0)
+	return removed
+}
+
 // downloadMedia downloads msg behind the concurrency bound and returns the
 // bytes. It streams to a temp file under the size cap first, so memory holds at
 // most one capped copy per slot instead of whatever the sender serves.

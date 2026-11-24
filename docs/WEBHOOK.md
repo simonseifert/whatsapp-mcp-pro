@@ -228,6 +228,16 @@ def verify_v2(body: bytes, timestamp: str, signature: str, secret: str, window=3
 
 Without a secret nothing is signed; the timestamp is still sent.
 
+### Message ID collisions (`id_collision`)
+WhatsApp keys a message on chat, sender and ID, but the bridge's store keys on chat and ID,
+and IDs are chosen by the sender. When a message arrives with the ID of a message already
+stored for a different sender, the bridge keeps the stored original, downloads no media for
+it and still delivers the webhook, with `message.id_collision: true`, the sender as received
+and an empty `media_download_url` (that URL would fetch the original's file). The field is
+absent on normal messages. Treat a flagged delivery as untrusted: ignore it, or log it as a
+possible spoof. Its `id` is the colliding ID, so do not use it to update records of the
+original.
+
 ### Target addresses
 A webhook URL must resolve only to public addresses: private, loopback, link-local,
 unspecified (`::`, `0.0.0.0`), IPv4-mapped IPv6, CGNAT (100.64.0.0/10, every Tailscale

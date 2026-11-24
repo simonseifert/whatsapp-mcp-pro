@@ -105,7 +105,10 @@ All notable changes to this fork are recorded here. The format follows
   the own-message flag) no longer overwrites it. The original row stays, the attempt
   is logged at warn level with ids only, and the poll options are left alone; the event
   is still processed (chat row, webhooks). The sender's phone and LID forms count as
-  one author through `identities`, the event's SenderAlt and whatsmeow's LID map. Before this, any chat member could rewrite someone
+  one author through `identities`, the event's SenderAlt and whatsmeow's LID map.
+  A colliding message starts no media download, stores no reaction or poll vote, and its
+  webhook carries `"id_collision": true` and no `media_download_url` (docs/WEBHOOK.md).
+  Download temp files older than an hour are removed at startup. Before this, any chat member could rewrite someone
   else's stored message by reusing its ID and then pass the edit/revoke author check.
   A failed author lookup refuses the overwrite too.
 - Group create, add members, remove members, promote, demote, leave, group rename and

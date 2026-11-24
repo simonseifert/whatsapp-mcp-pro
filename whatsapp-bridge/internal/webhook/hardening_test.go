@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 
 	"whatsapp-bridge/internal/types"
 )
@@ -233,5 +236,51 @@ func TestLogRetentionDays(t *testing.T) {
 				t.Fatalf("LogRetentionDays = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// A message that reused a stored ID is delivered flagged, with the sender as
+// received and no download URL; a normal one carries no flag.
+func TestProcessCollidingMessageFlagsPayload(t *testing.T) {
+	ds := newDeliveryService(nil, waLog.Noop)
+	var mu sync.Mutex
+	var jobs []deliveryJob
+	done := make(chan struct{}, 4)
+	ds.deliver = func(j deliveryJob) { mu.Lock(); jobs = append(jobs, j); mu.Unlock(); done <- struct{}{} }
+	ds.startWorkers(1, 4)
+	wm := &Manager{
+		logger:          waLog.Noop,
+		delivery:        ds,
+		downloadBaseURL: "http://localhost:8080/api/download",
+		configs: []*types.WebhookConfig{{
+			ID: 1, Name: "w", Enabled: true,
+			Triggers: []types.WebhookTrigger{{TriggerType: "all", MatchType: "exact", Enabled: true}},
+		}},
+	}
+	msg := textMessage(groupJID, phoneJID)
+	msg.Message = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Caption: proto.String("spoof")}}
+
+	wm.ProcessCollidingMessage(nil, msg, "Group")
+	wm.ProcessMessage(nil, msg, "Group")
+	<-done
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(jobs) != 2 {
+		t.Fatalf("deliveries = %d, want 2", len(jobs))
+	}
+	flagged, normal := jobs[0].payload.Message, jobs[1].payload.Message
+	if !flagged.IDCollision || flagged.MediaDownloadURL != "" || flagged.Sender != phoneJID.String() {
+		t.Fatalf("flagged payload = %+v", flagged)
+	}
+	if normal.IDCollision || normal.MediaDownloadURL == "" {
+		t.Fatalf("normal payload = %+v", normal)
+	}
+	raw, _ := json.Marshal(jobs[0].payload)
+	if !strings.Contains(string(raw), `"id_collision":true`) {
+		t.Fatalf("JSON lacks the flag: %s", raw)
+	}
+	if raw2, _ := json.Marshal(jobs[1].payload); strings.Contains(string(raw2), "id_collision") {
+		t.Fatalf("normal JSON carries the flag: %s", raw2)
 	}
 }

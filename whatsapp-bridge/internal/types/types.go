@@ -245,6 +245,10 @@ type WebhookMessageInfo struct {
 	QuotedSender     string `json:"quoted_sender,omitempty"`
 	// PreviousContent is the text a message_edited event replaced, when known.
 	PreviousContent string `json:"previous_content,omitempty"`
+	// IDCollision marks a message that reused the ID of a different stored
+	// message. The store kept the original; Sender is the sender as received.
+	// Consumers should ignore it or treat it as untrusted.
+	IDCollision bool `json:"id_collision,omitempty"`
 }
 
 type WebhookMetadata struct {

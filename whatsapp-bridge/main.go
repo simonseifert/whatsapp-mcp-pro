@@ -98,6 +98,11 @@ func main() {
 		fireConnectionEvent(webhookManager, client, "circuit_breaker_exhausted", "30 consecutive reconnect failures")
 	})
 
+	// A crash mid-download leaves a temp file behind; drop those older than an hour.
+	if n := whatsapp.CleanStaleDownloadTemps("store", time.Hour); n > 0 {
+		logger.Infof("Removed %d stale download temp files", n)
+	}
+
 	// Identity directory: keeps the unified users/chats table in messages.db in
 	// step with the contact store, the LID map and our own chat history.
 	identitySyncer := client.NewIdentitySyncer(messageStore, cfg.IdentitySyncInterval, cfg.MergeLIDChats)

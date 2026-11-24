@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -231,5 +232,66 @@ func TestCappedFileCopyCannotBypassLimit(t *testing.T) {
 	}
 	if info, _ := f.Stat(); info.Size() > 100 {
 		t.Fatalf("file grew to %d bytes", info.Size())
+	}
+}
+
+// Only the capped writer may stop an oversize stream: this fake undoes its own
+// damage afterwards (truncates and returns nil), so the post-download size
+// check sees a small file and cannot catch it. Remove the stream-time cap and
+// this test fails.
+func TestStreamTimeCapAloneStopsOversizeDownload(t *testing.T) {
+	t.Setenv("MEDIA_MAX_BYTES", "1000")
+	dir := t.TempDir()
+	lies := uint64(10)
+	c := &Client{rawDownloadToFile: func(_ context.Context, _ whatsmeow.DownloadableMessage, f whatsmeow.File) error {
+		if _, err := f.Write(make([]byte, 5000)); err != nil {
+			return err // the capped writer stopped it
+		}
+		if err := f.Truncate(10); err != nil {
+			return err
+		}
+		return nil // looks like a clean, small download to anything after the fact
+	}}
+	if _, err := c.downloadToTemp(context.Background(), &waE2E.DocumentMessage{FileLength: &lies}, dir); !errors.Is(err, ErrMediaTooLarge) {
+		t.Fatalf("err = %v, want ErrMediaTooLarge from the writer", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("partial file left behind: %v", entries)
+	}
+}
+
+func TestCleanStaleDownloadTemps(t *testing.T) {
+	root := t.TempDir()
+	chat := filepath.Join(root, "chat")
+	if err := os.MkdirAll(chat, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	mk := func(path string, mod time.Time) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk(filepath.Join(root, ".dl-old"), old)
+	mk(filepath.Join(chat, ".autodl-old"), old)
+	mk(filepath.Join(root, ".dl-fresh"), time.Now())
+	mk(filepath.Join(chat, "report.pdf"), old) // real media is never touched
+	mk(filepath.Join(chat, ".hidden-other"), old)
+	if n := CleanStaleDownloadTemps(root, time.Hour); n != 2 {
+		t.Fatalf("removed %d, want 2", n)
+	}
+	for _, keep := range []string{".dl-fresh"} {
+		if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+			t.Errorf("%s was removed", keep)
+		}
+	}
+	for _, keep := range []string{"report.pdf", ".hidden-other"} {
+		if _, err := os.Stat(filepath.Join(chat, keep)); err != nil {
+			t.Errorf("%s was removed", keep)
+		}
 	}
 }

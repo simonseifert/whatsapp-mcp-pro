@@ -337,6 +337,17 @@ func (wm *Manager) senderName(msg *events.Message) string {
 
 // ProcessMessage processes a message and sends webhooks if triggers match
 func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatName string) {
+	wm.processMessage(client, msg, chatName, false)
+}
+
+// ProcessCollidingMessage is ProcessMessage for a message whose ID is already
+// stored for a different sender: the payload carries "id_collision": true and
+// no media download URL.
+func (wm *Manager) ProcessCollidingMessage(client interface{}, msg *events.Message, chatName string) {
+	wm.processMessage(client, msg, chatName, true)
+}
+
+func (wm *Manager) processMessage(client interface{}, msg *events.Message, chatName string, collision bool) {
 	startTime := time.Now()
 
 	chatJID, chatJIDAlt := chatForms(client, msg.Info.Chat)
@@ -351,6 +362,10 @@ func (wm *Manager) ProcessMessage(client interface{}, msg *events.Message, chatN
 
 	basePayload := buildMessagePayload(msg, chatName, wm.senderName(msg), chatJID, chatJIDAlt, wm.downloadBaseURL)
 	basePayload.Metadata.ProcessingTimeMs = time.Since(startTime).Milliseconds()
+	if collision {
+		basePayload.Message.IDCollision = true
+		basePayload.Message.MediaDownloadURL = ""
+	}
 
 	// Send webhooks for each matched configuration
 	for _, config := range matchedConfigs {

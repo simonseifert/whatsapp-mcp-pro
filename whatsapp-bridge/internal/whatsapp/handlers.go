@@ -204,7 +204,7 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	// A reaction is also stored against the message it targets, under the
 	// canonical reactor (LID and phone forms of one person share a row). The
 	// "[Reaction: X]" row below is kept so existing tools see no change.
-	if r, ok := reactionFromMessage(chatJID, c.reactorSender(msg.Info.Sender, msg.Info.SenderAlt), msg); ok {
+	if r, ok := reactionFromMessage(chatJID, c.reactorSender(msg.Info.Sender, msg.Info.SenderAlt), msg); ok && !idReused {
 		if database.IsImportedMessageID(r.TargetID) {
 			c.logger.Warnf("Ignoring reaction %s in %s: it targets an imported ID", msg.Info.ID, chatJID)
 		} else if err := messageStore.StoreReaction(r); err != nil {
@@ -233,7 +233,7 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	// has no case for it (by design — decrypting it needs the live client and local poll-option
 	// state, not just the protobuf), so without this it silently has no content and no media and
 	// gets dropped a few lines down, with nothing in the store or the logs to show it happened.
-	if msg.Message.GetPollUpdateMessage() != nil {
+	if msg.Message.GetPollUpdateMessage() != nil && !idReused {
 		content = c.resolvePollVoteContent(messageStore, msg)
 	}
 
@@ -281,12 +281,23 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	}
 
 	// Auto-download media while CDN URL is still fresh
-	if mediaType != "" && (url != "" || directPath != "") {
+	// Not under a colliding ID: the saved file is keyed by it, and a spoofer's
+	// media must never become, or be served as, the real message's file.
+	if !idReused && mediaType != "" && (url != "" || directPath != "") {
 		go c.autoDownloadMedia(msg.Info.ID, chatJID, mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength)
 	}
 
 	// Process webhooks if manager is available
-	if webhookManager != nil {
+	if webhookManager != nil && idReused {
+		// Delivered, but flagged: consumers see a message that reused a stored
+		// ID under the sender as received, with "id_collision": true, and no
+		// download URL (that would fetch the original's media).
+		if wm, ok := webhookManager.(interface {
+			ProcessCollidingMessage(client interface{}, msg *events.Message, chatName string)
+		}); ok {
+			wm.ProcessCollidingMessage(c, msg, name)
+		}
+	} else if webhookManager != nil {
 		// Cast to webhook manager and process message
 		if wm, ok := webhookManager.(interface {
 			ProcessMessage(client interface{}, msg *events.Message, chatName string)
