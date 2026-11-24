@@ -70,6 +70,17 @@ func acquireMediaSlot(ctx context.Context) (release func(), err error) {
 	}
 }
 
+// AcquireMediaSlot takes one of the shared MEDIA_DOWNLOAD_CONCURRENCY download
+// slots, for download paths outside this package (the /api/download CDN
+// branch). It waits until one is free or ctx ends; call the returned function
+// to release it.
+func AcquireMediaSlot(ctx context.Context) (release func(), err error) {
+	return acquireMediaSlot(ctx)
+}
+
+// ResetMediaSlots re-reads MEDIA_DOWNLOAD_CONCURRENCY. Tests only.
+func ResetMediaSlots() { mediaSlotsOnce = sync.Once{} }
+
 // cappedFile is a temp file that refuses to grow past limit bytes. whatsmeow's
 // DownloadToFile copies the response body into it, so the cap holds against
 // the real size of the download, whatever the sender's file_length claims.
