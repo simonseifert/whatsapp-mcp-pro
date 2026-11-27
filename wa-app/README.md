@@ -55,7 +55,7 @@ faster-whisper). If none works the request fails with "Local transcription unava
 
 ## Notifications
 
-The app notifies on every incoming message, with the sender and the text, except muted chats and the chat open in a visible app window.
+The app notifies on every incoming message (the title is the chat name, the body the text, and in a group "Sender: text"), except muted chats and the chat open in a visible app window.
 
 1. Set `WA_APP_PUSH_SUBJECT` (a `mailto:` address or `https:` URL you control) in wa-app's environment and restart. Never commit it.
 2. The VAPID key pair is created on first use as `vapid.pem` in `WA_APP_DATA` (mode 600). **Back it up with `app.db`**: a new key makes every existing subscription invalid, and each device must switch notifications on again.

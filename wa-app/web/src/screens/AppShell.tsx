@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Route, Routes, useMatch } from 'react-router'
 import { setOpenChat } from '../live'
-import { resyncPush } from '../push'
+import { resetResync, resyncPush } from '../push'
 import { TabBar } from '../components/TabBar'
 import { UpdateRow } from '../components/UpdateRow'
 import { Chat } from './Chat'
@@ -41,6 +41,7 @@ export function AppShell({ onLogout }: { onLogout: (everywhere: boolean) => void
   }, [jid])
   useEffect(() => {
     void resyncPush()
+    return resetResync // logout unmounts the shell: the next login resyncs again
   }, [])
   useEffect(() => () => setOpenChat(null), []) // unmount only: switching A to B reports B, never a null in between
   return (
