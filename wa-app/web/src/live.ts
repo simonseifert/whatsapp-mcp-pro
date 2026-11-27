@@ -110,7 +110,7 @@ export function connectLive(
 }
 
 // The chat the user has open, reported with every visibility report so the server does not push for it while it is
-// on screen. AppShell sets it from the route; null on every other screen.
+// on screen. The open Chat sets its canonical jid; AppShell sets null when no chat is routed.
 let openChat: string | null = null
 const chatWatchers = new Set<() => void>()
 

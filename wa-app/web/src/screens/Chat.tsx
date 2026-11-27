@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { apiFetch } from '../api'
+import { setOpenChat } from '../live'
 import type { ChatDetail, DraftView, MessageView, QuoteView } from '../api-types'
 import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
@@ -97,6 +98,10 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const privateReply = params.get('reply') && params.get('from') ? { id: params.get('reply')!, from: params.get('from')! } : null
   const [menuId, setMenuId] = useState<string | null>(null)
   const chatJid = detail?.chat.jid ?? jid
+  // Report the canonical jid, not the route's (a "Reply privately" link carries an LID), so this chat does not push.
+  useEffect(() => {
+    if (active) setOpenChat(chatJid)
+  }, [active, chatJid])
   const composer = useRef<ComposerHandle>(null)
   const { draft, error: draftError, request: requestDraft, dismiss: dismissDraft } = useDraft(jid)
   // The draft whose text is in the composer: the next send carries its id as a hint, until the box is emptied.

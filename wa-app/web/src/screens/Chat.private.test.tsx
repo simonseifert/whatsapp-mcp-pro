@@ -156,3 +156,25 @@ describe('Reply privately', () => {
     expect(await screen.findByText("Can't reply privately to this person yet.")).toBeTruthy()
   })
 })
+
+describe('Open chat report', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('reports the canonical chat jid, not the LID in the route', async () => {
+    const LID = '99887766@lid'
+    vi.spyOn(live, 'subscribeLive').mockImplementation(() => () => {})
+    const open = vi.spyOn(live, 'setOpenChat')
+    vi.spyOn(api, 'apiFetch').mockImplementation(async (path: string) =>
+      path.endsWith('/messages') ? { messages: [], has_more: false } : chatOf(NIKOLA, 'Nikola', 'private'),
+    )
+    render(
+      <MemoryRouter>
+        <Chat jid={LID} />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(open).toHaveBeenLastCalledWith(NIKOLA))
+  })
+})

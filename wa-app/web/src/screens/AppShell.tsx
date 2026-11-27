@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Route, Routes, useMatch } from 'react-router'
 import { setOpenChat } from '../live'
+import { resyncPush } from '../push'
 import { TabBar } from '../components/TabBar'
 import { UpdateRow } from '../components/UpdateRow'
 import { Chat } from './Chat'
@@ -33,8 +34,14 @@ export function AppShell({ onLogout }: { onLogout: (everywhere: boolean) => void
   const jid = useMatch('/chat/:jid')?.params.jid
   const leaving = useLeavingJid(jid)
   const shown = jid ?? leaving
-  // Only the route's chat counts as open, not the one sliding out.
-  useEffect(() => setOpenChat(jid ?? null), [jid])
+  // Only the route's chat counts as open, not the one sliding out. The open Chat reports its own canonical jid (the
+  // route may carry an LID); here only "no chat" is reported.
+  useEffect(() => {
+    if (!jid) setOpenChat(null)
+  }, [jid])
+  useEffect(() => {
+    void resyncPush()
+  }, [])
   useEffect(() => () => setOpenChat(null), []) // unmount only: switching A to B reports B, never a null in between
   return (
     <div className={jid ? 'shell has-chat' : 'shell'}>
