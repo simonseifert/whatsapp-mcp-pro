@@ -5,6 +5,7 @@ import type {
   BackendTestResult,
   ChatAi,
   ChatList,
+  ChatSummary,
   FilterChip,
   ForwardResult,
   DraftContext,
@@ -389,4 +390,21 @@ export async function forwardMessages(
 export function fetchStarred(before?: string | null): Promise<StarredResponse> {
   const query = before ? `?before=${encodeURIComponent(before)}` : ''
   return apiFetch<StarredResponse>(`/api/starred${query}`)
+}
+
+/** What the chat menu can change. `mute` is how long ("8h", "1w", "forever") or false to unmute. */
+export type ChatStatePatch = { pin?: boolean; mute?: '8h' | '1w' | 'forever' | false; archive?: boolean; unread?: boolean }
+export type ChatStateResult = { ok: true; chat: ChatSummary } | { ok: false; error: string }
+
+/** Pins, mutes, archives or marks a chat unread. The answer is the chat as it will look once the phone echoes it. */
+export async function setChatState(jid: string, patch: ChatStatePatch): Promise<ChatStateResult> {
+  try {
+    const body = await apiFetch<{ chat: ChatSummary }>(`/api/chats/${encodeURIComponent(jid)}/state`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    })
+    return { ok: true, chat: body.chat }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error && error.message ? error.message : "Couldn't update the chat" }
+  }
 }

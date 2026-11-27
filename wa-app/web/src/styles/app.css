@@ -2512,3 +2512,20 @@ input {
 .meta svg {
   vertical-align: -2px;
 }
+
+/* A long press on a chat row opens its menu: no browser callout or text selection on top of it. */
+.ls .row {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.row-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin: 0;
+  padding: var(--spacing-xs) var(--spacing-md);
+  color: var(--danger, #c0392b);
+  font-size: var(--text-caption, 13px);
+}

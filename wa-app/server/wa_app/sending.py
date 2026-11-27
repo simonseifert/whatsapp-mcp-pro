@@ -16,9 +16,9 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from . import appdb, live, mcp_lib, media, store, unread
 from .ai import learning
@@ -737,3 +737,81 @@ def forward_messages(settings: Settings, appconn: sqlite3.Connection, body: obje
                 error = f"Sent {sent} of {len(found)}, then: {error}"
             results.append({"to": to, "ok": False, "error": error})
     return Outcome(200, {"results": results})
+
+
+# --- chat state: pin, mute, archive, mark unread ---------------------------------------------------------------------
+
+MAX_PINNED = 3  # WhatsApp's limit
+MUTE_CHOICES = ("8h", "1w", "forever")  # the bridge's duration strings; "15m" and "1h" are not offered
+MSG_STATE_FAILED = "Couldn't update the chat"
+
+
+def _state_fail(result: dict) -> Outcome:
+    detail = _short(result)
+    if result.get("retryable") or result.get("code") in ("timeout", "not_connected"):
+        return _fail(502, f"{MSG_STATE_FAILED}: the bridge didn't answer", True)
+    return _fail(502, f"{MSG_STATE_FAILED}: {detail}")
+
+
+def set_chat_state(settings: Settings, appconn: sqlite3.Connection, jid: str, body: object) -> Outcome:
+    """Blocking: pin, mute, archive and/or mark a chat unread through the bridge.
+
+    The reply is the chat as it will look: the summary from the store with the requested flags laid over it. The
+    store itself only changes when the bridge's chat_state echo lands, and the list picks that up from there.
+    """
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    wanted = {k: body[k] for k in ("pin", "mute", "archive", "unread") if k in body}
+    if not wanted:
+        return _bad("Nothing to change")
+    for key in ("pin", "archive", "unread"):
+        if key in wanted and not isinstance(wanted[key], bool):
+            return _bad(f"{key} must be true or false")
+    mute = wanted.get("mute")
+    if "mute" in wanted and mute is not False and mute not in MUTE_CHOICES:
+        return _bad("mute must be 8h, 1w, forever or false")
+    if wanted.get("pin") is True and wanted.get("archive") is True:
+        return _bad("A chat can't be pinned and archived at once")
+
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            chat = store.get_chat(ro, appconn, jid)
+            if chat is None:
+                return _bad("Chat not found", 404)
+            if wanted.get("pin") is True and not chat.pinned:
+                pinned = [
+                    c for c in store.list_chats_with_count(ro, appconn, archived=None, limit=10_000)[0] if c.pinned
+                ]
+                if len(pinned) >= MAX_PINNED:
+                    return Outcome(409, {"error": f"You can pin up to {MAX_PINNED} chats"})
+    finally:
+        ro.close()
+
+    updates: dict[str, Any] = {}
+    # Archive first: it unpins, so a following unpin or pin ends in the state that was asked for.
+    if "archive" in wanted:
+        result = _call(mcp_lib.archive_chat, chat.jid, archive=wanted["archive"])
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["archived"] = bool(wanted["archive"])
+        if wanted["archive"]:
+            updates["pinned"] = False
+    if "pin" in wanted:
+        result = _call(mcp_lib.pin_chat, chat.jid, pin=wanted["pin"])
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["pinned"] = bool(wanted["pin"])
+    if "mute" in wanted:
+        result = _call(
+            mcp_lib.mute_chat, chat.jid, mute=mute is not False, duration=mute if isinstance(mute, str) else "forever"
+        )
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["muted"] = mute is not False
+    if "unread" in wanted:
+        result = _call(mcp_lib.mark_chat_unread, chat.jid, unread=wanted["unread"])
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["marked_unread"] = bool(wanted["unread"])
+    return Outcome(200, {"chat": asdict(replace(chat, **updates))})

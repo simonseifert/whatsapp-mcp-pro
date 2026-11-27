@@ -33,6 +33,7 @@ import {
   withReactions,
 } from '../outbox'
 import { useChat } from '../useChat'
+import { useChatState } from '../useChatState'
 import { useDraft } from '../useDraft'
 import { useMarkRead } from '../useMarkRead'
 
@@ -325,7 +326,8 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     if (!(await loadOlder())) anchor.current = null
   }
 
-  const chat = detail?.chat
+  const state = useChatState(detail?.chat)
+  const chat = state.chat
   const inGroup = chat ? GROUP_KINDS.includes(chat.kind) : false
   return (
     <section className="chatpane" aria-label={chat?.name ?? 'Chat'}>
@@ -437,6 +439,11 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
       )}
       {menuOpen && (
         <ChatMenu
+          state={chat}
+          onChange={(patch) => {
+            setMenuOpen(false)
+            void state.change(patch)
+          }}
           onClose={() => setMenuOpen(false)}
           onSearch={() => {
             setMenuOpen(false)
@@ -509,6 +516,14 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           </button>
           <button className="button-text quiet" type="button" onClick={() => setRevoking(null)}>
             Keep
+          </button>
+        </p>
+      )}
+      {state.error && (
+        <p className="notice" role="alert">
+          <span dir="auto">{state.error}</span>
+          <button className="button-text" type="button" onClick={state.dismissError}>
+            Dismiss
           </button>
         </p>
       )}

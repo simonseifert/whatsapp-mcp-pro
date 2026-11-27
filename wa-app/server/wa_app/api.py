@@ -634,6 +634,14 @@ def routes(
     async def message_star(request: Request) -> Response:
         return await message_action(request, sending.star_message)
 
+    async def chat_state(request: Request) -> Response:
+        body = await body_of(request)
+        try:
+            outcome = await run_in_threadpool(sending.set_chat_state, settings, conn, request.path_params["jid"], body)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
     async def forward(request: Request) -> Response:
         body = await body_of(request)
         try:
@@ -882,6 +890,7 @@ def routes(
         Route("/api/chats/{jid}/react", chat_react, methods=["POST"]),
         Route("/api/chats/{jid}/messages/{id}/edit", message_edit, methods=["POST"]),
         Route("/api/chats/{jid}/messages/{id}/revoke", message_revoke, methods=["POST"]),
+        Route("/api/chats/{jid}/state", chat_state, methods=["POST"]),
         Route("/api/chats/{jid}/messages/{id}/star", message_star, methods=["POST"]),
         Route("/api/forward", forward, methods=["POST"]),
         Route("/api/starred", starred, methods=["GET"]),

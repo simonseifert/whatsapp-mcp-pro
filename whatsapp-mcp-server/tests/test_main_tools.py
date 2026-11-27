@@ -195,3 +195,33 @@ def test_list_all_contacts_tool_returns_serialized_dicts(monkeypatch):
         {"jid": "1@s.whatsapp.net"},
         {"jid": "2@s.whatsapp.net"},
     ]
+
+
+CHAT_TOOLS = {"pin_chat", "mute_chat", "archive_chat", "mark_chat_unread"}
+
+
+def test_chats_toolset_is_opt_in(monkeypatch):
+    assert not CHAT_TOOLS & tool_names(reload_main(monkeypatch))
+    names = tool_names(reload_main(monkeypatch, "core,chats"))
+    assert CHAT_TOOLS <= names
+    assert "send_message" not in names
+    assert CHAT_TOOLS <= tool_names(reload_main(monkeypatch, "all"))
+
+
+def test_chat_tools_call_the_wrappers(monkeypatch):
+    main = reload_main(monkeypatch, "chats")
+    seen = []
+    for name in ("pin_chat", "mute_chat", "archive_chat", "mark_chat_unread"):
+        monkeypatch.setattr(
+            main, f"whatsapp_{name}", lambda *a, _n=name, **k: seen.append((_n, a, k)) or {"success": True}
+        )
+    assert main.pin_chat("a@s.whatsapp.net", False) == {"success": True}
+    assert main.mute_chat("a@s.whatsapp.net", True, "8h") == {"success": True}
+    assert main.archive_chat("a@s.whatsapp.net") == {"success": True}
+    assert main.mark_chat_unread("a@s.whatsapp.net", False) == {"success": True}
+    assert seen == [
+        ("pin_chat", ("a@s.whatsapp.net", False), {}),
+        ("mute_chat", ("a@s.whatsapp.net", True, "8h"), {}),
+        ("archive_chat", ("a@s.whatsapp.net", True), {}),
+        ("mark_chat_unread", ("a@s.whatsapp.net", False), {}),
+    ]
