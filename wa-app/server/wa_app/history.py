@@ -151,11 +151,9 @@ BACKFILL_BATCHES = 200
 _DONE_KEPT = 100
 _STATUS_MISSES = 3  # status calls in a row that fail or do not list the job before the bridge counts as gone
 _NOTHING_OLDER = "phone has nothing older"
-_NO_ANSWER = "No older messages came back. Is your phone online?"
+_NO_ANSWER = "Your phone didn't send anything older"
 _EMPTY_ANSWER = "Nothing older on your phone"
 _STALLED = "Stopped making progress"
-_PAUSED = "Paused: phone not answering"
-_NO_ANSWER_LIMIT = 2  # results in a row with no answer from the phone before the rest of the queue is paused
 logger = logging.getLogger("wa_app.history")
 
 
@@ -189,7 +187,6 @@ class BackfillQueue:
         self._status = status
         self._poll_s = poll_s
         self._stall_s = stall_s
-        self._no_answer = 0
         self._today = today
         self._clock = clock
         self._queue: deque[tuple[str, str | None, Depth, str | None]] = deque()
@@ -220,7 +217,6 @@ class BackfillQueue:
     def cancel(self) -> None:
         """Drop what is queued. A job the bridge is already running finishes on its own."""
         self._queue.clear()
-        self._no_answer = 0
 
     def stop(self) -> None:
         self._stopped = True
@@ -248,13 +244,6 @@ class BackfillQueue:
             self._running = None
             self._done.append({"jid": jid, "result": result, "detail": detail, "oldest": oldest})
             logger.info("history backfill %s: %s (%s)", log_safe(jid), result, log_safe(detail))
-            self._no_answer = self._no_answer + 1 if detail == _NO_ANSWER else 0
-            if self._no_answer >= _NO_ANSWER_LIMIT and self._queue:
-                while self._queue:
-                    self._done.append(
-                        {"jid": self._queue.popleft()[0], "result": "skipped", "detail": _PAUSED, "oldest": None}
-                    )
-                self._no_answer = 0
 
     def _until(self, depth: Depth) -> str | None:
         days = _DEPTH_DAYS[depth]
@@ -314,7 +303,7 @@ class BackfillQueue:
                     answers = job.get("answers")  # missing on an old bridge: unknown, treated as no answer
                     if isinstance(answers, int) and answers > 0:
                         return "done", _EMPTY_ANSWER, oldest  # the phone answered, it just had nothing older
-                    return "failed", _NO_ANSWER, oldest
+                    return "done", _NO_ANSWER, oldest  # the phone never answers some chats: not a failure
                 return "done", "", oldest
             if stopped_by == "reached until":
                 return "done", "", oldest

@@ -184,60 +184,34 @@ def test_slow_but_progressing_job_is_not_failed() -> None:
     assert done[0]["result"] == "done" and done[0]["detail"] == ""
 
 
-def test_nothing_came_back_fails_and_two_in_a_row_pause_the_queue() -> None:
-    # the job ends on the very anchor it started with: the phone did not answer
+def test_no_answer_chats_are_done_and_the_queue_keeps_going() -> None:
+    # the job ends on the very anchor it started with and the phone never answered
     bridge = Bridge(final={"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05"})
     queue = make(bridge)
     queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
     done = (drain(queue))["done"]
-    assert [(d["jid"], d["result"]) for d in done] == [(A, "failed"), (B, "failed"), (C, "skipped")]
-    assert done[0]["detail"] == "No older messages came back. Is your phone online?"
-    assert done[2]["detail"] == "Paused: phone not answering"
-    assert [c[0] for c in bridge.calls] == [A, B]
+    assert [(d["jid"], d["result"]) for d in done] == [(A, "done"), (B, "done"), (C, "done")]
+    assert all(d["detail"] == "Your phone didn't send anything older" for d in done)
+    assert [c[0] for c in bridge.calls] == [A, B, C]
 
 
-def test_answered_but_empty_is_done_and_never_pauses() -> None:
-    # the phone answered every request (answers > 0) but had nothing older: not offline
+def test_answered_but_empty_keeps_its_own_detail() -> None:
     final = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05", "answers": 3}
     bridge = Bridge(final=final)
     queue = make(bridge)
     queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
     done = (drain(queue))["done"]
-    assert [(d["jid"], d["result"]) for d in done] == [(A, "done"), (B, "done"), (C, "done")]
+    assert [d["result"] for d in done] == ["done", "done", "done"]
     assert all(d["detail"] == "Nothing older on your phone" for d in done)
-    assert queue._no_answer == 0
     assert [c[0] for c in bridge.calls] == [A, B, C]
 
 
-def test_answered_empty_resets_the_no_answer_streak() -> None:
-    bridge = Bridge()
-    silent = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05", "answers": 0}
-    bridge.finals[A] = dict(silent)
-    bridge.finals[B] = {**silent, "answers": 2}
-    bridge.finals[C] = dict(silent)
-    queue = make(bridge)
-    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
-    done = (drain(queue))["done"]
-    # A and C are each a lone no-answer, B in between resets the streak: no pause
-    assert [d["result"] for d in done] == ["failed", "done", "failed"]
-
-
-def test_zero_answers_is_still_no_answer() -> None:
+def test_zero_answers_reads_as_phone_sent_nothing() -> None:
     final = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05", "answers": 0}
     queue = make(Bridge(final=final))
-    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
+    queue.enqueue([(A, A, BEFORE)], "year")
     done = (drain(queue))["done"]
-    assert [d["result"] for d in done] == ["failed", "failed", "skipped"]
-    assert done[0]["detail"] == "No older messages came back. Is your phone online?"
-
-
-def test_missing_answers_field_keeps_the_old_behaviour() -> None:
-    # an old bridge does not report answers: unknown, so same as before
-    final = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05"}
-    queue = make(Bridge(final=final))
-    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
-    done = (drain(queue))["done"]
-    assert [d["result"] for d in done] == ["failed", "failed", "skipped"]
+    assert (done[0]["result"], done[0]["detail"]) == ("done", "Your phone didn't send anything older")
 
 
 def test_oldest_that_moved_before_the_first_poll_is_still_progress() -> None:
@@ -250,45 +224,6 @@ def test_oldest_that_moved_before_the_first_poll_is_still_progress() -> None:
     queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
     done = (drain(queue))["done"]
     assert [d["result"] for d in done] == ["done", "done", "done"]
-    assert queue._no_answer == 0
-
-
-def test_cancel_resets_the_no_answer_streak() -> None:
-    bridge = Bridge(final={"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05"})
-    queue = make(bridge)
-
-    async def scenario() -> list[dict]:
-        task = asyncio.create_task(queue.run())
-
-        async def until(n: int) -> None:
-            for _ in range(10_000):
-                if len(queue.snapshot()["done"]) >= n and not queue.snapshot()["running"]:
-                    return
-                await asyncio.sleep(0)
-
-        queue.enqueue([(A, A, BEFORE)], "year")
-        await until(1)
-        assert queue._no_answer == 1
-        queue.cancel()
-        assert queue._no_answer == 0
-        queue.enqueue([(B, B, BEFORE), (C, C, BEFORE)], "year")
-        await until(3)
-        queue.stop()
-        await asyncio.wait_for(task, 5)
-        return queue.snapshot()["done"]
-
-    done = asyncio.run(scenario())
-    # without the reset B would be the second no-answer in a row and C would be paused
-    assert [d["result"] for d in done] == ["failed", "failed", "failed"]
-
-
-def test_one_failure_without_an_answer_does_not_pause() -> None:
-    bridge = Bridge()
-    bridge.finals[A] = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05"}
-    queue = make(bridge)
-    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
-    done = (drain(queue))["done"]
-    assert [d["result"] for d in done] == ["failed", "done", "done"]
 
 
 def test_waits_for_any_running_bridge_job_before_starting() -> None:
