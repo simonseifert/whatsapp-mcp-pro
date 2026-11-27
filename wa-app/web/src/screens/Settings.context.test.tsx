@@ -38,6 +38,11 @@ describe('Settings draft context', () => {
     expect(screen.getByText('16/1500')).toBeTruthy()
   })
 
+  it('warns that higher values cost speed and can overflow small models', async () => {
+    await open()
+    expect(screen.getByText('Higher values make drafts slower and can overflow small local models.')).toBeTruthy()
+  })
+
   it('enables Save only after a change', async () => {
     const save = await open()
     expect(save.disabled).toBe(true)

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 / Starlette / SQLite (server), React + TypeScript + Vitest (web). No bridge (Go) change.
 
-**Spec:** this document. Origin: Nirmal's fresh install drafts sounded generic; diagnosis 2026-11-27 in the session: the draft prompt only sees 30 messages, up to 30 of the user's own replies in that chat, the chat note and learned rules; a freshly linked bridge often has thin history, so there is nothing to imitate.
+**Spec:** this document. Origin: a fresh install's drafts sounded generic; diagnosis 2026-11-27 in the session: the draft prompt only sees 30 messages, up to 30 of the user's own replies in that chat, the chat note and learned rules; a freshly linked bridge often has thin history, so there is nothing to imitate.
 
 ## Global Constraints
 
@@ -26,7 +26,7 @@
 
 ## Review Focus
 
-1. **Bridge down or phone offline mid-fill.** A start call that fails or a job that ends with `stopped_by == "error"` marks that chat failed with the error text and the queue moves on; the queue never stalls on a job that stays "running" forever (per-chat watchdog 30 min).
+1. **Bridge down or phone offline mid-fill.** A start call that fails or a job that ends with `stopped_by == "error"` marks that chat failed with the error text and the queue moves on; the queue never starts a second bridge job while one is running, and a job whose `batches` has not changed for 300 s (`stall_s`) is marked failed ("Stopped making progress") only after the bridge reports it over. A job that ends "phone has nothing older" without moving `oldest` is failed ("No older messages came back. Is your phone online?"); two such results in a row pause the rest of the queue (skipped, "Paused: phone not answering").
 2. **A chat with several JID forms (phone and LID).** Coverage merges forms into one row (`store._forms_of`); the backfill targets the form with the most stored messages, not whatever form the URL had.
 3. **A chat with zero stored messages.** The bridge cannot anchor a request (`no messages stored`); coverage shows 0 and fill skips it with reason "nothing to anchor on" instead of calling the bridge.
 4. **Server restart while a fill runs.** The queue is in memory; after a restart status shows idle, and pressing Fill again is safe (the bridge answers 409 for a chat it is still backfilling; treat 409 as "already running", wait for it, then continue).
@@ -102,7 +102,7 @@
 **Interfaces:**
 - Consumes: `ChatCoverage.backfill_jid`, `coverage()`, `THIN_OWN`, `FILL_CHATS` (Task 2).
 - Produces (`mcp_lib`): `start_history_backfill(chat_jid: str, until: str | None, max_batches: int) -> dict`, `history_backfill_status() -> dict` (thin wrappers over `whatsapp.*`).
-- Produces: `class BackfillQueue` with `__init__(self, start: Callable[[str, str | None, int], dict], status: Callable[[], dict], *, poll_s: float = 10.0, watchdog_s: float = 1800.0, today: Callable[[], date] = date.today)`; `enqueue(self, items: list[tuple[str, str]], depth: Literal["year", "3y", "all"]) -> int` (items are `(jid, backfill_jid)`; dedupes against queued and running; returns how many were added); `cancel(self) -> None` (drops the queue; a running bridge job finishes on its own); `snapshot(self) -> dict`; `async run(self) -> None` (loop; started by the app lifespan); `stop(self)`.
+- Produces: `class BackfillQueue` with `__init__(self, start: Callable[[str, str | None, int], dict], status: Callable[[], dict], *, poll_s: float = 10.0, stall_s: float = 300.0, today: Callable[[], date] = date.today)`; `enqueue(self, items: list[tuple[str, str]], depth: Literal["year", "3y", "all"]) -> int` (items are `(jid, backfill_jid)`; dedupes against queued and running; returns how many were added); `cancel(self) -> None` (drops the queue; a running bridge job finishes on its own); `snapshot(self) -> dict`; `async run(self) -> None` (loop; started by the app lifespan); `stop(self)`.
 - Produces: `snapshot()` shape `{"running": {"jid", "batches", "oldest"} | None, "queued": [jid, ...], "done": [{"jid", "result": "done" | "more" | "failed" | "skipped", "detail": str, "oldest": str | None}]}` (`done` keeps the last 100). Result mapping from bridge `stopped_by`: "phone has nothing older" or "reached until" → `done`; "max batches" → `more`; "error" → `failed` with the bridge error; no `backfill_jid` → `skipped` "nothing to anchor on".
 - Produces routes: `POST /api/history/fill` `{"scope": "thin" | "all", "depth": "year" | "3y" | "all"}` → `{"added": n, "status": snapshot}`; `POST /api/chats/{jid}/history` `{"depth"}` → same; `GET /api/history/status` → snapshot; `POST /api/history/cancel` → snapshot. Bad scope/depth → 422; unknown chat → 404.
 
@@ -112,7 +112,7 @@
   - `test_result_mapping`: each `stopped_by` above → the right `result`.
   - `test_start_failure_moves_on`: `start` returns `{"success": False, "error": "Request error: ..."}` → `failed`, next chat starts.
   - `test_conflict_waits`: `start` returns success False with a `job` that is running (bridge 409) → waits for that job, then records its result.
-  - `test_watchdog`: status keeps `running: True` past `watchdog_s` → `failed` "timed out", next starts.
+  - `test_watchdog`: `batches` unchanged past `stall_s` → `failed` "Stopped making progress", and the next chat starts only after the bridge reports the job not running; a slow job whose batches keep rising is not failed.
   - `test_dedupe_and_cancel`: enqueuing a queued jid adds 0; `cancel()` empties `queued`, keeps `running`.
   - `test_no_anchor_skipped`: item with `backfill_jid=None` → `skipped`, `start` never called.
   - Routes (`logged_in`, queue swapped for one with fakes): fill with scope "thin" enqueues only thin chats from coverage; bad depth → 422; unknown chat → 404; POST without Origin → rejected by the existing middleware (same assertion style as other state-changing route tests).
@@ -136,7 +136,7 @@
 - [ ] **Step 1: Write failing tests** (`HistorySection.test.tsx`, mocked `apiFetch`):
   - Renders totals ("12,345 messages in 87 chats, oldest Mar 2019") and the thin count ("9 chats have too little of your writing for good drafts").
   - The chat list shows name, message count, own count and oldest month; thin rows carry a "Thin" tag.
-  - Fill: a depth segmented control ("Last year" / "3 years" / "Everything", default "Last year") and a button "Fill thin chats" (and a text button "Fill all 50"); pressing it first shows the confirmation "Your phone will show a 'Finished syncing' notice for each batch. Keep it online and charging." with Continue / Cancel; Continue calls `fillHistory("thin", "year")`.
+  - Fill: a depth segmented control ("Last year" / "3 years" / "Everything", default "3 years") and a button "Fill thin chats" (and a text button "Fill all 50"); pressing it first shows the confirmation "Your phone will show a 'Finished syncing' notice for each batch. Keep it online and charging." with Continue / Cancel; Continue calls `fillHistory("thin", "3y")`.
   - While running: polls status every 5 s, shows "Filling {name}: {batches} batches, back to {oldest month}" and "{n} waiting", a Stop button calling `cancelHistory`; after the run, results per chat ("Done", "More available, run again", "Failed: {detail}", "Skipped: nothing to anchor on") and coverage refreshes.
   - `ChatAiSheet`: a "Load older messages" button calls `loadChatHistory(jid, "all")` and shows "Queued" / the running line for that chat.
 - [ ] **Step 2: Run** `pnpm test` → FAIL.

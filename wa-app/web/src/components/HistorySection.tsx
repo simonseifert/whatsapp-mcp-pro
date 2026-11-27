@@ -15,10 +15,11 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
 export function HistorySection() {
   const [coverage, setCoverage] = useState<HistoryCoverage | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
-  const [depth, setDepth] = useState<HistoryDepth>('year')
+  const [depth, setDepth] = useState<HistoryDepth>('3y')
   const [confirm, setConfirm] = useState<'thin' | 'all' | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
   const mounted = useRef(true)
 
   const loadCoverage = useCallback(() => {
@@ -65,9 +66,13 @@ export function HistorySection() {
   async function start(scope: 'thin' | 'all') {
     setBusy(true)
     setError(null)
+    setNote(null)
     try {
       const res = await fillHistory(scope, depth)
-      if (mounted.current) setStatus(res.status)
+      if (mounted.current) {
+        setStatus(res.status)
+        if (res.added === 0) setNote('Nothing to fill. Every chat is already queued or has enough history.')
+      }
     } catch (err) {
       if (mounted.current) setError(err instanceof Error ? err.message : "Couldn't start")
     } finally {
@@ -100,7 +105,7 @@ export function HistorySection() {
         <p className="settings-about">
           {thin === 0
             ? 'Every chat has enough of your writing for good drafts'
-            : `${thin} ${plural(thin, 'chat has', 'chats have')} too little of your writing for good drafts`}
+            : `${thin} of your ${coverage.chats.length} most active ${plural(thin, 'chat has', 'chats have')} too little of your writing for good drafts`}
         </p>
         <ul className="history-list">
           {coverage.chats.map((c) => (
@@ -146,6 +151,7 @@ export function HistorySection() {
             </button>
           </div>
         )}
+        {note && <p className="settings-about">{note}</p>}
         {error && (
           <p className="form-error" role="alert">
             {error}

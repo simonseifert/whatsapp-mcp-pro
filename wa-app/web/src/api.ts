@@ -99,7 +99,8 @@ export function fillHistory(scope: 'thin' | 'all', depth: HistoryDepth): Promise
   return apiFetch(`/api/history/fill`, { method: 'POST', body: JSON.stringify({ scope, depth }) })
 }
 
-/** Queues older messages for one chat. Throws ApiError (404 for chats that have no history to load). */
+/** Queues older messages for one chat. Throws ApiError, with 404 only for unknown chats
+ *  (and newsletters or broadcasts). A chat with nothing stored is still queued; it is skipped when its turn comes. */
 export function loadChatHistory(jid: string, depth: HistoryDepth): Promise<{ added: number; status: HistoryStatus }> {
   return apiFetch(`${chatPath(jid)}/history`, { method: 'POST', body: JSON.stringify({ depth }) })
 }

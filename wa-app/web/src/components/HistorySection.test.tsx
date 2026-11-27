@@ -56,7 +56,7 @@ describe('HistorySection', () => {
   it('shows totals and the thin count', async () => {
     await open()
     expect(screen.getByText('12,345 messages in 87 chats, oldest Mar 2019')).toBeTruthy()
-    expect(screen.getByText('2 chats have too little of your writing for good drafts')).toBeTruthy()
+    expect(screen.getByText('2 of your 3 most active chats have too little of your writing for good drafts')).toBeTruthy()
   })
 
   it('lists each chat with counts, oldest month and a Thin tag on thin ones', async () => {
@@ -74,14 +74,14 @@ describe('HistorySection', () => {
   it('confirms before filling, then queues the thin chats for the chosen depth', async () => {
     const fill = vi.spyOn(api, 'fillHistory').mockResolvedValue({ added: 2, status: { ...idle, queued: ['bo@x'] } })
     await open()
-    expect((screen.getByRole('radio', { name: 'Last year' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: '3 years' }) as HTMLInputElement).checked).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'Fill thin chats' }))
     expect(screen.getByText("Your phone will show a 'Finished syncing' notice for each batch. Keep it online and charging.")).toBeTruthy()
     expect(fill).not.toHaveBeenCalled()
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     })
-    expect(fill).toHaveBeenCalledWith('thin', 'year')
+    expect(fill).toHaveBeenCalledWith('thin', '3y')
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
   })
 
@@ -97,6 +97,26 @@ describe('HistorySection', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     })
     expect(fill).toHaveBeenCalledWith('all', 'all')
+  })
+
+  it('says so when a fill adds nothing', async () => {
+    vi.spyOn(api, 'fillHistory').mockResolvedValue({ added: 0, status: idle })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Fill thin chats' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    })
+    expect(screen.getByText('Nothing to fill. Every chat is already queued or has enough history.')).toBeTruthy()
+  })
+
+  it('shows a paused skip with its own reason', async () => {
+    vi.spyOn(api, 'fetchHistoryStatus').mockResolvedValue({
+      running: null,
+      queued: [],
+      done: [{ jid: 'cy@x', result: 'skipped', detail: 'Paused: phone not answering', oldest: null }],
+    })
+    await open()
+    expect(screen.getByText('Cy: Paused: phone not answering')).toBeTruthy()
   })
 
   it('shows a failed fill', async () => {

@@ -124,6 +124,7 @@ function DraftContextSection() {
             <output>{form.own_examples}</output>
           </span>
         </label>
+        <p className="settings-about">Higher values make drafts slower and can overflow small local models.</p>
         {error && (
           <p className="form-error" role="alert">
             {error}
