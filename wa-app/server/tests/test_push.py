@@ -1,5 +1,6 @@
 import sqlite3
 import stat
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -125,8 +126,27 @@ def _conn_with_row(settings: Settings) -> sqlite3.Connection:
     from wa_app import appdb
 
     conn = appdb.connect(settings)
+    _session(conn, "h", time.time() + 3600)
     push.save_subscription(conn, endpoint=GOOD, p256dh="p", auth="a", session_hash="h")
     return conn
+
+
+def _session(conn: sqlite3.Connection, token_hash: str, expires_at: float) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO sessions (token_hash, created_at, expires_at, user_agent) VALUES (?, 0, ?, NULL)",
+        (token_hash, int(expires_at)),
+    )
+
+
+def test_send_skips_expired_and_unknown_sessions(push_settings: Settings) -> None:
+    conn = _conn_with_row(push_settings)
+    _session(conn, "old", time.time() - 5)
+    push.save_subscription(conn, endpoint="https://web.push.apple.com/old", p256dh="p", auth="a", session_hash="old")
+    push.save_subscription(conn, endpoint="https://web.push.apple.com/gone", p256dh="p", auth="a", session_hash="none")
+    with patch("wa_app.push.webpush", return_value=MagicMock(status_code=201)) as sent:
+        assert push.send(push_settings, conn, {"title": "t"}) == 1
+    assert sent.call_count == 1
+    assert sent.call_args.kwargs["subscription_info"]["endpoint"] == GOOD
 
 
 def test_send_counts_accepted(push_settings: Settings) -> None:

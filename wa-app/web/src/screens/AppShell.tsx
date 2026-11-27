@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Route, Routes, useMatch } from 'react-router'
+import { setOpenChat } from '../live'
 import { TabBar } from '../components/TabBar'
 import { UpdateRow } from '../components/UpdateRow'
 import { Chat } from './Chat'
@@ -32,6 +33,11 @@ export function AppShell({ onLogout }: { onLogout: (everywhere: boolean) => void
   const jid = useMatch('/chat/:jid')?.params.jid
   const leaving = useLeavingJid(jid)
   const shown = jid ?? leaving
+  // Only the route's chat counts as open, not the one sliding out.
+  useEffect(() => {
+    setOpenChat(jid ?? null)
+    return () => setOpenChat(null)
+  }, [jid])
   return (
     <div className={jid ? 'shell has-chat' : 'shell'}>
       <section className="pane-list" aria-label="Navigation">

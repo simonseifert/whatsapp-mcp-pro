@@ -376,7 +376,13 @@ function NotificationsSection() {
     if (support !== 'ok') return
     let live = true
     pushState()
-      .then((s) => live && setState(s))
+      .then((s) => {
+        if (!live) return
+        if (s === 'not-ready') {
+          setState('off')
+          setNote("Notifications aren't ready yet. Close and reopen the app, then try again.")
+        } else setState(s)
+      })
       .catch(() => live && setState('off'))
     return () => {
       live = false

@@ -69,6 +69,7 @@ class Client:
     id: str
     queue: asyncio.Queue[Event]
     visible: bool = False
+    chat: str | None = None  # the chat this client has open (its canonical jid), reported with its visibility
     dropped: bool = False
     session: str | None = None  # hash of the session token it was opened with
     resume_point: int = 0  # the hello's id: everything after it is still queued for this client
@@ -153,12 +154,17 @@ class Hub:
     def client_count(self) -> int:
         return len(self._clients)
 
-    def set_visible(self, client_id: str, visible: bool) -> bool:
+    def set_visible(self, client_id: str, visible: bool, chat: str | None = None) -> bool:
         client = self._clients.get(client_id)
         if client is None:
             return False
         client.visible = visible
+        client.chat = chat
         return True
+
+    def chat_open(self, chat_jid: str) -> bool:
+        """True when any visible client reports this chat open (also read from the notifier's thread)."""
+        return any(c.visible and c.chat == chat_jid for c in list(self._clients.values()))
 
     def visible_count(self) -> int:
         return sum(1 for c in self._clients.values() if c.visible)
@@ -247,7 +253,10 @@ def routes(
         if not isinstance(body, dict) or not isinstance(body.get("visible"), bool):
             return JSONResponse({"error": "visible (true/false) required"}, status_code=400)
         client = body.get("client")
-        if not isinstance(client, str) or not hub.set_visible(client, body["visible"]):
+        chat = body.get("chat")
+        if chat is not None and not isinstance(chat, str):
+            return JSONResponse({"error": "chat must be a string or null"}, status_code=400)
+        if not isinstance(client, str) or not hub.set_visible(client, body["visible"], chat):
             return JSONResponse({"error": "Unknown client"}, status_code=404)
         return JSONResponse({"ok": True})
 

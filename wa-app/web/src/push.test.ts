@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { disablePush, enablePush, pushSupport, pushState } from './push'
+import { disablePush, enablePush, pushSupport, pushState, READY_TIMEOUT_MS } from './push'
 
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'
 const original = { ua: navigator.userAgent, matchMedia: window.matchMedia }
@@ -13,14 +13,15 @@ function mockStandalone(on: boolean) {
 }
 
 function mockPush(subscription: unknown = null) {
+  const unsubscribe = vi.fn().mockResolvedValue(true)
   const pushManager = {
-    subscribe: vi.fn().mockResolvedValue({ toJSON: () => ({ endpoint: 'https://web.push.apple.com/x', keys: { p256dh: 'p', auth: 'a' } }) }),
+    subscribe: vi.fn().mockResolvedValue({ unsubscribe, toJSON: () => ({ endpoint: 'https://web.push.apple.com/x', keys: { p256dh: 'p', auth: 'a' } }) }),
     getSubscription: vi.fn().mockResolvedValue(subscription),
   }
   Object.defineProperty(navigator, 'serviceWorker', { value: { ready: Promise.resolve({ pushManager }) }, configurable: true })
   vi.stubGlobal('PushManager', class {})
   ;(window as unknown as Record<string, unknown>).PushManager = class {}
-  return pushManager
+  return Object.assign(pushManager, { unsubscribe })
 }
 
 beforeEach(() => {
@@ -84,6 +85,32 @@ describe('enablePush', () => {
     expect(JSON.parse(post![1].body).endpoint).toBe('https://web.push.apple.com/x')
   })
 
+  it('unsubscribes the browser again when registering with the server fails', async () => {
+    const manager = mockPush()
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn().mockResolvedValue('granted') })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (path: string) =>
+        path === '/api/push/key'
+          ? new Response(JSON.stringify({ key: 'AQID' }), { status: 200 })
+          : new Response(JSON.stringify({ error: 'nope' }), { status: 422 }),
+      ),
+    )
+    expect(await enablePush()).toBe('failed')
+    expect(manager.unsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('fails after 5 s when the service worker never gets ready', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(navigator, 'serviceWorker', { value: { ready: new Promise(() => {}) }, configurable: true })
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn().mockResolvedValue('granted') })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ key: 'AQID' }), { status: 200 })))
+    const result = enablePush()
+    await vi.advanceTimersByTimeAsync(READY_TIMEOUT_MS)
+    expect(await result).toBe('failed')
+    vi.useRealTimers()
+  })
+
   it('returns failed when the server has no push key', async () => {
     mockPush()
     vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn().mockResolvedValue('granted') })
@@ -101,6 +128,20 @@ describe('pushState and disablePush', () => {
     expect(await pushState()).toBe('on')
     mockPush(null)
     expect(await pushState()).toBe('off')
+  })
+
+  it('reports not-ready after 5 s when the service worker never gets ready', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('Notification', { permission: 'default' })
+    Object.defineProperty(navigator, 'serviceWorker', { value: { ready: new Promise(() => {}) }, configurable: true })
+    const state = pushState()
+    let settled = false
+    void state.then(() => (settled = true))
+    await vi.advanceTimersByTimeAsync(READY_TIMEOUT_MS - 1)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await state).toBe('not-ready')
+    vi.useRealTimers()
   })
 
   it('unsubscribes locally and tells the server', async () => {

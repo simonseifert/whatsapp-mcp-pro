@@ -477,3 +477,26 @@ def test_resume_further_behind_than_the_queue_gets_one_resync() -> None:
     assert client.resume_point == events[10].cursor
     assert client.queue.get_nowait().name == "resync"
     assert client.queue.empty()
+
+
+def test_visibility_records_open_chat(logged_in: TestClient) -> None:
+    hub = live.current_hub()
+    client = hub.subscribe()
+    other = hub.subscribe()
+    jid = "385911110001@s.whatsapp.net"
+    assert not hub.chat_open(jid)
+    ok = logged_in.post("/api/live/visibility", json={"client": client.id, "visible": True, "chat": jid})
+    assert ok.status_code == 200
+    assert hub.chat_open(jid) and not hub.chat_open("other@s.whatsapp.net")
+    # Hidden: the chat is still on screen in a locked phone, but it no longer counts as open.
+    logged_in.post("/api/live/visibility", json={"client": client.id, "visible": False, "chat": jid})
+    assert not hub.chat_open(jid)
+    # Visible again with no chat (a list screen), then another client opens it.
+    logged_in.post("/api/live/visibility", json={"client": client.id, "visible": True, "chat": None})
+    assert not hub.chat_open(jid)
+    logged_in.post("/api/live/visibility", json={"client": other.id, "visible": True, "chat": jid})
+    assert hub.chat_open(jid)
+    hub.unsubscribe(other)
+    assert not hub.chat_open(jid)
+    bad = logged_in.post("/api/live/visibility", json={"client": client.id, "visible": True, "chat": 5})
+    assert bad.status_code == 400
