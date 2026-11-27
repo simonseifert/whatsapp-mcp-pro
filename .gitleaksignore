@@ -7,3 +7,5 @@ a182bf8a0523c82e88cd663eaa45caccffe1fdd2:wa-app/server/tests/test_api_ai_test_ro
 # Test fixtures: made-up client request UUIDs in variables named KEY (M3a media and private-reply tests; not credentials).
 7fc6ad6f9906dcdf8033019752bbcdcc575fbe10:wa-app/server/tests/test_sending_media.py:generic-api-key:13
 fdfe73ba3c88fab025412e186570045c73044674:wa-app/server/tests/test_private_reply.py:generic-api-key:13
+# Test fixture: a made-up client request UUID in a variable named KEY (not a credential).
+ceb655b583d0b77fe337733a42fcf257cfff3767:wa-app/server/tests/test_actions.py:generic-api-key:13

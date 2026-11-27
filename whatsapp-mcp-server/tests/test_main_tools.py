@@ -211,10 +211,15 @@ def test_chats_toolset_is_opt_in(monkeypatch):
 def test_chat_tools_call_the_wrappers(monkeypatch):
     main = reload_main(monkeypatch, "chats")
     seen = []
+    def fake(name):
+        def call(*a, **k):
+            seen.append((name, a, k))
+            return {"success": True}
+
+        return call
+
     for name in ("pin_chat", "mute_chat", "archive_chat", "mark_chat_unread"):
-        monkeypatch.setattr(
-            main, f"whatsapp_{name}", lambda *a, _n=name, **k: seen.append((_n, a, k)) or {"success": True}
-        )
+        monkeypatch.setattr(main, f"whatsapp_{name}", fake(name))
     assert main.pin_chat("a@s.whatsapp.net", False) == {"success": True}
     assert main.mute_chat("a@s.whatsapp.net", True, "8h") == {"success": True}
     assert main.archive_chat("a@s.whatsapp.net") == {"success": True}

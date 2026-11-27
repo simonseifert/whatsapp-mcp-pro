@@ -1423,7 +1423,7 @@ def send_file(
             return {"success": False, "error": MEDIA_UNAVAILABLE}
 
         url = f"{WHATSAPP_API_BASE_URL}/send"
-        payload = {"recipient": recipient, "media_path": media_path}
+        payload: dict[str, Any] = {"recipient": recipient, "media_path": media_path}
         if caption:
             payload["message"] = caption
         if quoted_message_id:
