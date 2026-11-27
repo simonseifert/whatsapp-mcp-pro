@@ -109,16 +109,6 @@ describe('HistorySection', () => {
     expect(screen.getByText('Nothing to fill. Every chat is already queued or has enough history.')).toBeTruthy()
   })
 
-  it('shows a paused skip with its own reason', async () => {
-    vi.spyOn(api, 'fetchHistoryStatus').mockResolvedValue({
-      running: null,
-      queued: [],
-      done: [{ jid: 'cy@x', result: 'skipped', detail: 'Paused: phone not answering', oldest: null }],
-    })
-    await open()
-    expect(screen.getByText('Cy: Paused: phone not answering')).toBeTruthy()
-  })
-
   it('shows a failed fill', async () => {
     vi.spyOn(api, 'fillHistory').mockRejectedValue(new api.ApiError(503, 'Bridge is down'))
     await open()
@@ -151,6 +141,7 @@ describe('HistorySection', () => {
         { jid: 'zz@x', result: 'failed', detail: 'phone offline', oldest: null },
         { jid: 'ana@x', result: 'failed', detail: '', oldest: null },
         { jid: 'ed@x', result: 'done', detail: 'Nothing older on your phone', oldest: null },
+        { jid: 'fi@x', result: 'done', detail: "Your phone didn't send anything older", oldest: null },
       ],
     })
     await tick()
@@ -161,6 +152,7 @@ describe('HistorySection', () => {
     expect(screen.getByText('zz: Failed: phone offline')).toBeTruthy()
     expect(screen.getByText('Ana: Failed')).toBeTruthy()
     expect(screen.getByText('ed: Done: Nothing older on your phone')).toBeTruthy()
+    expect(screen.getByText("fi: Done: Your phone didn't send anything older")).toBeTruthy()
     expect(screen.getByText('Last fill')).toBeTruthy()
     expect(api.fetchCoverage).toHaveBeenCalledTimes(2)
     // idle now: no more polling

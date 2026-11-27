@@ -8,7 +8,7 @@ export const RESULT: Record<HistoryDone['result'], (detail: string) => string> =
   done: (detail) => (detail ? `Done: ${detail}` : 'Done'),
   more: () => 'More available, run again',
   failed: (detail) => (detail ? `Failed: ${detail}` : 'Failed'),
-  skipped: (detail) => (detail.startsWith('Paused') ? detail : 'Skipped: nothing to anchor on'),
+  skipped: () => 'Skipped: nothing to anchor on',
 }
 
 /** The backfill queue's status: fetched on mount, then every 5 s while `isActive(status)` holds. Polling pauses while
