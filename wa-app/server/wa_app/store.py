@@ -871,6 +871,35 @@ def list_messages_page(
     return _build(conn, forms, rows), has_more
 
 
+AROUND_SPAN = 30
+
+
+def list_messages_around(
+    conn: sqlite3.Connection, chat_jid: str, message_id: str, *, span: int = AROUND_SPAN
+) -> tuple[list[MessageView], bool, bool] | None:
+    """The message and up to `span` messages on each side of it, oldest first, plus whether anything older and
+    whether anything newer exists. None when the message is unknown. Order is (instant, id), the same as the pages."""
+    forms = _forms_of(conn, chat_jid)
+    select = _message_select(_columns(conn, "messages"), forms)
+    target = conn.execute(select + " AND id = ? LIMIT 1", [*forms, message_id]).fetchall()
+    if not target:
+        return None
+    at = target[0][16]
+    older = conn.execute(
+        select + " AND (julianday(timestamp) < ? OR (julianday(timestamp) = ? AND id < ?))"
+        " ORDER BY julianday(timestamp) DESC, id DESC LIMIT ?",
+        [*forms, at, at, message_id, span + 1],
+    ).fetchall()
+    newer = conn.execute(
+        select + " AND (julianday(timestamp) > ? OR (julianday(timestamp) = ? AND id > ?))"
+        " ORDER BY julianday(timestamp), id LIMIT ?",
+        [*forms, at, at, message_id, span + 1],
+    ).fetchall()
+    rows = [*older[:span], target[0], *newer[:span]]
+    rows.sort(key=lambda r: (r[16], r[0]))
+    return _build(conn, forms, rows), len(older) > span, len(newer) > span
+
+
 def list_messages(
     conn: sqlite3.Connection, chat_jid: str, *, before_ts: str | None = None, limit: int = PAGE_SIZE
 ) -> list[MessageView]:

@@ -9,6 +9,7 @@ import type {
   HistoryCoverage,
   HistoryDepth,
   HistoryStatus,
+  SearchResponse,
 } from './api-types'
 
 export class ApiError extends Error {
@@ -290,4 +291,12 @@ export function sendMedia(jid: string, up: MediaUpload): Promise<SendResult> {
     }
     xhr.send(up.file)
   })
+}
+
+/** Message search, newest first, 30 a page. `chat` narrows it to one chat; `before` is the previous page's `next`. */
+export function searchMessages(q: string, opts: { chat?: string; before?: string | null } = {}): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q })
+  if (opts.chat) params.set('chat', opts.chat)
+  if (opts.before) params.set('before', opts.before)
+  return apiFetch<SearchResponse>(`/api/search?${params.toString()}`)
 }

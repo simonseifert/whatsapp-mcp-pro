@@ -7,6 +7,7 @@ import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
 import { ChatMenu } from '../components/ChatMenu'
 import { ChatAiSheet } from '../components/ChatAiSheet'
+import { ChatSearchBar } from '../components/ChatSearchBar'
 import { AttachSheet } from '../components/AttachSheet'
 import { Composer, type ComposerHandle } from '../components/Composer'
 import { DraftCard } from '../components/DraftCard'
@@ -36,6 +37,7 @@ import { useMarkRead } from '../useMarkRead'
 const GROUP_KINDS = ['group', 'community_group', 'announcement']
 const LOAD_OLDER_AT_PX = 160
 const AT_BOTTOM_PX = 80 // within this of the end counts as "at the bottom"
+const FLASH_MS = 1800 // how long a jumped-to message stays highlighted
 
 /** A quoted message as a minimal message, so a draft's quote can become the composer's reply-to. */
 function viewFromQuote(q: QuoteView, chatJid: string): MessageView {
@@ -81,7 +83,10 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
       setRiseKey(`${message.chat_jid}/${message.id}`)
     } else setUnseen(true)
   }, [])
-  const { detail, messages, hasMore, status, loadingOlder, loadOlder, retry: reload } = useChat(jid, onArrival)
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const around = params.get('around')
+  const { detail, messages, hasMore, hasNewer, status, loadingOlder, loadOlder, retry: reload } = useChat(jid, onArrival, around)
   const box = useOutbox(jid)
   useEffect(() => {
     aliases.current = box.aliases
@@ -93,8 +98,6 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     setReplyToState(m)
     setReplyChat(null)
   }, [])
-  const navigate = useNavigate()
-  const [params, setParams] = useSearchParams()
   const privateReply = params.get('reply') && params.get('from') ? { id: params.get('reply')!, from: params.get('from')! } : null
   const [menuId, setMenuId] = useState<string | null>(null)
   const chatJid = detail?.chat.jid ?? jid
@@ -113,6 +116,10 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const [menuOpen, setMenuOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
   const [attached, setAttached] = useState<File | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [flashId, setFlashId] = useState<string | null>(null)
+  const flashTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(flashTimer.current), [])
   const card = draft && draft.id !== hiddenDraft && ['pending', 'ready', 'failed'].includes(draft.status) ? draft : null
   useEffect(() => reconcile(jid, messages), [jid, messages])
   // The loaded messages with my optimistic reactions applied, then the texts still on their way out.
@@ -126,6 +133,33 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     ],
     [messages, box.reactions, box.pending, chatJid],
   )
+  /** Scrolls a loaded message to the middle of the view and highlights it for a moment. False when it is not loaded. */
+  const reveal = useCallback((id: string): boolean => {
+    const nodes = Array.from(scroller.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])
+    const el = nodes.find((e) => e.dataset.messageId === id)
+    if (!el) return false
+    el.scrollIntoView?.({ block: 'center' })
+    window.clearTimeout(flashTimer.current)
+    setFlashId(id)
+    flashTimer.current = window.setTimeout(() => setFlashId(null), FLASH_MS)
+    return true
+  }, [])
+  /** Search hits: show the message here when it is loaded, else reopen the chat on a window around it. */
+  const jumpTo = useCallback(
+    (id: string) => {
+      if (!reveal(id)) setParams({ around: id }, { replace: true })
+    },
+    [reveal, setParams],
+  )
+  // Arriving with ?around=: once its window has loaded, bring that message into view (once per target).
+  const revealed = useRef<string | null>(null)
+  useEffect(() => {
+    if (!around) {
+      revealed.current = null
+      return
+    }
+    if (status === 'ready' && revealed.current !== around && reveal(around)) revealed.current = around
+  }, [around, status, messages, reveal])
   const pendingByKey = new Map(box.pending.map((p) => [pendingId(p.key), p]))
   const menuMessage = menuId ? shown.find((m) => m.id === menuId) : undefined
 
@@ -200,7 +234,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   useMarkRead({
     active,
     jid,
-    ready: status === 'ready',
+    ready: status === 'ready' && !hasNewer, // a window around an old message is not the end of the chat
     newestKey: last ? `${last.chat_jid}/${last.id}` : undefined,
     upTo: last?.timestamp_iso,
     unread: detail?.chat.unread,
@@ -272,6 +306,16 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           </button>
         )}
       </header>
+      {searching && (
+        <ChatSearchBar
+          chat={chatJid}
+          onJump={jumpTo}
+          onClose={() => {
+            setSearching(false)
+            setFlashId(null)
+          }}
+        />
+      )}
       {loadingOlder && <p className="older">Loading older messages…</p>}
       {status === 'loading' && <p className="empty-state">Loading…</p>}
       {status === 'missing' && (
@@ -315,6 +359,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
                 groupAvatar={inGroup && !m.from_me}
                 tail={item.tail}
                 rise={key === riseKey}
+                flash={m.id === flashId}
                 delivery={
                   pending && {
                     state: pending.status,
@@ -347,6 +392,10 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
       {menuOpen && (
         <ChatMenu
           onClose={() => setMenuOpen(false)}
+          onSearch={() => {
+            setMenuOpen(false)
+            setSearching(true)
+          }}
           onAi={() => {
             setMenuOpen(false)
             setAiOpen(true)
@@ -382,6 +431,11 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             void navigator.clipboard?.writeText(menuMessage.text ?? '')
           }}
         />
+      )}
+      {hasNewer && status === 'ready' && (
+        <button className="newpill" type="button" onClick={() => setParams({}, { replace: true })}>
+          Jump to latest
+        </button>
       )}
       {unseen && (
         <button

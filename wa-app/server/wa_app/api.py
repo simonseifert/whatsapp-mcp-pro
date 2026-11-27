@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, history, live, media, push, sending, store, transcripts
+from . import appdb, auth, history, live, media, push, search, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
 from .ai import context as ai_context_store
@@ -54,7 +54,12 @@ def _too_long(passphrase: str) -> bool:
     return len(passphrase.encode()) > auth.MAX_PASSPHRASE_BYTES
 
 
-def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWorker | None = None) -> list[Route]:
+def routes(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    worker: drafts.DraftWorker | None = None,
+    indexer: search.Indexer | None = None,
+) -> list[Route]:
     def start_session(request: Request) -> Response:
         token = auth.new_session(conn, request.headers.get("user-agent"))
         response = JSONResponse({"ok": True})
@@ -307,11 +312,36 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         if before is not None and store.parse_ts(before) is None:
             return _error(400, "Bad 'before' timestamp")
 
+        around = request.query_params.get("around")
+
         def work(ro: sqlite3.Connection) -> Response:
+            if around:  # a window on both sides of one message, for jumping to a search hit
+                window = store.list_messages_around(ro, jid, around)
+                if window is None:
+                    return _error(404, "Message not found")
+                messages, has_more, has_newer = window
+                return JSONResponse(
+                    {"messages": [asdict(m) for m in messages], "has_more": has_more, "has_newer": has_newer}
+                )
             messages, has_more = store.list_messages_page(ro, jid, before_ts=before)
             return JSONResponse({"messages": [asdict(m) for m in messages], "has_more": has_more})
 
         return with_store(work)
+
+    async def message_search(request: Request) -> Response:
+        query = request.query_params.get("q", "")
+        chat = request.query_params.get("chat") or None
+        before = request.query_params.get("before")
+        try:
+            search.parse_cursor(before)
+        except ValueError:
+            return _error(400, "Bad 'before' cursor")
+
+        def work(ro: sqlite3.Connection) -> Response:
+            hits, nxt = search.search(conn, ro, query, chat_jid=chat, before=before)
+            return JSONResponse({"hits": [asdict(h) for h in hits], "next": nxt})
+
+        return await run_in_threadpool(with_store, work)
 
     async def chat_message(request: Request) -> Response:
         jid, mid = request.path_params["jid"], request.path_params["id"]
@@ -399,6 +429,8 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         if media_type not in ("audio", "ptt"):
             return _error(404, "Voice message not found")
         result = await run_in_threadpool(transcripts.get_or_make, conn, settings, mid, chat)
+        if indexer is not None and "error" not in result:
+            indexer.index_one(chat, mid)  # the transcript makes the voice message searchable
         if "error" in result:
             status = {
                 transcripts.NO_BACKEND: 503,
@@ -733,6 +765,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/ai/default", ai_default, methods=["PUT"]),
         Route("/api/ai/context", ai_context, methods=["GET", "PUT"]),
         Route("/api/chats/{jid}/ai", chat_ai_settings, methods=["GET", "PUT"]),
+        Route("/api/search", message_search, methods=["GET"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
         Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),
     ]

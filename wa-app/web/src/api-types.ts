@@ -64,7 +64,19 @@ export type MessageView = {
 }
 
 export type ChatDetail = { chat: ChatSummary; members_line: string | null }
-export type MessagesResponse = { messages: MessageView[]; has_more: boolean }
+/** `has_newer` is only sent for an `around` window: true when messages after it exist that it does not hold. */
+export type MessagesResponse = { messages: MessageView[]; has_more: boolean; has_newer?: boolean }
+
+/** One search result. `snippet` has the matched words in square brackets: show it with snippetParts, never as HTML. */
+export type SearchHit = {
+  chat_jid: string
+  chat_name: string
+  message_id: string
+  ts: string
+  sender_name: string | null
+  snippet: string
+}
+export type SearchResponse = { hits: SearchHit[]; next: string | null }
 
 /** A drafted reply the server prepared. Nothing in it is sent until the user taps Send. `quote` is set in groups. */
 export type DraftView = {

@@ -7,6 +7,7 @@ import { UpdateRow } from '../components/UpdateRow'
 import { Chat } from './Chat'
 import { ChatList } from './ChatList'
 import { Placeholder } from './Placeholder'
+import { Search } from './Search'
 import { Settings } from './Settings'
 
 /** Phone: one pane (list, then chat) above the tab bar. From 900 px: the list on the left, the open chat on the right. */
@@ -50,6 +51,7 @@ export function AppShell({ onLogout }: { onLogout: (everywhere: boolean) => void
         <UpdateRow banner />
         <Routes>
           <Route path="/" element={<ChatList />} />
+          <Route path="/search" element={<Search />} />
           <Route path="/archived" element={<ChatList archived />} />
           <Route path="/communities" element={<Placeholder title="Communities" />} />
           <Route path="/calls" element={<Placeholder title="Calls" />} />

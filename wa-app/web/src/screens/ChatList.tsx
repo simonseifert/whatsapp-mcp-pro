@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { ChatRow } from '../components/ChatRow'
 import { FilterChips, type Filter } from '../components/FilterChips'
 import { Icon } from '../components/Icon'
 import { fold } from '../format'
+import { MIN_QUERY } from '../snippet'
 import { useChats } from '../useChats'
 
 const SEARCH_DEBOUNCE_MS = 250
@@ -14,6 +15,9 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
   const [query, setQuery] = useState('')
   const { data, error, loadedQuery, retry, loadMore } = useChats(filter, archived, query)
   const sentinel = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+  const messageSearch = `/search?q=${encodeURIComponent(text.trim())}`
+  const canSearchMessages = !archived && text.trim().length >= MIN_QUERY
 
   useEffect(() => {
     const id = window.setTimeout(() => setQuery(text.trim()), SEARCH_DEBOUNCE_MS)
@@ -57,18 +61,27 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
           </Link>
         )}
         <h1 className="large-title">{archived ? 'Archived' : 'Chats'}</h1>
-        <label className="search">
-          <Icon name="search" size={19} />
-          <span className="sr">Search chats</span>
-          <input
-            type="search"
-            placeholder="Search"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            autoComplete="off"
-            enterKeyHint="search"
-          />
-        </label>
+        <form
+          role="search"
+          className="search-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (canSearchMessages) void navigate(messageSearch)
+          }}
+        >
+          <label className="search">
+            <Icon name="search" size={19} />
+            <span className="sr">Search chats</span>
+            <input
+              type="search"
+              placeholder="Search"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              autoComplete="off"
+              enterKeyHint="search"
+            />
+          </label>
+        </form>
       </header>
       {!archived && <FilterChips value={filter} onChange={setFilter} />}
       {error && !data && (
@@ -91,6 +104,21 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
                   <span>Archived</span>
                   <span className="cnt">
                     {data.archived_count}
+                    <Icon name="chevron" size={16} />
+                  </span>
+                </div>
+              </Link>
+            </li>
+          )}
+          {canSearchMessages && (
+            <li>
+              <Link className="row arch" to={messageSearch}>
+                <div className="av" aria-hidden="true">
+                  <Icon name="search" size={24} />
+                </div>
+                <div className="body">
+                  <span dir="auto">Search messages for “{text.trim()}”</span>
+                  <span className="cnt">
                     <Icon name="chevron" size={16} />
                   </span>
                 </div>

@@ -44,6 +44,8 @@ type Props = {
   groupAvatar?: boolean
   tail: boolean
   rise?: boolean
+  /** Briefly highlighted: the message a search result or jump brought into view. */
+  flash?: boolean
   delivery?: Delivery
   onRetry?: () => void
   onDismiss?: () => void
@@ -108,6 +110,7 @@ export function Bubble({
   groupAvatar = false,
   tail,
   rise = false,
+  flash = false,
   delivery,
   onRetry,
   onDismiss,
@@ -139,7 +142,7 @@ export function Bubble({
   )
   return (
     <div
-      className={`msg ${side}${groupAvatar ? ' gav' : ''}${tail ? ' tail' : ' run'}${rise ? ' rise' : ''}${delivery ? ` ${delivery.state}` : ''}`}
+      className={`msg ${side}${groupAvatar ? ' gav' : ''}${tail ? ' tail' : ' run'}${rise ? ' rise' : ''}${flash ? ' flash' : ''}${delivery ? ` ${delivery.state}` : ''}`}
       data-message-id={m.id}
       {...gestures.handlers}
     >

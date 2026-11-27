@@ -10,4 +10,11 @@ describe('ChatMenu', () => {
     expect(container.querySelector('.menu-wrap')?.classList.contains('menu-wrap-top-right')).toBe(true)
     expect(screen.getByRole('button', { name: 'AI drafts' })).toBeTruthy()
   })
+
+  it('offers a search only when the chat can open one', () => {
+    const { rerender } = render(<ChatMenu onAi={() => {}} onClose={() => {}} />)
+    expect(screen.queryByRole('button', { name: 'Search' })).toBeNull()
+    rerender(<ChatMenu onAi={() => {}} onSearch={() => {}} onClose={() => {}} />)
+    expect(screen.getByRole('button', { name: 'Search' })).toBeTruthy()
+  })
 })

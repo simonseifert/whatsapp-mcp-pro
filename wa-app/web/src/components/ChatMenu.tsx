@@ -2,8 +2,8 @@ import { useRef } from 'react'
 import { Icon } from './Icon'
 import { useDialog } from './useDialog'
 
-/** The chat header's menu: one item for now, the AI settings. */
-export function ChatMenu({ onAi, onClose }: { onAi: () => void; onClose: () => void }) {
+/** The chat header's menu: search in this chat, and the AI settings. */
+export function ChatMenu({ onAi, onSearch, onClose }: { onAi: () => void; onSearch?: () => void; onClose: () => void }) {
   const dialog = useRef<HTMLDivElement>(null)
   useDialog(dialog, onClose)
   return (
@@ -14,6 +14,12 @@ export function ChatMenu({ onAi, onClose }: { onAi: () => void; onClose: () => v
           <Icon name="sparkle" size={20} />
           AI drafts
         </button>
+        {onSearch && (
+          <button className="menu-item" type="button" onClick={onSearch}>
+            <Icon name="search" size={20} />
+            Search
+          </button>
+        )}
       </div>
     </div>
   )

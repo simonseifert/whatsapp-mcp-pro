@@ -1,6 +1,7 @@
 """Voice-note transcripts: stored in app.db, one transcription per message, never written to messages.db."""
 
 import sqlite3
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -244,3 +245,14 @@ def test_unreadable_message_store_fails_closed(settings, groq_stand_in, monkeypa
     result = transcripts.get_or_make(conn, settings, "V1", FAMILY)
     assert result == {"error": "Local transcription unavailable"}
     assert groq_stand_in == []
+
+
+def test_a_new_transcript_makes_the_voice_note_searchable(logged_in: TestClient, transcriber, voice_id):
+    assert logged_in.get("/api/search", params={"q": "mlijeko"}).json()["hits"] == []
+    assert logged_in.post(f"/api/transcripts/{FAMILY}/{voice_id}").status_code == 200
+    for _ in range(100):  # the index updates on its own thread
+        hits = logged_in.get("/api/search", params={"q": "mlijeko"}).json()["hits"]
+        if hits:
+            break
+        time.sleep(0.05)
+    assert [(h["chat_jid"], h["message_id"]) for h in hits] == [(FAMILY, voice_id)]
