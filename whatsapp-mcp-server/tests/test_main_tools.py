@@ -211,6 +211,7 @@ def test_chats_toolset_is_opt_in(monkeypatch):
 def test_chat_tools_call_the_wrappers(monkeypatch):
     main = reload_main(monkeypatch, "chats")
     seen = []
+
     def fake(name):
         def call(*a, **k):
             seen.append((name, a, k))
