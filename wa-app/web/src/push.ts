@@ -76,3 +76,23 @@ export async function pushState(): Promise<'on' | 'off' | 'denied' | 'not-ready'
   if (!registration) return 'not-ready'
   return (await registration.pushManager.getSubscription()) ? 'on' : 'off'
 }
+
+/** Once per app load: re-register an existing browser subscription so the server binds it to this login (silent). */
+let resynced = false
+export async function resyncPush(): Promise<void> {
+  if (resynced || pushSupport() !== 'ok' || Notification.permission !== 'granted') return
+  resynced = true
+  try {
+    const registration = await readyOrNull()
+    const subscription = await registration?.pushManager.getSubscription()
+    if (!subscription) return
+    await apiFetch('/api/push/subscribe', { method: 'POST', body: JSON.stringify(subscription.toJSON()) })
+  } catch {
+    // Best effort: the next app load tries again.
+  }
+}
+
+/** For tests: forget that this load already resynced. */
+export const resetResync = () => {
+  resynced = false
+}

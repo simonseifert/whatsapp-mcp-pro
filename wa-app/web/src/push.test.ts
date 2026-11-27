@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { disablePush, enablePush, pushSupport, pushState, READY_TIMEOUT_MS } from './push'
+import { disablePush, enablePush, pushSupport, pushState, READY_TIMEOUT_MS, resetResync, resyncPush } from './push'
 
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'
 const original = { ua: navigator.userAgent, matchMedia: window.matchMedia }
@@ -152,5 +152,38 @@ describe('pushState and disablePush', () => {
     await disablePush()
     expect(unsubscribe).toHaveBeenCalled()
     expect(fetchMock.mock.calls[0][0]).toBe('/api/push/unsubscribe')
+  })
+})
+
+describe('resyncPush', () => {
+  beforeEach(resetResync)
+
+  it('re-registers an existing subscription once per load', async () => {
+    mockPush({ endpoint: 'https://web.push.apple.com/x', toJSON: () => ({ endpoint: 'https://web.push.apple.com/x', keys: { p256dh: 'p', auth: 'a' } }) })
+    vi.stubGlobal('Notification', { permission: 'granted' })
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await resyncPush()
+    await resyncPush()
+    const posts = fetchMock.mock.calls.filter(([p]) => p === '/api/push/subscribe')
+    expect(posts).toHaveLength(1)
+    expect(JSON.parse(posts[0][1].body).endpoint).toBe('https://web.push.apple.com/x')
+  })
+
+  it('does nothing without a subscription or permission, and swallows failures', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('offline'))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('Notification', { permission: 'granted' })
+    mockPush(null)
+    await resyncPush()
+    resetResync()
+    vi.stubGlobal('Notification', { permission: 'default' })
+    mockPush({ endpoint: 'e', toJSON: () => ({ endpoint: 'e' }) })
+    await resyncPush()
+    expect(fetchMock).not.toHaveBeenCalled()
+    resetResync()
+    vi.stubGlobal('Notification', { permission: 'granted' })
+    await expect(resyncPush()).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
