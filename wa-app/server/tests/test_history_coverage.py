@@ -118,6 +118,11 @@ def test_limit_and_order(conns) -> None:
     assert stamps == sorted(stamps, reverse=True)
 
 
+def test_backfill_oldest_is_the_anchor_forms_oldest(conns) -> None:
+    row = _row(history.coverage(*conns), ANA)
+    assert row.backfill_oldest and row.oldest and row.backfill_oldest >= row.oldest
+
+
 def test_totals(conns) -> None:
     t = history.totals(conns[0])
     assert t["messages"] > 150 and t["chats"] > 5 and t["oldest"]

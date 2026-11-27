@@ -5,7 +5,7 @@ import logging
 import sqlite3
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
@@ -29,6 +29,7 @@ class ChatCoverage:
     last_active: str | None
     thin: bool
     backfill_jid: str | None  # the stored form of the chat with the most messages; None when nothing is stored
+    backfill_oldest: str | None = None  # the oldest stored message of that form: where a backfill starts from
 
 
 def _skipped(jid: str) -> bool:
@@ -122,6 +123,7 @@ def _cover(
         last_active=last_active,
         thin=own_texts < THIN_OWN,
         backfill_jid=best[0] if best else None,
+        backfill_oldest=_iso(best[3]) if best else None,
     )
 
 
@@ -156,6 +158,14 @@ _NO_ANSWER_LIMIT = 2  # results in a row with no answer from the phone before th
 logger = logging.getLogger("wa_app.history")
 
 
+def _moved(before: str | None, after: str | None) -> bool:
+    """Did the job's oldest message get older than the chat's oldest stored one before the start?"""
+    new, old = store.parse_ts(after), store.parse_ts(before)
+    if new is None:
+        return False
+    return old is None or new < old
+
+
 class BackfillQueue:
     """Backfills chats one at a time through the bridge's own per-chat job: start it, poll its status, move on.
 
@@ -181,23 +191,26 @@ class BackfillQueue:
         self._no_answer = 0
         self._today = today
         self._clock = clock
-        self._queue: deque[tuple[str, str | None, Depth]] = deque()
+        self._queue: deque[tuple[str, str | None, Depth, str | None]] = deque()
         self._running: dict | None = None
         self._done: deque[dict] = deque(maxlen=_DONE_KEPT)
         self._wake = asyncio.Event()
         self._stopped = False
 
-    def enqueue(self, items: list[tuple[str, str | None]], depth: Depth) -> int:
-        """Add `(jid, backfill_jid)` chats; ones already queued or running are left alone. Returns how many were added."""
+    def enqueue(
+        self, items: Sequence[tuple[str, str | None] | tuple[str, str | None, str | None]], depth: Depth
+    ) -> int:
+        """Add `(jid, backfill_jid)` or `(jid, backfill_jid, oldest)` chats, `oldest` being the oldest stored message
+        before the start (what "the phone sent nothing older" is judged against); ones already queued or running are left alone. Returns how many were added."""
         known = {q[0] for q in self._queue}
         if self._running:
             known.add(self._running["jid"])
         added = 0
-        for jid, backfill_jid in items:
+        for jid, backfill_jid, *rest in items:
             if jid in known:
                 continue
             known.add(jid)
-            self._queue.append((jid, backfill_jid, depth))
+            self._queue.append((jid, backfill_jid, depth, rest[0] if rest else None))
             added += 1
         if added:
             self._wake.set()
@@ -206,6 +219,7 @@ class BackfillQueue:
     def cancel(self) -> None:
         """Drop what is queued. A job the bridge is already running finishes on its own."""
         self._queue.clear()
+        self._no_answer = 0
 
     def stop(self) -> None:
         self._stopped = True
@@ -224,10 +238,10 @@ class BackfillQueue:
                 self._wake.clear()
                 await self._wake.wait()
                 continue
-            jid, backfill_jid, depth = self._queue.popleft()
+            jid, backfill_jid, depth, before = self._queue.popleft()
             self._running = {"jid": jid, "batches": 0, "oldest": None}
             try:
-                result, detail, oldest = await self._process(backfill_jid, depth)
+                result, detail, oldest = await self._process(backfill_jid, depth, before)
             except Exception as exc:  # noqa: BLE001  # one chat never takes the queue down; the type only, no text
                 result, detail, oldest = "failed", f"unexpected error ({type(exc).__name__})", None
             self._running = None
@@ -245,7 +259,7 @@ class BackfillQueue:
         days = _DEPTH_DAYS[depth]
         return None if days is None else (self._today() - timedelta(days=days)).isoformat()
 
-    async def _process(self, backfill_jid: str | None, depth: Depth) -> tuple[str, str, str | None]:
+    async def _process(self, backfill_jid: str | None, depth: Depth, before: str | None) -> tuple[str, str, str | None]:
         if backfill_jid is None:
             return "skipped", "nothing to anchor on", None
         await self._wait_idle()
@@ -254,7 +268,7 @@ class BackfillQueue:
         if not started.get("success") and not (isinstance(job, dict) and job.get("running")):
             return "failed", str(started.get("error") or "the bridge refused the backfill"), None
         watched = job.get("chat_jid", backfill_jid) if isinstance(job, dict) else backfill_jid
-        return await self._wait(watched)
+        return await self._wait(watched, before)
 
     async def _wait_idle(self) -> None:
         """Hold off while the bridge runs any backfill job (one left over from before an app restart too)."""
@@ -264,12 +278,10 @@ class BackfillQueue:
                 return
             await asyncio.sleep(self._poll_s)
 
-    async def _wait(self, chat_jid: str) -> tuple[str, str, str | None]:
+    async def _wait(self, chat_jid: str, before: str | None) -> tuple[str, str, str | None]:
         misses = 0
         last_batches: object = None
         moved_at = self._clock()
-        first_oldest: str | None = None
-        seen = False
         stalled = False
         while True:
             await asyncio.sleep(self._poll_s)
@@ -284,8 +296,6 @@ class BackfillQueue:
                 continue
             misses = 0
             oldest = job.get("oldest") or None
-            if not seen:
-                seen, first_oldest = True, oldest
             batches = job.get("batches", 0)
             if batches != last_batches:
                 last_batches, moved_at = batches, self._clock()
@@ -299,7 +309,7 @@ class BackfillQueue:
                 return "failed", _STALLED, oldest
             stopped_by = job.get("stopped_by") or ""
             if stopped_by == _NOTHING_OLDER:
-                if oldest == first_oldest:
+                if not _moved(before, oldest):
                     return "failed", _NO_ANSWER, oldest
                 return "done", stopped_by, oldest
             if stopped_by == "reached until":

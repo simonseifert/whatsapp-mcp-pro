@@ -252,7 +252,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
 
         return await run_in_threadpool(with_store, work)
 
-    def fill_response(request: Request, items: list[tuple[str, str | None]], depth: str) -> Response:
+    def fill_response(request: Request, items: list[tuple[str, str | None, str | None]], depth: str) -> Response:
         """Runs on the event loop: the queue is not thread-safe, so never call this from the threadpool."""
         queue: history.BackfillQueue = request.app.state.backfill
         added = queue.enqueue(items, depth)  # type: ignore[arg-type]
@@ -265,8 +265,12 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         if scope not in ("thin", "all") or depth not in _DEPTHS:
             return _error(422, "'scope' must be thin or all and 'depth' year, 3y or all")
 
-        def work(ro: sqlite3.Connection) -> list[tuple[str, str | None]] | Response:
-            return [(c.jid, c.backfill_jid) for c in history.coverage(ro, conn) if scope == "all" or c.thin]
+        def work(ro: sqlite3.Connection) -> list[tuple[str, str | None, str | None]] | Response:
+            return [
+                (c.jid, c.backfill_jid, c.backfill_oldest)
+                for c in history.coverage(ro, conn)
+                if scope == "all" or c.thin
+            ]
 
         items = await run_in_threadpool(with_store, work)
         if isinstance(items, Response):
@@ -286,7 +290,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         found = await run_in_threadpool(with_store, work)
         if isinstance(found, Response):
             return found
-        return fill_response(request, [(found.jid, found.backfill_jid)], depth)
+        return fill_response(request, [(found.jid, found.backfill_jid, found.backfill_oldest)], depth)
 
     async def history_status(request: Request) -> Response:
         return JSONResponse(request.app.state.backfill.snapshot())
