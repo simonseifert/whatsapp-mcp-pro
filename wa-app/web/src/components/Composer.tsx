@@ -1,6 +1,8 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
-import type { MessageView } from '../api-types'
+import { fetchQuickReplies, markQuickReplyUsed } from '../api'
+import type { MessageView, QuickReply } from '../api-types'
 import { Icon } from './Icon'
+import { filterReplies, QuickReplyPicker } from './QuickReplyPicker'
 import { RecordBar } from './RecordBar'
 import { canRecord, useRecorder, voiceFilename } from '../useRecorder'
 
@@ -126,6 +128,32 @@ export function Composer({
     }
   }, [editId, editText])
 
+  // Typing "/" at the very start opens the quick reply picker (never while editing a sent message).
+  const [replies, setReplies] = useState<QuickReply[] | null>(null)
+  const [pickerOff, setPickerOff] = useState(false)
+  const slash = !editing && /^\/[^\s]*$/.test(text)
+  const pickerOpen = slash && !pickerOff
+  useEffect(() => {
+    if (!pickerOpen || replies) return
+    let live = true
+    fetchQuickReplies()
+      .then((r) => live && setReplies(r))
+      .catch(() => live && setReplies([]))
+    return () => {
+      live = false
+    }
+  }, [pickerOpen, replies])
+  const matches = pickerOpen && replies ? filterReplies(replies, text.slice(1)) : []
+
+  function pick(reply: QuickReply) {
+    setText(reply.text)
+    current.current = reply.text
+    onTextChange?.(reply.text)
+    box.current?.focus()
+    setReplies((all) => all && all.map((r) => (r.shortcut === reply.shortcut ? { ...r, used: r.used + 1 } : r)))
+    void markQuickReplyUsed(reply.shortcut).catch(() => undefined) // the count is a nicety; the text is already in the box
+  }
+
   const current = useRef(text)
   useEffect(() => {
     current.current = text
@@ -162,6 +190,11 @@ export function Composer({
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Escape' && pickerOpen) {
+      event.preventDefault()
+      setPickerOff(true)
+      return
+    }
     if (event.key === 'Escape' && isEditing) {
       event.preventDefault()
       onCancelEdit?.()
@@ -170,7 +203,8 @@ export function Composer({
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
     if (!enterSends()) return
     event.preventDefault()
-    submit()
+    if (pickerOpen && matches.length > 0) pick(matches[0])
+    else submit()
   }
 
   return (
@@ -197,6 +231,7 @@ export function Composer({
           </button>
         </div>
       )}
+      {pickerOpen && replies && <QuickReplyPicker replies={matches} onPick={pick} />}
       {tooLong && (
         <p className="toolong" role="alert">
           Message too long ({text.length} / {MAX_TEXT})
@@ -285,6 +320,7 @@ export function Composer({
           enterKeyHint="enter"
           onChange={(e) => {
             setText(e.target.value)
+            if (!e.target.value.startsWith('/')) setPickerOff(false) // a new "/" opens it again after Escape
             onTextChange?.(e.target.value)
           }}
           onKeyDown={onKeyDown}

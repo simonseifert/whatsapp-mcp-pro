@@ -12,6 +12,7 @@ import {
 import type { BackendCfg, BackendInput, BackendTestResult, DraftContext } from '../api-types'
 import { HistorySection } from '../components/HistorySection'
 import { BackendForm } from '../components/BackendForm'
+import { QuickRepliesSection } from '../components/QuickRepliesSection'
 import { UpdateRow } from '../components/UpdateRow'
 import { Lists } from './Lists'
 import { disablePush, enablePush, pushState, pushSupport } from '../push'
@@ -484,6 +485,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
             Lists
           </button>
         </div>
+        <QuickRepliesSection />
         <fieldset className="settings-group">
           <legend>Theme</legend>
           <div className="segmented">

@@ -5,6 +5,7 @@ import type {
   BackendTestResult,
   ChatAi,
   ChatList,
+  QuickReply,
   ChatSummary,
   FilterChip,
   ForwardResult,
@@ -334,6 +335,28 @@ export async function updateList(id: number, patch: { name?: string; position?: 
 
 export async function deleteList(id: number): Promise<void> {
   await apiFetch(`/api/lists/${id}`, { method: 'DELETE' })
+}
+
+/** Saved replies, most used first. */
+export async function fetchQuickReplies(): Promise<QuickReply[]> {
+  return (await apiFetch<{ quick_replies: QuickReply[] }>('/api/quick-replies')).quick_replies
+}
+
+export async function createQuickReply(shortcut: string, text: string): Promise<void> {
+  await apiFetch('/api/quick-replies', { method: 'POST', body: JSON.stringify({ shortcut, text }) })
+}
+
+export async function updateQuickReply(shortcut: string, text: string): Promise<void> {
+  await apiFetch(`/api/quick-replies/${encodeURIComponent(shortcut)}`, { method: 'PUT', body: JSON.stringify({ text }) })
+}
+
+export async function deleteQuickReply(shortcut: string): Promise<void> {
+  await apiFetch(`/api/quick-replies/${encodeURIComponent(shortcut)}`, { method: 'DELETE' })
+}
+
+/** Counts one use; the picker calls it when a reply is chosen. */
+export async function markQuickReplyUsed(shortcut: string): Promise<void> {
+  await apiFetch(`/api/quick-replies/${encodeURIComponent(shortcut)}/use`, { method: 'POST' })
 }
 
 export async function changeListChats(id: number, change: { add: string[]; remove: string[] }): Promise<void> {

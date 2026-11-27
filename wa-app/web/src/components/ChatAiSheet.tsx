@@ -25,7 +25,7 @@ const toForm = (ai: ChatAi): Form => ({
   rules: ai.rules ?? '',
 })
 
-/** The chat's AI settings: drafts on or off, which AI, local only, a note, and the rules learned from replies. */
+/** The chat's AI settings: the mode (My reply or Suggestions, which is `enabled`), which AI, local only, a note, and the rules learned from replies. */
 export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void }) {
   const [form, setForm] = useState<Form | null>(null)
   const [backends, setBackends] = useState<BackendsResponse>({ backends: [], default_id: null })
@@ -136,16 +136,39 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
         {!form && !failed && <p>Loading…</p>}
         {form && (
           <>
-            <label className="sheet-row">
-              <span>Drafts in this chat</span>
-              <input
-                type="checkbox"
-                role="switch"
-                aria-label="Drafts in this chat"
-                checked={form.enabled}
-                onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-              />
-            </label>
+            <div className="mode-list" role="radiogroup" aria-label="AI mode">
+              <label className="mode-row">
+                <input
+                  type="radio"
+                  name="ai-mode"
+                  checked={!form.enabled}
+                  onChange={() => setForm({ ...form, enabled: false })}
+                />
+                <span>
+                  <b>My reply</b>
+                  <small>No AI help</small>
+                </span>
+              </label>
+              <label className="mode-row">
+                <input
+                  type="radio"
+                  name="ai-mode"
+                  checked={form.enabled}
+                  onChange={() => setForm({ ...form, enabled: true })}
+                />
+                <span>
+                  <b>Suggestions</b>
+                  <small>AI drafts, you send</small>
+                </span>
+              </label>
+              <label className="mode-row disabled">
+                <input type="radio" name="ai-mode" checked={false} readOnly aria-disabled="true" onClick={(e) => e.preventDefault()} />
+                <span>
+                  <b>Auto</b>
+                  <small>Coming later</small>
+                </span>
+              </label>
+            </div>
             <label className="sheet-row">
               <span>AI</span>
               <select value={form.backend} onChange={(e) => setForm({ ...form, backend: e.target.value })}>

@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS lists (id INTEGER PRIMARY KEY, name TEXT NOT NULL, po
 CREATE TABLE IF NOT EXISTS list_chats (
     list_id INTEGER NOT NULL, chat_jid TEXT NOT NULL, PRIMARY KEY (list_id, chat_jid)
 );
+CREATE TABLE IF NOT EXISTS quick_replies (
+    shortcut TEXT PRIMARY KEY, text TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(
     body, chat_jid UNINDEXED, message_id UNINDEXED, ts UNINDEXED, tokenize="unicode61 remove_diacritics 2"
 );

@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, history, lists, live, media, push, search, sending, store, transcripts
+from . import appdb, auth, history, lists, live, media, push, quick_replies, search, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
 from .ai import context as ai_context_store
@@ -293,6 +293,43 @@ def routes(
             return JSONResponse({"ok": True})
 
         return await run_in_threadpool(with_store, work)
+
+    async def quick_replies_index(request: Request) -> Response:
+        if request.method == "GET":
+            with appdb.db_lock:
+                return JSONResponse({"quick_replies": quick_replies.list_all(conn)})
+        body = await body_of(request)
+        if not isinstance(body, dict):
+            return _error(422, "A JSON object is required")
+        try:
+            with appdb.db_lock:
+                made = quick_replies.create(conn, body.get("shortcut"), body.get("text"))
+        except quick_replies.QuickReplyError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse(made)
+
+    async def quick_reply_item(request: Request) -> Response:
+        shortcut = request.path_params["shortcut"]
+        body = await body_of(request) if request.method == "PUT" else None
+        if request.method == "PUT" and not isinstance(body, dict):
+            return _error(422, "A JSON object is required")
+        try:
+            with appdb.db_lock:
+                if isinstance(body, dict):
+                    quick_replies.update(conn, shortcut, body.get("text"))
+                else:
+                    quick_replies.delete(conn, shortcut)
+        except quick_replies.QuickReplyError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse({"ok": True})
+
+    async def quick_reply_use(request: Request) -> Response:
+        try:
+            with appdb.db_lock:
+                quick_replies.mark_used(conn, request.path_params["shortcut"])
+        except quick_replies.QuickReplyError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse({"ok": True})
 
     def with_store(work):  # noqa: ANN001, ANN202
         try:
@@ -878,6 +915,9 @@ def routes(
         Route("/api/lists", lists_index, methods=["GET", "POST"]),
         Route("/api/lists/{id}/chats", list_chats, methods=["PUT"]),
         Route("/api/lists/{id}", list_item, methods=["PUT", "DELETE"]),
+        Route("/api/quick-replies", quick_replies_index, methods=["GET", "POST"]),
+        Route("/api/quick-replies/{shortcut}/use", quick_reply_use, methods=["POST"]),
+        Route("/api/quick-replies/{shortcut}", quick_reply_item, methods=["PUT", "DELETE"]),
         Route("/api/history/coverage", history_coverage, methods=["GET"]),
         Route("/api/history/fill", history_fill, methods=["POST"]),
         Route("/api/history/status", history_status, methods=["GET"]),

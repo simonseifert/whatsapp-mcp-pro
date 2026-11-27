@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as api from '../api'
 import type { MessageView } from '../api-types'
 import { Composer, MIC_EXPLAINER } from './Composer'
 
@@ -149,5 +150,62 @@ describe('Composer edit mode', () => {
   it('a normal composer is not flagged as editing', () => {
     render(<Composer replyTo={null} onCancelReply={() => {}} onSend={() => {}} />)
     expect(document.querySelector('.composer')?.getAttribute('data-editing')).toBe('false')
+  })
+})
+
+describe('Composer quick replies', () => {
+  const list = [
+    { shortcut: 'thanks', text: 'Thanks a lot', used: 1 },
+    { shortcut: 'omw', text: 'On my way', used: 0 },
+  ]
+  beforeEach(() => {
+    vi.spyOn(api, 'fetchQuickReplies').mockResolvedValue(list)
+    vi.spyOn(api, 'markQuickReplyUsed').mockResolvedValue(undefined)
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  const box = () => screen.getByLabelText('Message') as HTMLTextAreaElement
+
+  it('opens on a leading slash, filters as you type, inserts the text and never sends', async () => {
+    const onSend = vi.fn()
+    render(<Composer replyTo={null} onCancelReply={() => {}} onSend={onSend} />)
+    fireEvent.change(box(), { target: { value: '/' } })
+    expect(await screen.findAllByRole('option')).toHaveLength(2)
+    fireEvent.change(box(), { target: { value: '/om' } })
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('option', { name: /omw/ }))
+    expect(box().value).toBe('On my way')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(onSend).not.toHaveBeenCalled()
+    expect(api.markQuickReplyUsed).toHaveBeenCalledWith('omw')
+  })
+
+  it('does not open for a slash in the middle of the text', () => {
+    render(<Composer replyTo={null} onCancelReply={() => {}} onSend={() => {}} />)
+    fireEvent.change(box(), { target: { value: 'a/b' } })
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(api.fetchQuickReplies).not.toHaveBeenCalled()
+  })
+
+  it('closes on Escape and when the text has a space', async () => {
+    render(<Composer replyTo={null} onCancelReply={() => {}} onSend={() => {}} />)
+    fireEvent.change(box(), { target: { value: '/' } })
+    await screen.findByRole('listbox')
+    fireEvent.keyDown(box(), { key: 'Escape' })
+    expect(screen.queryByRole('listbox')).toBeNull()
+    fireEvent.change(box(), { target: { value: '' } })
+    fireEvent.change(box(), { target: { value: '/t' } })
+    await screen.findByRole('listbox')
+    fireEvent.change(box(), { target: { value: '/t x' } })
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
+  it('stays closed in edit mode, even when the edited text starts with a slash', () => {
+    const own = { id: 'm1', from_me: true, text: '/thanks', ts: '2026-01-01T00:00:00Z' } as unknown as MessageView
+    render(<Composer replyTo={null} onCancelReply={() => {}} onSend={() => {}} editing={own} onSaveEdit={() => {}} />)
+    expect(box().value).toBe('/thanks')
+    fireEvent.change(box(), { target: { value: '/' } })
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(api.fetchQuickReplies).not.toHaveBeenCalled()
   })
 })

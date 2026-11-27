@@ -30,6 +30,8 @@ export type FilterChip = { id: string; label: string }
 /** A custom chat list. `member` is only present when the request named a chat. */
 export type ChatList = { id: number; name: string; position: number; count: number; member?: boolean }
 
+export type QuickReply = { shortcut: string; text: string; used: number }
+
 export type ChatsResponse = { chats: ChatSummary[]; archived_count: number; has_more: boolean }
 
 export type MediaView = {

@@ -30,7 +30,7 @@ afterEach(() => {
 describe('ChatAiSheet', () => {
   it('disables cloud backends with the reason when Local only is on', async () => {
     render(<ChatAiSheet jid={JID} onClose={() => {}} />)
-    await screen.findByLabelText('Drafts in this chat')
+    await screen.findByRole('radio', { name: /My reply/ })
     const claude = screen.getByRole('option', { name: /Claude API/ }) as HTMLOptionElement
     expect(claude.disabled).toBe(false)
     fireEvent.click(screen.getByLabelText('Local only'))
@@ -51,11 +51,38 @@ describe('ChatAiSheet', () => {
     expect(screen.getByRole('dialog').getAttribute('aria-modal')).toBe('true')
   })
 
-  it('exposes both toggles as labelled switches', async () => {
+  it('shows the three modes with their subtitles and reads enabled', async () => {
     render(<ChatAiSheet jid={JID} onClose={() => {}} />)
-    const drafts = await screen.findByRole('switch', { name: 'Drafts in this chat' })
-    const local = screen.getByRole('switch', { name: 'Local only' })
-    expect((drafts as HTMLInputElement).checked).toBe(false)
+    const mine = (await screen.findByRole('radio', { name: /My reply/ })) as HTMLInputElement
+    expect(mine.checked).toBe(true)
+    expect(screen.getByText('No AI help')).toBeTruthy()
+    expect((screen.getByRole('radio', { name: /Suggestions/ }) as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByText('AI drafts, you send')).toBeTruthy()
+    expect(screen.getByText('Coming later')).toBeTruthy()
+  })
+
+  it('shows Suggestions when the chat has drafts on', async () => {
+    vi.spyOn(api, 'fetchChatAi').mockResolvedValue({ ...ai, enabled: true })
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    expect(((await screen.findByRole('radio', { name: /Suggestions/ })) as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('does not let Auto be chosen and writes nothing for it', async () => {
+    const save = vi.spyOn(api, 'saveChatAi').mockResolvedValue(ai)
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    const auto = (await screen.findByRole('radio', { name: /Auto/ })) as HTMLInputElement
+    expect(auto.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(auto)
+    expect(auto.checked).toBe(false)
+    expect((screen.getByRole('radio', { name: /My reply/ }) as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(save).toHaveBeenCalled())
+    expect(save.mock.calls[0][1].enabled).toBe(false)
+  })
+
+  it('exposes Local only as a labelled switch', async () => {
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    const local = await screen.findByRole('switch', { name: 'Local only' })
     fireEvent.click(local)
     expect((local as HTMLInputElement).checked).toBe(true)
   })
@@ -73,7 +100,7 @@ describe('ChatAiSheet', () => {
     const save = vi.spyOn(api, 'saveChatAi').mockResolvedValue(ai)
     const onClose = vi.fn()
     render(<ChatAiSheet jid={JID} onClose={onClose} />)
-    fireEvent.click(await screen.findByLabelText('Drafts in this chat'))
+    fireEvent.click(await screen.findByRole('radio', { name: /Suggestions/ }))
     fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'Keep it short' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
