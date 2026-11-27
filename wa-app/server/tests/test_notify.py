@@ -179,10 +179,49 @@ def test_media_bodies(rig) -> None:
         "📷 Pogledaj",
         "🎥 Video",
         "🎤 Voice message",
-        "🎵 Audio",
+        "🎤 Voice message",
         "Sticker",
         "📄 Document",
     ]
+
+
+def test_no_push_for_call_log_and_unknown_media(rig) -> None:
+    notifier, sent, _, _ = rig
+    call = {"type": "call", "filename": None, "duration_s": None, "has_file": False}
+    notifier.handle(
+        [
+            event(message("1", text="Missed call", media=call)),
+            event(message("2", text=None, media={**call, "type": "mystery"})),
+            event(message("3", text="x", media={**call, "type": "mystery"}), GROUP),
+        ]
+    )
+    assert sent == []
+
+
+def test_poll_and_contact_bodies(rig) -> None:
+    notifier, sent, _, _ = rig
+    notifier.handle(
+        [
+            event(message("1", text=None, poll={"question": "Gdje za ručak?", "options": [], "total": 0})),
+            event(message("2", text=None, poll={"question": "", "options": [], "total": 0})),
+            event(message("3", text=None, contact_cards=[{"name": "Ana", "phones": ["+385"]}])),
+            event(message("4", sender_name="Marko", text=None, contact_cards=[{"name": "Ana", "phones": []}]), GROUP),
+        ]
+    )
+    assert [p["body"] for p in sent] == ["📊 Gdje za ručak?", "📊 Poll", "👤 Contact", "Marko: 👤 Contact"]
+
+
+def test_never_pushes_an_empty_body(rig) -> None:
+    notifier, sent, _, _ = rig
+    notifier.handle(
+        [
+            event(message("1", text=None)),
+            event(message("2", text="   ")),
+            event(message("3", sender_name="Marko", text=None), GROUP),
+            event(message("4", sender_name="Marko", text=""), GROUP),
+        ]
+    )
+    assert sent == []
 
 
 def test_long_text_truncated_to_180_chars(rig) -> None:

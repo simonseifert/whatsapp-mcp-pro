@@ -27,8 +27,9 @@ MAX_BODY = 180
 MAX_TITLE = 80
 MAX_PAYLOAD_BYTES = 3 * 1024
 
-_MEDIA_ICON = {"image": "📷", "video": "🎥", "ptt": "🎤", "audio": "🎵", "document": "📄"}
-_MEDIA_NAME = {"image": "Photo", "video": "Video", "ptt": "Voice message", "audio": "Audio"}
+# Voice notes are stored as "audio" (store.py's preview does the same); "ptt" is accepted for older rows.
+_MEDIA_ICON = {"image": "📷", "video": "🎥", "ptt": "🎤", "audio": "🎤", "document": "📄"}
+_MEDIA_NAME = {"image": "Photo", "video": "Video", "ptt": "Voice message", "audio": "Voice message"}
 
 
 class _Hub(Protocol):
@@ -39,20 +40,29 @@ def _cut(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _body(message: dict) -> str:
+def _body(message: dict) -> str | None:
+    """The line to show, or None when there is nothing worth a notification (call-log rows, unknown media, empty)."""
     text = " ".join((message.get("text") or "").split())
     media = message.get("media")
-    if not media:
-        return text
-    kind = media.get("type") or ""
-    if kind == "sticker":
-        return "Sticker"
-    icon = _MEDIA_ICON.get(kind, "📄")
-    if text:
-        return f"{icon} {text}"
-    if kind == "document":
-        return f"{icon} {media.get('filename') or 'Document'}"
-    return f"{icon} {_MEDIA_NAME.get(kind, 'Document')}"
+    if media:
+        kind = media.get("type") or ""
+        if kind == "sticker":
+            return "Sticker"
+        if kind not in _MEDIA_ICON:  # "call" log entries and anything unknown
+            return None
+        icon = _MEDIA_ICON[kind]
+        if text:
+            return f"{icon} {text}"
+        if kind == "document":
+            return f"{icon} {media.get('filename') or 'Document'}"
+        return f"{icon} {_MEDIA_NAME[kind]}"
+    poll = message.get("poll")
+    if poll:
+        question = " ".join(str(poll.get("question") or "").split())
+        return f"📊 {question}" if question else "📊 Poll"
+    if message.get("contact_cards"):
+        return "👤 Contact"
+    return text or None
 
 
 def payload_for(chat: store.ChatSummary, message: dict) -> dict | None:
@@ -60,6 +70,8 @@ def payload_for(chat: store.ChatSummary, message: dict) -> dict | None:
     if message.get("from_me") or message.get("system") or message.get("deleted"):
         return None
     body = _body(message)
+    if not body:
+        return None
     sender = message.get("sender_name")
     if chat.kind in store.GROUP_KINDS and sender:
         body = f"{sender}: {body}"

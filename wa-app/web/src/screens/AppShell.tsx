@@ -34,10 +34,8 @@ export function AppShell({ onLogout }: { onLogout: (everywhere: boolean) => void
   const leaving = useLeavingJid(jid)
   const shown = jid ?? leaving
   // Only the route's chat counts as open, not the one sliding out.
-  useEffect(() => {
-    setOpenChat(jid ?? null)
-    return () => setOpenChat(null)
-  }, [jid])
+  useEffect(() => setOpenChat(jid ?? null), [jid])
+  useEffect(() => () => setOpenChat(null), []) // unmount only: switching A to B reports B, never a null in between
   return (
     <div className={jid ? 'shell has-chat' : 'shell'}>
       <section className="pane-list" aria-label="Navigation">
