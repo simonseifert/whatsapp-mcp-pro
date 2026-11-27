@@ -5,6 +5,8 @@ import { RecordBar } from './RecordBar'
 import { canRecord, useRecorder, voiceFilename } from '../useRecorder'
 
 export const MAX_TEXT = 4096
+const MIC_SEEN = 'wa-mic-explained'
+export const MIC_EXPLAINER = 'wa-app needs the microphone to record voice messages.'
 const MAX_ROWS_PX = 132 // about five lines, then the box scrolls
 
 /** What the chat screen may do to the box from outside: read it and fill it (a draft's "Use"). */
@@ -64,6 +66,20 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
   useKeyboardInset(wrap)
   const rec = useRecorder()
   const recording = rec.state !== 'idle'
+  const [explain, setExplain] = useState(false)
+
+  // The first time, say why before the browser asks for the microphone.
+  function onMic() {
+    let seen = true
+    try {
+      seen = localStorage.getItem(MIC_SEEN) === '1'
+      if (!seen) localStorage.setItem(MIC_SEEN, '1')
+    } catch {
+      // Storage is blocked: skip the note rather than ask every time.
+    }
+    if (seen) void rec.start()
+    else setExplain(true)
+  }
 
   useLayoutEffect(() => {
     const el = box.current
@@ -130,6 +146,21 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
         <p className="toolong" role="alert">
           Message too long ({text.length} / {MAX_TEXT})
         </p>
+      )}
+      {explain && !recording && (
+        <div className="micnote">
+          <p>{MIC_EXPLAINER}</p>
+          <button
+            type="button"
+            className="micnote-go"
+            onClick={() => {
+              setExplain(false)
+              void rec.start()
+            }}
+          >
+            Continue
+          </button>
+        </div>
       )}
       {rec.state === 'idle' && rec.message && (
         <p className="toolong" role="alert">
@@ -214,7 +245,7 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
               type="button"
               aria-label="Record voice message"
               title="Record voice message"
-              onClick={() => void rec.start()}
+              onClick={onMic}
             >
               <Icon name="mic" size={22} />
             </button>

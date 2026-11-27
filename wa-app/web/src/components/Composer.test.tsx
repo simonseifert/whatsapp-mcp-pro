@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Composer } from './Composer'
+import { Composer, MIC_EXPLAINER } from './Composer'
 
 class FakeRecorder {
   static isTypeSupported = (t: string) => t === 'audio/mp4'
@@ -21,6 +21,7 @@ class FakeRecorder {
 }
 
 beforeEach(() => {
+  localStorage.setItem('wa-mic-explained', '1')
   vi.stubGlobal('MediaRecorder', FakeRecorder)
   Object.defineProperty(navigator, 'mediaDevices', {
     value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
@@ -51,5 +52,22 @@ describe('Composer voice notes', () => {
     expect(onVoice).toHaveBeenCalledTimes(1)
     expect(onVoice.mock.calls[0][0].name).toBe('voice-note.m4a')
     expect(screen.getByLabelText('Message')).toBeTruthy()
+  })
+
+  it('explains the microphone once before the first request, then asks straight away', async () => {
+    localStorage.removeItem('wa-mic-explained')
+    render(<Composer replyTo={null} onCancelReply={() => {}} onSend={() => {}} onVoice={() => {}} />)
+    const getUserMedia = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>
+    fireEvent.click(screen.getByRole('button', { name: 'Record voice message' }))
+    expect(screen.getByText(MIC_EXPLAINER)).toBeTruthy()
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(localStorage.getItem('wa-mic-explained')).toBe('1')
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Continue' })))
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText(MIC_EXPLAINER)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete recording' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Record voice message' })))
+    expect(screen.queryByText(MIC_EXPLAINER)).toBeNull()
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
   })
 })

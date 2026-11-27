@@ -1535,6 +1535,31 @@ input {
   font-size: var(--text-caption);
 }
 
+.micnote {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin: 0 var(--spacing-sm);
+  font-size: var(--text-caption);
+  color: var(--muted);
+}
+
+.micnote p {
+  margin: 0;
+}
+
+.micnote-go {
+  min-height: 44px;
+  padding: 0 var(--spacing-sm);
+  border: 0;
+  background: none;
+  color: var(--accent, inherit);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .notice {
   padding: 0 var(--spacing-sm);
   background: var(--bg);
