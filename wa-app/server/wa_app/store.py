@@ -579,6 +579,73 @@ def get_chat(conn: sqlite3.Connection, appconn: sqlite3.Connection, jid: str) ->
     return found[0] if found else None
 
 
+def _known_person(conn: sqlite3.Connection, phone_jid: str) -> bool:
+    """True when the store knows this person from anywhere: a directory row, a chat row or a sender of a message."""
+    if (
+        _columns(conn, "identities")
+        and conn.execute(
+            "SELECT 1 FROM identities WHERE jid = ? OR phone_jid = ? LIMIT 1", (phone_jid, phone_jid)
+        ).fetchone()
+    ):
+        return True
+    if conn.execute("SELECT 1 FROM chats WHERE jid = ? LIMIT 1", (phone_jid,)).fetchone():
+        return True
+    return conn.execute("SELECT 1 FROM messages WHERE sender = ? LIMIT 1", (phone_jid,)).fetchone() is not None
+
+
+def _phone_form(conn: sqlite3.Connection, jid: str) -> str | None:
+    """The phone JID of a person given as phone JID or LID; None for an LID with no known phone (never a LID back)."""
+    if jid.endswith(_PHONE_SUFFIX):
+        return jid
+    if not jid.endswith("@lid"):
+        return None
+    if _columns(conn, "identities"):
+        row = conn.execute(
+            "SELECT phone_jid FROM identities WHERE (lid = ? OR jid = ?) AND phone_jid LIKE ? LIMIT 1",
+            (jid, jid, f"%{_PHONE_SUFFIX}"),
+        ).fetchone()
+        if row:
+            return str(row[0])
+    for conv in _conversations(conn):
+        if jid in conv.forms and conv.jid.endswith(_PHONE_SUFFIX):
+            return conv.jid
+    return None
+
+
+def direct_chat_for(conn: sqlite3.Connection, appconn: sqlite3.Connection, sender_jid: str) -> ChatSummary | None:
+    """The one-to-one chat with a person given as a phone JID or an LID (as group senders are stored).
+
+    A person the store knows but has no chat with yet gets an empty placeholder summary under their phone JID, so a
+    private reply can open it and the first send creates the chat. None when the person is unknown or is an LID with
+    no known phone number: that is never answered with a LID.
+    """
+    phone = _phone_form(conn, sender_jid)
+    if phone is None:
+        return None
+    existing = get_chat(conn, appconn, phone)
+    if existing is not None:
+        return existing
+    if not _known_person(conn, phone):
+        return None
+    resolved = resolve_display_names(conn, [phone, sender_jid])
+    name = next((resolved[f].name for f in (phone, sender_jid) if f in resolved), None) or f"+{_bare(phone)}"
+    return ChatSummary(
+        jid=phone,
+        name=name,
+        kind="private",
+        avatar_url=f"/api/avatar/{phone}",
+        last_message=LastMessage(
+            id="", sender_name=None, from_me=False, preview="", media_type=None, deleted=False, timestamp_iso=""
+        ),
+        unread=0,
+        marked_unread=False,
+        pinned=False,
+        muted=False,
+        archived=False,
+        community_name=None,
+    )
+
+
 # --- chat view ----------------------------------------------------------------------------------------------------
 
 PAGE_SIZE = 60

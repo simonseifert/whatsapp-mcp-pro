@@ -206,11 +206,14 @@ export function sendMessage(
   replyTo: string | null,
   clientKey: string,
   draftId?: number | null,
+  replyChat?: string | null,
 ): Promise<SendResult> {
   const payload = {
     text,
     client_key: clientKey,
     ...(replyTo ? { reply_to: replyTo } : {}),
+    // A private reply: the group the quoted message lives in (the chat being sent to is the sender's own).
+    ...(replyTo && replyChat ? { reply_chat: replyChat } : {}),
     // A hint for the server's outcome learning; it never changes what is sent.
     ...(draftId != null ? { draft_id: draftId } : {}),
   }
@@ -242,6 +245,8 @@ export type MediaUpload = {
   filename: string
   caption: string | null
   replyTo: string | null
+  /** The group a private reply quotes from. */
+  replyChat?: string | null
   clientKey: string
   kind: 'file' | 'voice'
   /** 0 to 1, as the bytes leave this device. */
@@ -260,6 +265,7 @@ export function sendMedia(jid: string, up: MediaUpload): Promise<SendResult> {
     xhr.setRequestHeader('X-Kind', up.kind)
     if (up.caption) xhr.setRequestHeader('X-Caption', encodeURIComponent(up.caption))
     if (up.replyTo) xhr.setRequestHeader('X-Reply-To', up.replyTo)
+    if (up.replyTo && up.replyChat) xhr.setRequestHeader('X-Reply-Chat', encodeURIComponent(up.replyChat))
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && e.total > 0) up.onProgress?.(e.loaded / e.total)
     }

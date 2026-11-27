@@ -235,7 +235,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         jid = request.path_params["jid"]
 
         def work(ro: sqlite3.Connection) -> Response:
-            chat = store.get_chat(ro, conn, jid)
+            chat = store.get_chat(ro, conn, jid) or store.direct_chat_for(ro, conn, jid)  # known person, no chat yet
             if chat is None:
                 return _error(404, "Chat not found")
             return JSONResponse({"chat": asdict(chat), "members_line": store.members_line(ro, chat.jid)})
@@ -457,6 +457,13 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             caption = unquote(raw_caption, errors="strict") if raw_caption is not None else None
         except UnicodeDecodeError:
             return _error(422, "Bad header encoding")
+        try:
+            raw_reply_chat = headers.get("x-reply-chat")
+            if raw_reply_chat is not None and len(raw_reply_chat) > sending.MAX_JID_ENCODED:
+                return _error(422, "Bad reply_chat")
+            reply_chat = unquote(raw_reply_chat, errors="strict") if raw_reply_chat else None
+        except UnicodeDecodeError:
+            return _error(422, "Bad header encoding")
         kind = headers.get("x-kind", "file")
         if kind not in ("file", "voice"):
             return _error(422, "Bad kind")
@@ -493,6 +500,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
                             path=path,
                             caption=caption,
                             reply_to=headers.get("x-reply-to") or None,
+                            reply_chat=reply_chat,
                             client_key=key,
                             kind=kind,  # type: ignore[arg-type]
                         )

@@ -8,12 +8,14 @@ type Props = {
   mine: string
   onReact: (emoji: string) => void
   onReply: () => void
+  /** Only for another person's message in a group. */
+  onReplyPrivately?: () => void
   onCopy: () => void
   onClose: () => void
 }
 
-/** Long press (or right click) on a bubble: quick reactions, Reply, Copy. Imported rows get Copy only. */
-export function MessageMenu({ message: m, mine, onReact, onReply, onCopy, onClose }: Props) {
+/** Long press (or right click) on a bubble: quick reactions, Reply, Reply privately (groups), Copy. Imported rows get Copy only. */
+export function MessageMenu({ message: m, mine, onReact, onReply, onReplyPrivately, onCopy, onClose }: Props) {
   const first = useRef<HTMLDivElement>(null)
   useEffect(() => {
     first.current?.querySelector<HTMLElement>('button')?.focus()
@@ -30,6 +32,12 @@ export function MessageMenu({ message: m, mine, onReact, onReply, onCopy, onClos
           <button className="menu-item" type="button" onClick={onReply}>
             <Icon name="reply" size={20} />
             Reply
+          </button>
+        )}
+        {m.actionable && onReplyPrivately && (
+          <button className="menu-item" type="button" onClick={onReplyPrivately}>
+            <Icon name="reply" size={20} />
+            Reply privately
           </button>
         )}
         {m.text && (

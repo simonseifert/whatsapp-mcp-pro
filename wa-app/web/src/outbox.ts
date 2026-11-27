@@ -8,6 +8,8 @@ export type Pending = {
   key: string
   text: string
   replyTo: QuoteView | null
+  /** A private reply: the group the quoted message lives in. */
+  replyChat?: string
   /** The draft this text started from: sent along as a hint so the server can learn from the outcome. */
   draftId?: number
   at: string
@@ -87,11 +89,12 @@ async function attempt(jid: string, p: Pending): Promise<void> {
           filename: up.name,
           caption: p.text.trim() || null,
           replyTo: p.replyTo?.id ?? null,
+          replyChat: p.replyChat ?? null,
           clientKey: p.key,
           kind: up.kind,
           onProgress: (fraction) => patch(jid, p.key, { upload: { ...up, progress: fraction } }),
         })
-      : await sendMessage(jid, p.text, p.replyTo?.id ?? null, p.key, p.draftId)
+      : await sendMessage(jid, p.text, p.replyTo?.id ?? null, p.key, p.draftId, ...(p.replyChat ? [p.replyChat] : []))
     if (result.ok) {
       patch(jid, p.key, {
         status: 'sent',
@@ -116,11 +119,18 @@ async function attempt(jid: string, p: Pending): Promise<void> {
 }
 
 /** Puts the text in the chat as sending and sends it. Resolves when the first try has an answer. */
-export function sendText(jid: string, text: string, replyTo: QuoteView | null, draftId?: number | null): Promise<void> {
+export function sendText(
+  jid: string,
+  text: string,
+  replyTo: QuoteView | null,
+  draftId?: number | null,
+  replyChat?: string | null,
+): Promise<void> {
   const p: Pending = {
     key: crypto.randomUUID(),
     text,
     replyTo,
+    ...(replyChat ? { replyChat } : {}),
     ...(draftId != null ? { draftId } : {}),
     at: new Date().toISOString(),
     status: 'sending',
@@ -136,11 +146,13 @@ export function sendFile(
   caption: string,
   replyTo: QuoteView | null,
   kind: 'file' | 'voice' = 'file',
+  replyChat?: string | null,
 ): Promise<void> {
   const p: Pending = {
     key: crypto.randomUUID(),
     text: caption,
     replyTo,
+    ...(replyChat ? { replyChat } : {}),
     at: new Date().toISOString(),
     status: 'sending',
     upload: { file, name: file.name || 'file', size: file.size, kind, progress: 0 },
