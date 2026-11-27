@@ -2,6 +2,8 @@ package whatsapp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1224,37 +1226,93 @@ func (c *Client) RequestChatHistory(chatJID string, oldestMsgID string, oldestMs
 	return nil
 }
 
+// quoteChatForms returns the identities a 1:1 chat can be filed under (LID and
+// phone JID, when the mapping is known); a group or unmapped chat yields just
+// itself. Nil-safe, and honours the altJIDLookup test hook.
+func (c *Client) quoteChatForms(chat types.JID) []types.JID {
+	chat = chat.ToNonAD()
+	if chat.Server != types.HiddenUserServer && chat.Server != types.DefaultUserServer {
+		return []types.JID{chat}
+	}
+	var lookup func(context.Context, types.JID) (types.JID, error)
+	switch {
+	case c != nil && c.altJIDLookup != nil:
+		lookup = c.altJIDLookup
+	case c != nil && c.Client != nil && c.Store != nil:
+		lookup = c.Store.GetAltJID
+	default:
+		return []types.JID{chat}
+	}
+	other, err := lookup(context.Background(), chat)
+	if err != nil || other.IsEmpty() {
+		return []types.JID{chat}
+	}
+	other = other.ToNonAD()
+	if chat.Server == types.HiddenUserServer {
+		// The store files 1:1 chats under the phone JID once it is known.
+		return []types.JID{other, chat}
+	}
+	return []types.JID{chat, other}
+}
+
 // buildQuoteContext builds the ContextInfo that quotes a stored message in a
-// send to recipient. quotedChat is the chat the quoted message lives in; empty
-// or equal to the recipient means an ordinary in-chat quote. Otherwise (a
-// private reply to a group message) the message is looked up by id and that
-// chat, RemoteJID names the chat it came from, and the participant is its
-// author as stored there (a LID stays a LID). It returns nil, nil when the
-// message is not in the store: the send then goes out unquoted, as before.
+// send to recipient. quotedChat is the chat the quoted message lives in; empty,
+// or any form of the recipient's own chat, means an ordinary in-chat quote.
+// Otherwise (a private reply to a group message) the message is looked up by id
+// and that chat (trying both forms of a 1:1 chat), RemoteJID names the chat it
+// came from, and the participant is its author as stored there (a LID stays a
+// LID). An unresolvable explicit quoted chat is an error: the caller asked for
+// a specific message, so nothing may go out unquoted. For the in-chat path a
+// message missing from the store returns nil, nil (sent unquoted, as before).
 func (c *Client) buildQuoteContext(store *database.MessageStore, quotedID, quotedChat string, recipient types.JID) (*waE2E.ContextInfo, error) {
 	chat := recipient
-	remote := ""
+	var candidates []types.JID // quoted chat forms, empty for the in-chat path
 	if quotedChat != "" {
 		qc, err := types.ParseJID(quotedChat)
 		if err != nil {
 			return nil, fmt.Errorf("invalid quoted chat %q: %w", quotedChat, err)
 		}
-		if qc.ToNonAD() != recipient.ToNonAD() {
-			chat = qc.ToNonAD()
-			remote = chat.String()
+		forms := c.quoteChatForms(qc)
+		own := c.quoteChatForms(recipient)
+		same := false
+		for _, f := range forms {
+			for _, o := range own {
+				if f == o {
+					same = true
+				}
+			}
+		}
+		if !same {
+			candidates = forms
 		}
 	}
 
 	var content, sender string
 	var isFromMe bool
 	var err error
-	if remote != "" {
-		content, sender, isFromMe, err = store.GetMessageContentAndSenderInChat(quotedID, remote)
+	remote := ""
+	if len(candidates) > 0 {
+		for _, cand := range candidates {
+			content, sender, isFromMe, err = store.GetMessageContentAndSenderInChat(quotedID, cand.String())
+			if err == nil {
+				chat, remote = cand, cand.String()
+				break
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("looking up message in chat %s: %w", cand, err)
+			}
+		}
+		if remote == "" {
+			return nil, fmt.Errorf("message not found in chat %s", quotedChat)
+		}
 	} else {
 		content, sender, isFromMe, err = store.GetMessageContentAndSender(quotedID)
-	}
-	if err != nil {
-		return nil, nil
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("looking up quoted message: %w", err)
+		}
 	}
 	participant, err := c.quotedParticipant(store, sender, chat, isFromMe)
 	if err != nil {

@@ -1,6 +1,8 @@
 package whatsapp
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,11 +108,100 @@ func TestQuoteSameChatHasNoRemoteJID(t *testing.T) {
 	}
 }
 
-func TestQuoteUnknownMessageIsSkipped(t *testing.T) {
+func TestQuoteUnknownMessageSameChatIsSkipped(t *testing.T) {
 	store := newQuoteStore(t)
 	var c *Client
+	for _, quotedChat := range []string{"", testPhone + "@s.whatsapp.net"} {
+		ci, err := c.buildQuoteContext(store, "NOPE", quotedChat, types.JID{User: testPhone, Server: types.DefaultUserServer})
+		if err != nil || ci != nil {
+			t.Errorf("quotedChat=%q: ctx=%v err=%v, want nil, nil (sent unquoted as before)", quotedChat, ci, err)
+		}
+	}
+}
+
+func TestQuoteAcrossChatsNotFoundIsAnError(t *testing.T) {
+	store := newQuoteStore(t)
+	mustChat(t, store, testGroup)
+	var c *Client
 	ci, err := c.buildQuoteContext(store, "NOPE", testGroup, types.JID{User: testPhone, Server: types.DefaultUserServer})
-	if err != nil || ci != nil {
-		t.Errorf("ctx=%v err=%v, want nil, nil (send proceeds unquoted as before)", ci, err)
+	if err == nil || ci != nil {
+		t.Fatalf("ctx=%v err=%v, want an error so nothing is sent unquoted", ci, err)
+	}
+	if !strings.Contains(err.Error(), testGroup) {
+		t.Errorf("error %q should name the chat", err)
+	}
+}
+
+func TestQuoteDBErrorIsAnErrorOnBothPaths(t *testing.T) {
+	store := newQuoteStore(t)
+	_ = store.Close()
+	var c *Client
+	dm := types.JID{User: testPhone, Server: types.DefaultUserServer}
+	for _, quotedChat := range []string{"", testGroup} {
+		ci, err := c.buildQuoteContext(store, "QID", quotedChat, dm)
+		if err == nil || ci != nil {
+			t.Errorf("quotedChat=%q: ctx=%v err=%v, want a DB error", quotedChat, ci, err)
+		}
+	}
+}
+
+// pairedClient knows testLID and testPhone as the same person, both ways.
+func pairedClient() *Client {
+	lid := types.JID{User: testLID, Server: types.HiddenUserServer}
+	phone := types.JID{User: testPhone, Server: types.DefaultUserServer}
+	return &Client{altJIDLookup: func(_ context.Context, j types.JID) (types.JID, error) {
+		switch j {
+		case lid:
+			return phone, nil
+		case phone:
+			return lid, nil
+		}
+		return types.EmptyJID, nil
+	}}
+}
+
+func TestQuoteDMChatGivenInEitherForm(t *testing.T) {
+	store := newQuoteStore(t)
+	phoneChat := testPhone + "@s.whatsapp.net"
+	mustChat(t, store, phoneChat)
+	_ = store.StoreMessage("DM1", phoneChat, phoneChat, "Sam", "from the dm", time.Now(), false, "", "", "", "", nil, nil, nil, 0)
+	other := types.JID{User: "4915100000001", Server: types.DefaultUserServer}
+	c := pairedClient()
+
+	for _, form := range []string{testLID + "@lid", phoneChat} {
+		ci, err := c.buildQuoteContext(store, "DM1", form, other)
+		if err != nil || ci == nil {
+			t.Fatalf("form %q: ctx=%v err=%v", form, ci, err)
+		}
+		if ci.GetRemoteJID() != phoneChat {
+			t.Errorf("form %q: RemoteJID = %q, want the stored chat %q", form, ci.GetRemoteJID(), phoneChat)
+		}
+		if ci.GetQuotedMessage().GetConversation() != "from the dm" {
+			t.Errorf("form %q: quoted %q", form, ci.GetQuotedMessage().GetConversation())
+		}
+	}
+}
+
+func TestQuoteChatThatIsRecipientInOtherFormIsSameChat(t *testing.T) {
+	store := newQuoteStore(t)
+	phoneChat := testPhone + "@s.whatsapp.net"
+	mustChat(t, store, phoneChat)
+	_ = store.StoreMessage("DM2", phoneChat, phoneChat, "Sam", "hello", time.Now(), false, "", "", "", "", nil, nil, nil, 0)
+	c := pairedClient()
+
+	for _, tc := range []struct {
+		recipient types.JID
+		quoted    string
+	}{
+		{types.JID{User: testPhone, Server: types.DefaultUserServer}, testLID + "@lid"},
+		{types.JID{User: testLID, Server: types.HiddenUserServer}, phoneChat},
+	} {
+		ci, err := c.buildQuoteContext(store, "DM2", tc.quoted, tc.recipient)
+		if err != nil || ci == nil {
+			t.Fatalf("%v/%s: ctx=%v err=%v", tc.recipient, tc.quoted, ci, err)
+		}
+		if ci.RemoteJID != nil {
+			t.Errorf("%v/%s: RemoteJID = %q, want unset (same chat)", tc.recipient, tc.quoted, ci.GetRemoteJID())
+		}
 	}
 }
