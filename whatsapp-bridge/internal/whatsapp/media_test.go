@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -227,7 +228,7 @@ func TestExtractReplyContext(t *testing.T) {
 		t.Fatalf("quoted photo text = %q, want [image]", rc.QuotedText)
 	}
 
-	if rc := ExtractReplyContext(&waE2E.Message{Conversation: proto.String("plain")}); rc != (ReplyContext{}) {
+	if rc := ExtractReplyContext(&waE2E.Message{Conversation: proto.String("plain")}); !reflect.DeepEqual(rc, ReplyContext{}) {
 		t.Fatalf("plain message context = %+v", rc)
 	}
 }

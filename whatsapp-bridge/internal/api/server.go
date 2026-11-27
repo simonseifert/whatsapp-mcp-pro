@@ -109,6 +109,8 @@ func (s *Server) registerHandlers() {
 	http.HandleFunc("/api/pin", SecureMiddleware(s.handlePinChat))
 	http.HandleFunc("/api/mute", SecureMiddleware(s.handleMuteChat))
 	http.HandleFunc("/api/archive", SecureMiddleware(s.handleArchiveChat))
+	http.HandleFunc("/api/star", SecureMiddleware(s.handleStarMessage))
+	http.HandleFunc("/api/mark-unread", SecureMiddleware(s.handleMarkUnread))
 
 	// Phase 7: Phone Number Pairing
 	http.HandleFunc("/api/pair", SecureMiddleware(s.handlePairPhone))

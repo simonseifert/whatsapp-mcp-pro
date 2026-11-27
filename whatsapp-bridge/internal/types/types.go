@@ -288,6 +288,8 @@ type SendMessageRequest struct {
 	QuotedMessageID string   `json:"quoted_message_id,omitempty"`
 	// QuotedChatJID: chat of the quoted message when it differs from recipient.
 	QuotedChatJID string `json:"quoted_chat_jid,omitempty"`
+	// Forwarded sends the message with the Forwarded label.
+	Forwarded bool `json:"forwarded,omitempty"`
 	// IdempotencyKey dedupes retries; also accepted as the Idempotency-Key header.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
@@ -510,6 +512,21 @@ type MuteChatRequest struct {
 type ArchiveChatRequest struct {
 	ChatJID string `json:"chat_jid"`
 	Archive bool   `json:"archive"` // true to archive, false to unarchive
+}
+
+// StarMessageRequest represents request to star or unstar a message
+type StarMessageRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	SenderJID string `json:"sender_jid,omitempty"` // author in a group, when the bridge has not stored the message
+	FromMe    bool   `json:"from_me"`
+	Star      bool   `json:"star"` // true to star, false to unstar
+}
+
+// MarkUnreadRequest represents request to mark a chat unread or read
+type MarkUnreadRequest struct {
+	ChatJID string `json:"chat_jid"`
+	Unread  bool   `json:"unread"` // true to mark unread, false to mark read
 }
 
 // Phase 7: Phone Number Pairing

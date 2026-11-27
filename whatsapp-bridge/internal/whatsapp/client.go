@@ -16,6 +16,7 @@ import (
 	"github.com/mdp/qrterminal"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	waProto "go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -26,6 +27,7 @@ import (
 
 	"whatsapp-bridge/internal/antiban"
 	"whatsapp-bridge/internal/config"
+	"whatsapp-bridge/internal/database"
 	"whatsapp-bridge/internal/security"
 	localTypes "whatsapp-bridge/internal/types"
 )
@@ -78,6 +80,8 @@ type Client struct {
 
 	// altJIDLookup overrides Store.GetAltJID for capKey; tests only.
 	altJIDLookup func(context.Context, types.JID) (types.JID, error)
+	// appStateSender overrides SendAppState; tests only.
+	appStateSender func(context.Context, appstate.PatchInfo) error
 	// rawDownloadToFile overrides whatsmeow's DownloadToFile; tests only.
 	rawDownloadToFile func(context.Context, whatsmeow.DownloadableMessage, whatsmeow.File) error
 
@@ -651,6 +655,126 @@ func (c *Client) UnarchiveChat(chatJID string) error {
 
 	patch := appstate.BuildArchive(jid, false, time.Time{}, nil)
 	return c.SendAppState(context.Background(), patch)
+}
+
+// sendAppState sends an app state patch, through the test hook when set.
+func (c *Client) sendAppState(ctx context.Context, patch appstate.PatchInfo) error {
+	if c.appStateSender != nil {
+		return c.appStateSender(ctx, patch)
+	}
+	return c.SendAppState(ctx, patch)
+}
+
+// chatKey is the chat key the store files a conversation under (LID folded
+// into the phone JID when the mapping is known). Safe without a connection.
+func (c *Client) chatKey(chat types.JID) types.JID {
+	chat = chat.ToNonAD()
+	if chat.Server != types.HiddenUserServer || c == nil || c.Client == nil || c.Store == nil {
+		return chat
+	}
+	return c.NormalizeChatJID(chat)
+}
+
+// StarMessage stars or unstars a message on the account through an app state
+// patch. The local row is written first, so the app sees the change at once
+// and the echo of the patch is a no-op; a failed send puts the old state back.
+//
+// WhatsApp indexes a star by chat, message id, own-message flag and sender. The
+// sender is "0" for own messages and in 1:1 chats; in a group it is the
+// author's JID as the message was keyed (a LID stays a LID). The author comes
+// from the stored message, falling back to senderJID for a message the bridge
+// never stored.
+func (c *Client) StarMessage(store *database.MessageStore, chatJID, messageID, senderJID string, fromMe, star bool) error {
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return fmt.Errorf("invalid chat JID: %w", err)
+	}
+	chat = chat.ToNonAD()
+	if messageID == "" {
+		return errors.New("message id is required")
+	}
+	key := c.chatKey(chat).String()
+
+	var storedSender string
+	for _, form := range c.quoteChatForms(chat) {
+		s, me, lookupErr := store.GetMessageSender(messageID, form.String())
+		if lookupErr == nil {
+			storedSender, fromMe = s, fromMe || me
+			break
+		}
+	}
+
+	target, sender := chat, chat
+	if !fromMe && chat.Server == types.GroupServer {
+		who := strings.TrimSpace(storedSender)
+		if who == "" {
+			who = strings.TrimSpace(senderJID)
+		}
+		if who == "" {
+			return fmt.Errorf("cannot star message %s: its sender in the group is unknown", messageID)
+		}
+		sender, err = participantJID(who, chat.String(), c.knownLIDFunc(store))
+		if err != nil {
+			return fmt.Errorf("cannot resolve sender of message %s: %w", messageID, err)
+		}
+	}
+
+	was, err := store.IsMessageStarred(key, messageID)
+	if err != nil {
+		return err
+	}
+	if err := store.SetMessageStarred(key, messageID, star, time.Now()); err != nil {
+		return err
+	}
+	if err := c.sendAppState(context.Background(), appstate.BuildStar(target, sender, messageID, fromMe, star)); err != nil {
+		if rbErr := store.SetMessageStarred(key, messageID, was, time.Now()); rbErr != nil {
+			c.logger.Warnf("Failed to restore star state of %s: %v", messageID, rbErr)
+		}
+		return err
+	}
+	return nil
+}
+
+// MarkChatUnread marks a chat unread (the dot in the chat list) or read again
+// on the account. The patch carries the newest stored message as the range
+// WhatsApp expects; the local state follows at once.
+func (c *Client) MarkChatUnread(store *database.MessageStore, chatJID string, unread bool) error {
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return fmt.Errorf("invalid chat JID: %w", err)
+	}
+	chat = chat.ToNonAD()
+	key := c.chatKey(chat).String()
+
+	var lastKey *waCommon.MessageKey
+	var lastAt time.Time
+	for _, form := range c.quoteChatForms(chat) {
+		id, sender, fromMe, at, ok, lookupErr := store.LastMessageKey(form.String())
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if ok && at.After(lastAt) {
+			lastAt = at
+			lastKey = &waCommon.MessageKey{RemoteJID: proto.String(chat.String()), FromMe: proto.Bool(fromMe), ID: proto.String(id)}
+			if !fromMe && chat.Server == types.GroupServer {
+				if p, pErr := participantJID(sender, form.String(), c.knownLIDFunc(store)); pErr == nil {
+					lastKey.Participant = proto.String(p.String())
+				}
+			}
+		}
+	}
+	if lastKey == nil {
+		lastAt = time.Time{}
+	}
+
+	if err := c.sendAppState(context.Background(), appstate.BuildMarkChatAsRead(chat, !unread, lastAt, lastKey)); err != nil {
+		return err
+	}
+	now := time.Now()
+	if unread {
+		return store.SetChatMarkedUnread(key, true, now)
+	}
+	return store.MarkChatReadAt(key, now)
 }
 
 // Connection state tracking methods

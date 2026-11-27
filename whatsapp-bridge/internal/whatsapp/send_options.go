@@ -21,6 +21,8 @@ type SendOptions struct {
 	// the recipient's chat (a private reply to a group message). Empty = same chat.
 	QuotedChatJID string
 	MentionedJIDs []string
+	// Forwarded sets the Forwarded label (IsForwarded, ForwardingScore 1).
+	Forwarded bool
 
 	// MessageID forces the WhatsApp message ID. An idempotent retry passes the
 	// ID of the earlier, possibly-delivered attempt: recipients' devices key

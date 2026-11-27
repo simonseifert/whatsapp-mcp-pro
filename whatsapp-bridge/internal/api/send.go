@@ -352,6 +352,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			MediaPath:       req.MediaPath,
 			QuotedMessageID: req.QuotedMessageID,
 			QuotedChatJID:   req.QuotedChatJID,
+			Forwarded:       req.Forwarded,
 			MentionedJIDs:   req.MentionedJIDs,
 			MessageID:       priorID,
 			BeforeDispatch:  beforeDispatch,

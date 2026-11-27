@@ -11,6 +11,8 @@ import (
 	"unicode"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 // ExtractTextContent extracts text content from a WhatsApp message
@@ -178,6 +180,64 @@ type ReplyContext struct {
 	QuotedSender string
 	QuotedText   string // text/caption of the quoted message, or "[image]" etc. when it has none
 	IsForwarded  bool
+	// MentionedJIDs are the people the message @-mentioned: bare user JIDs
+	// (device and agent dropped, a LID kept as a LID), de-duplicated. nil when none.
+	MentionedJIDs []string
+}
+
+// bareMentions normalises ContextInfo.MentionedJID for storage. Entries that
+// do not parse as a user JID are dropped.
+func bareMentions(raw []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range raw {
+		jid, err := types.ParseJID(r)
+		if err != nil || jid.User == "" || jid.Server == "" {
+			continue
+		}
+		s := jid.ToNonAD().String()
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// applyForwarded marks a message as forwarded (the "Forwarded" label) by
+// setting IsForwarded and ForwardingScore 1 on its ContextInfo, creating the
+// ContextInfo when the message has none. A plain Conversation has nowhere to
+// carry one, so it becomes an ExtendedTextMessage.
+func applyForwarded(msg *waE2E.Message) {
+	if msg == nil {
+		return
+	}
+	if msg.Conversation != nil {
+		msg.ExtendedTextMessage = &waE2E.ExtendedTextMessage{Text: msg.Conversation}
+		msg.Conversation = nil
+	}
+	var ci **waE2E.ContextInfo
+	switch {
+	case msg.ExtendedTextMessage != nil:
+		ci = &msg.ExtendedTextMessage.ContextInfo
+	case msg.ImageMessage != nil:
+		ci = &msg.ImageMessage.ContextInfo
+	case msg.VideoMessage != nil:
+		ci = &msg.VideoMessage.ContextInfo
+	case msg.DocumentMessage != nil:
+		ci = &msg.DocumentMessage.ContextInfo
+	case msg.AudioMessage != nil:
+		ci = &msg.AudioMessage.ContextInfo
+	case msg.StickerMessage != nil:
+		ci = &msg.StickerMessage.ContextInfo
+	default:
+		return
+	}
+	if *ci == nil {
+		*ci = &waE2E.ContextInfo{}
+	}
+	(*ci).IsForwarded = proto.Bool(true)
+	(*ci).ForwardingScore = proto.Uint32(1)
 }
 
 // ExtractReplyContext reads quote and forward info from a message's ContextInfo.
@@ -186,7 +246,8 @@ func ExtractReplyContext(msg *waE2E.Message) ReplyContext {
 	if ctx == nil {
 		return ReplyContext{}
 	}
-	rc := ReplyContext{QuotedID: ctx.GetStanzaID(), QuotedSender: ctx.GetParticipant(), IsForwarded: ctx.GetIsForwarded()}
+	rc := ReplyContext{QuotedID: ctx.GetStanzaID(), QuotedSender: ctx.GetParticipant(), IsForwarded: ctx.GetIsForwarded(),
+		MentionedJIDs: bareMentions(ctx.GetMentionedJID())}
 	if q := ctx.GetQuotedMessage(); q != nil {
 		rc.QuotedText = ExtractTextContent(q)
 		if rc.QuotedText == "" {

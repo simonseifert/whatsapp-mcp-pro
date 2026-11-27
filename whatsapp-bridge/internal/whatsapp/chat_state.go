@@ -40,8 +40,8 @@ func ownReadReceipt(r *events.Receipt) (at time.Time, ok bool) {
 	return r.Timestamp, true
 }
 
-// HandleChatStateEvent stores pin, mute, archive and read changes. Only
-// *events.Pin, *events.Mute, *events.Archive, *events.MarkChatAsRead and
+// HandleChatStateEvent stores pin, mute, archive, star and read changes. Only
+// *events.Pin, *events.Star, *events.Mute, *events.Archive, *events.MarkChatAsRead and
 // *events.Receipt are handled; other events are ignored.
 func (c *Client) HandleChatStateEvent(store *database.MessageStore, evt any) {
 	var (
@@ -81,6 +81,12 @@ func (c *Client) HandleChatStateEvent(store *database.MessageStore, evt any) {
 		} else {
 			err = store.SetChatMarkedUnread(chat.String(), true, v.Timestamp)
 		}
+	case *events.Star:
+		if v.Action == nil {
+			return
+		}
+		chat = c.NormalizeChatJID(v.ChatJID)
+		err = store.SetMessageStarred(chat.String(), v.MessageID, v.Action.GetStarred(), v.Timestamp)
 	case *events.Receipt:
 		c.recordPeerReceipt(store, v)
 		at, ok := ownReadReceipt(v)

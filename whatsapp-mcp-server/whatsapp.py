@@ -1277,6 +1277,7 @@ def send_message(
     quoted_message_id: str | None = None,
     idempotency_key: str | None = None,
     quoted_chat_jid: str | None = None,
+    forwarded: bool = False,
 ) -> dict[str, Any]:
     """Send a WhatsApp message and return structured result with message_id.
 
@@ -1289,6 +1290,7 @@ def send_message(
             (see lib/idempotency.py)
         quoted_chat_jid: Chat the quoted message lives in, when it is not the
             recipient's chat (a private reply to a group message)
+        forwarded: Send with the Forwarded label
     """
     try:
         # Validate input
@@ -1306,6 +1308,8 @@ def send_message(
             payload["quoted_message_id"] = quoted_message_id
         if quoted_chat_jid:
             payload["quoted_chat_jid"] = quoted_chat_jid
+        if forwarded:
+            payload["forwarded"] = True
 
         key = resolve_idempotency_key(
             idempotency_key,
@@ -1345,11 +1349,13 @@ def send_file(
     caption: str | None = None,
     quoted_message_id: str | None = None,
     quoted_chat_jid: str | None = None,
+    forwarded: bool = False,
 ) -> dict[str, Any]:
     """Send a file via WhatsApp and return structured result with message_id.
 
     caption is sent as the media's caption; quoted_message_id (and
-    quoted_chat_jid, when that message is in another chat) quotes a message.
+    quoted_chat_jid, when that message is in another chat) quotes a message;
+    forwarded sends it with the Forwarded label.
 
     Accepts either a path on this server's filesystem, or the file's bytes as
     base64. The latter exists because MCP clients generally run somewhere else:
@@ -1424,6 +1430,8 @@ def send_file(
             payload["quoted_message_id"] = quoted_message_id
         if quoted_chat_jid:
             payload["quoted_chat_jid"] = quoted_chat_jid
+        if forwarded:
+            payload["forwarded"] = True
 
         # Hash the bytes, not the path: a base64 upload is staged under a fresh
         # temp dir each call, so the path differs between identical retries.
@@ -3056,6 +3064,64 @@ def archive_chat(chat_jid: str, archive: bool = True) -> dict[str, Any]:
     try:
         url = f"{WHATSAPP_API_BASE_URL}/archive"
         payload = {"chat_jid": chat_jid, "archive": archive}
+        response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "chat_jid": chat_jid, "error": f"HTTP {response.status_code} - {response.text}"}
+    except requests.RequestException as e:
+        return {"success": False, "chat_jid": chat_jid, "error": f"Request error: {str(e)}"}
+
+
+def star_message(
+    chat_jid: str,
+    message_id: str,
+    star: bool = True,
+    sender_jid: str | None = None,
+    from_me: bool = False,
+) -> dict[str, Any]:
+    """Star or unstar a WhatsApp message.
+
+    Args:
+        chat_jid: The chat the message is in
+        message_id: The message to star/unstar
+        star: True to star, False to unstar (default: True)
+        sender_jid: Author of the message in a group, only needed for a message
+            the bridge never stored (a LID author stays a LID)
+        from_me: True when the message is your own
+
+    Returns:
+        Dict with success status, chat_jid, message_id and star
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/star"
+        payload: dict[str, Any] = {"chat_jid": chat_jid, "message_id": message_id, "star": star, "from_me": from_me}
+        if sender_jid:
+            payload["sender_jid"] = sender_jid
+        response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "chat_jid": chat_jid, "error": f"HTTP {response.status_code} - {response.text}"}
+    except requests.RequestException as e:
+        return {"success": False, "chat_jid": chat_jid, "error": f"Request error: {str(e)}"}
+
+
+def mark_chat_unread(chat_jid: str, unread: bool = True) -> dict[str, Any]:
+    """Mark a WhatsApp chat unread (or read again).
+
+    Args:
+        chat_jid: The JID of the chat
+        unread: True to mark unread, False to mark read (default: True)
+
+    Returns:
+        Dict with success status, chat_jid and unread
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/mark-unread"
+        payload = {"chat_jid": chat_jid, "unread": unread}
         response = requests.post(url, json=payload, headers=_get_headers(), timeout=30)
 
         if response.status_code == 200:
