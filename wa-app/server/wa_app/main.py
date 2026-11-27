@@ -73,15 +73,16 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
+        queue: history.BackfillQueue = app.state.backfill
         draft_task = asyncio.create_task(worker.run(), name="draft worker")
         draft_task.add_done_callback(_log_worker_end)
-        backfill_task = asyncio.create_task(backfill.run(), name="history backfill queue")
+        backfill_task = asyncio.create_task(queue.run(), name="history backfill queue")
         backfill_task.add_done_callback(_log_worker_end)
         try:
             async with live.running(poller, hub):
                 yield
         finally:
-            backfill.stop()
+            queue.stop()
             backfill_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await backfill_task

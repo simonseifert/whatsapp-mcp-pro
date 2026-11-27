@@ -119,7 +119,6 @@ def test_result_mapping(final, result, detail) -> None:
 
 def test_start_failure_moves_on() -> None:
     bridge = Bridge()
-    queue = make(bridge)
     real = bridge.start
 
     def start(jid, until, max_batches):
@@ -127,7 +126,7 @@ def test_start_failure_moves_on() -> None:
             return {"success": False, "error": "Request error: connection refused"}
         return real(jid, until, max_batches)
 
-    queue._start = start
+    queue = history.BackfillQueue(start, bridge.status, poll_s=0, today=lambda: TODAY)
     queue.enqueue([(A, A), (B, B)], "year")
     done = (drain(queue))["done"]
     assert [(d["jid"], d["result"]) for d in done] == [(A, "failed"), (B, "done")]
@@ -150,7 +149,6 @@ def test_conflict_waits() -> None:
 
 def test_watchdog() -> None:
     bridge = Bridge(polls=10**9)  # A never stops
-    queue = make(bridge, watchdog_s=1800, clock=Clock())
     real = bridge.start
 
     def start(jid, until, max_batches):
@@ -159,7 +157,7 @@ def test_watchdog() -> None:
             bridge.left[B] = 0
         return reply
 
-    queue._start = start
+    queue = history.BackfillQueue(start, bridge.status, poll_s=0, today=lambda: TODAY, watchdog_s=1800, clock=Clock())
     queue.enqueue([(A, A), (B, B)], "year")
     done = (drain(queue))["done"]
     assert [(d["jid"], d["result"]) for d in done] == [(A, "failed"), (B, "done")]
@@ -176,13 +174,23 @@ def test_bridge_down_while_waiting() -> None:
 
 
 def test_dedupe_and_cancel() -> None:
-    queue = make(Bridge())
+    bridge = Bridge(polls=10**9)  # A stays running
+    queue = make(bridge)
     assert queue.enqueue([(A, A), (B, B)], "year") == 2
     assert queue.enqueue([(B, B), (C, C)], "year") == 1
-    queue._running = {"jid": A, "batches": 0, "oldest": None}
-    assert queue.enqueue([(A, A)], "year") == 0
-    queue.cancel()
-    snap = queue.snapshot()
+
+    async def scenario() -> dict:
+        task = asyncio.create_task(queue.run())
+        while not queue.snapshot()["running"]:
+            await asyncio.sleep(0)
+        assert queue.enqueue([(A, A)], "year") == 0  # running counts as known
+        queue.cancel()
+        snap = queue.snapshot()
+        queue.stop()
+        task.cancel()
+        return snap
+
+    snap = asyncio.run(scenario())
     assert snap["queued"] == [] and snap["running"]["jid"] == A
 
 
@@ -196,8 +204,7 @@ def test_no_anchor_skipped() -> None:
 
 
 def test_done_keeps_last_100() -> None:
-    bridge = Bridge(polls=0)
-    queue = make(bridge)
+    queue = make(Bridge())
     queue.enqueue([(f"38591000{n:04d}@s.whatsapp.net", None) for n in range(120)], "year")
     done = (drain(queue))["done"]
     assert len(done) == 100 and done[-1]["jid"].startswith("38591000" + "0119")
@@ -271,3 +278,42 @@ def test_origin_and_login_required(bridge_app, settings) -> None:
 
     with TestClient(create_app(settings), base_url="https://testserver") as anon:
         assert anon.get("/api/history/status").status_code == 401
+
+
+def test_route_enqueue_wakes_a_live_queue(settings) -> None:
+    """run() is live on the app loop (started by the lifespan); a route must start the job with no other wake-up,
+    and enqueue must run on the loop thread, not in the threadpool."""
+    from wa_app.main import create_app
+
+    bridge = Bridge()
+    queue = make(bridge)
+    on_loop: list[bool] = []
+    orig = queue.enqueue
+
+    def enqueue(items, depth):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return orig(items, depth)
+
+    queue.enqueue = enqueue  # type: ignore[method-assign]
+    app = create_app(settings)
+    app.state.backfill = queue
+    with TestClient(app, base_url="https://testserver") as client:
+        client.post("/api/auth/setup", json={"passphrase": "correct horse battery"})
+        client.post("/api/auth/login", json={"passphrase": "correct horse battery"})
+        assert client.post(f"/api/chats/{FAMILY}/history", json={"depth": "year"}).status_code == 200
+        for _ in range(100_000):  # the loop thread works the queue on its own; no sleeping, just look again
+            if client.get("/api/history/status").json()["done"]:
+                break
+        assert queue.snapshot()["done"][0]["jid"] == FAMILY
+    assert on_loop == [True] and bridge.calls
+
+
+def test_chat_history_newsletter_and_broadcast_never_reach_the_bridge(bridge_app) -> None:
+    client, queue = bridge_app
+    assert client.post(f"/api/chats/{CHANNEL}/history", json={"depth": "year"}).status_code == 404
+    assert client.post("/api/chats/status@broadcast/history", json={"depth": "year"}).status_code == 404
+    assert queue.snapshot()["queued"] == []

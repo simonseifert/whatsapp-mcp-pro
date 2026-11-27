@@ -152,3 +152,24 @@ def test_totals_chats_match_coverage(conns, db) -> None:
     db.commit()
     ro, app = conns
     assert history.totals(ro)["chats"] == len(history.coverage(ro, app, limit=10_000))
+
+
+def test_chat_coverage_matches_the_list(conns) -> None:
+    listed = {c.jid: c for c in history.coverage(*conns)}
+    assert history.chat_coverage(conns[0], conns[1], ANA) == listed[ANA]
+    by_phone = history.chat_coverage(conns[0], conns[1], TOMO_PHONE)
+    by_lid = history.chat_coverage(conns[0], conns[1], TOMO_LID)
+    assert by_phone is not None and by_phone == by_lid == listed[by_phone.jid]
+
+
+def test_chat_coverage_unknown_and_skipped(conns) -> None:
+    assert history.chat_coverage(conns[0], conns[1], "385910000999@s.whatsapp.net") is None
+    assert history.chat_coverage(conns[0], conns[1], CHANNEL) is None
+    assert history.chat_coverage(conns[0], conns[1], "status@broadcast") is None
+
+
+def test_chat_coverage_empty_chat(conns, db) -> None:
+    db.execute("INSERT INTO chats (jid, name, last_message_time) VALUES (?,?,?)", (EMPTY_CHAT, "Empty", _ts(5)))
+    db.commit()
+    found = history.chat_coverage(conns[0], conns[1], EMPTY_CHAT)
+    assert found and found.messages == 0 and found.backfill_jid is None

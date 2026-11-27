@@ -96,27 +96,46 @@ def coverage(ro: sqlite3.Connection, appconn: sqlite3.Connection, *, limit: int 
     entries += _empty_chats(ro, convs, {c.jid for c in listed})
     entries.sort(key=lambda e: store._sort_key(e[3]), reverse=True)
     own = store.own_text_filter(deleted_col="deleted_at" in store._columns(ro, "messages"))
-    out = []
-    for jid, name, kind, last_active in entries[:limit]:
-        forms = by_form[jid].forms if jid in by_form else [jid]
-        per_form = _stats(ro, forms, own)
-        own_texts = sum(r[2] or 0 for r in per_form)
-        earliest = [r[3] for r in per_form if r[3] is not None]
-        best = max(per_form, key=lambda r: r[1], default=None)
-        out.append(
-            ChatCoverage(
-                jid=jid,
-                name=name,
-                kind=kind,
-                messages=sum(r[1] for r in per_form),
-                own_texts=own_texts,
-                oldest=_iso(min(earliest)) if earliest else None,
-                last_active=last_active,
-                thin=own_texts < THIN_OWN,
-                backfill_jid=best[0] if best else None,
-            )
-        )
-    return out
+    return [
+        _cover(ro, by_form[jid].forms if jid in by_form else [jid], own, jid, name, kind, last_active)
+        for jid, name, kind, last_active in entries[:limit]
+    ]
+
+
+def _cover(
+    ro: sqlite3.Connection, forms: list[str], own: str, jid: str, name: str, kind: str, last_active: str | None
+) -> ChatCoverage:
+    per_form = _stats(ro, forms, own)
+    own_texts = sum(r[2] or 0 for r in per_form)
+    earliest = [r[3] for r in per_form if r[3] is not None]
+    best = max(per_form, key=lambda r: r[1], default=None)
+    return ChatCoverage(
+        jid=jid,
+        name=name,
+        kind=kind,
+        messages=sum(r[1] for r in per_form),
+        own_texts=own_texts,
+        oldest=_iso(min(earliest)) if earliest else None,
+        last_active=last_active,
+        thin=own_texts < THIN_OWN,
+        backfill_jid=best[0] if best else None,
+    )
+
+
+def chat_coverage(ro: sqlite3.Connection, appconn: sqlite3.Connection, jid: str) -> ChatCoverage | None:
+    """Coverage of one chat by any of its JID forms, without scanning the others. None when the chat is unknown or is
+    a broadcast or newsletter (those are never backfilled)."""
+    conv = next((c for c in store._conversations(ro) if jid == c.jid or jid in c.forms), None)
+    if conv is None or _skipped(conv.jid):
+        return None
+    own = store.own_text_filter(deleted_col="deleted_at" in store._columns(ro, "messages"))
+    chat = store.get_chat(ro, appconn, conv.jid)
+    if chat is not None:
+        if chat.kind == "newsletter":
+            return None
+        return _cover(ro, conv.forms, own, conv.jid, chat.name, chat.kind, chat.last_message.timestamp_iso)
+    name = next((n for n in conv.rows.values() if n), conv.jid.split("@")[0])
+    return _cover(ro, conv.forms, own, conv.jid, name, "group" if conv.jid.endswith("@g.us") else "private", None)
 
 
 # --- backfill queue -------------------------------------------------------------------------------------------

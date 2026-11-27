@@ -253,6 +253,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         return await run_in_threadpool(with_store, work)
 
     def fill_response(request: Request, items: list[tuple[str, str | None]], depth: str) -> Response:
+        """Runs on the event loop: the queue is not thread-safe, so never call this from the threadpool."""
         queue: history.BackfillQueue = request.app.state.backfill
         added = queue.enqueue(items, depth)  # type: ignore[arg-type]
         return JSONResponse({"added": added, "status": queue.snapshot()})
@@ -264,11 +265,13 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         if scope not in ("thin", "all") or depth not in _DEPTHS:
             return _error(422, "'scope' must be thin or all and 'depth' year, 3y or all")
 
-        def work(ro: sqlite3.Connection) -> Response:
-            chosen = [c for c in history.coverage(ro, conn) if scope == "all" or c.thin]
-            return fill_response(request, [(c.jid, c.backfill_jid) for c in chosen], depth)
+        def work(ro: sqlite3.Connection) -> list[tuple[str, str | None]] | Response:
+            return [(c.jid, c.backfill_jid) for c in history.coverage(ro, conn) if scope == "all" or c.thin]
 
-        return await run_in_threadpool(with_store, work)
+        items = await run_in_threadpool(with_store, work)
+        if isinstance(items, Response):
+            return items
+        return fill_response(request, items, depth)
 
     async def chat_history(request: Request) -> Response:
         body = await body_of(request)
@@ -277,16 +280,13 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             return _error(422, "'depth' must be year, 3y or all")
         jid = request.path_params["jid"]
 
-        def work(ro: sqlite3.Connection) -> Response:
-            chat = store.get_chat(ro, conn, jid)
-            if chat is None:
-                return _error(404, "Chat not found")
-            found = next((c for c in history.coverage(ro, conn, limit=100_000) if c.jid == chat.jid), None)
-            if found is None:
-                return _error(404, "Chat not found")
-            return fill_response(request, [(found.jid, found.backfill_jid)], depth)
+        def work(ro: sqlite3.Connection) -> history.ChatCoverage | Response:
+            return history.chat_coverage(ro, conn, jid) or _error(404, "Chat not found")
 
-        return await run_in_threadpool(with_store, work)
+        found = await run_in_threadpool(with_store, work)
+        if isinstance(found, Response):
+            return found
+        return fill_response(request, [(found.jid, found.backfill_jid)], depth)
 
     async def history_status(request: Request) -> Response:
         return JSONResponse(request.app.state.backfill.snapshot())
