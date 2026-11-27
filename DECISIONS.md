@@ -408,3 +408,5 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   call log, polls) gets its own plan after M3a, so it can use what M3a taught.
 - **Started before the M1/M2 week of real use** (Simon, 2026-11-25: notifications are what he needs to use the app
   daily). The M1 and M2 "Done when" weeks stay open and run alongside.
+- **Shipped (2026-11-27):** M3a is built: notifications, photos and files, voice notes and private reply. Live checks are
+  still open; see `docs/reviews/milestone-3a.md`.

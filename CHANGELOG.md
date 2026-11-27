@@ -36,6 +36,10 @@ App and MCP audit fixes (see DECISIONS.md D24):
 
 ### Added
 
+- wa-app M3a: Web Push notifications for every incoming message (VAPID key made on first use, `WA_APP_PUSH_SUBJECT`
+  required, iPhone needs the Home Screen app), sending photos and files (raw upload up to 64 MiB, streamed to a
+  private temp folder, 2 at a time, captions and replies), recording and sending voice notes (15 minutes, sent as Ogg
+  Opus), and "Reply privately" on group messages.
 - Captions and quotes on media, and quoting across chats: `send_file` takes `caption`, `quoted_message_id` and
   `quoted_chat_jid`; `send_audio_message` takes the quote; `send_message` takes `quoted_chat_jid`. `/api/send` accepts
   `quoted_chat_jid` (private reply to a group message): the quote's `RemoteJID` is that chat, the quoted message is

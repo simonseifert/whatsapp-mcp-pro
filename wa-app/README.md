@@ -2,7 +2,7 @@
 
 A self-hosted, login-protected chat PWA that rides the whatsapp-mcp-pro bridge. Visual contract: [DESIGN.md](DESIGN.md).
 
-Status: M2, read, reply and AI drafts (chat list, chat view, media, live updates, read state, sending, drafts you can use or ignore). Install and screenshots: see the repo [README](../README.md#app).
+Status: M3a, read, reply, AI drafts, notifications, sending photos, files and voice notes, and private reply (chat list, chat view, media, live updates, read state, drafts you can use or ignore). Install and screenshots: see the repo [README](../README.md#app).
 
 ## Layout
 
@@ -20,6 +20,7 @@ Status: M2, read, reply and AI drafts (chat list, chat view, media, live updates
 | `WA_STORE_PATH` | same rule as `whatsapp-mcp-server` | Bridge store dir holding `messages.db` |
 | `WA_APP_CLAUDE_BIN` | the `claude` on `PATH` | Path to the `claude` CLI, for the CLI backend |
 | `WA_APP_AGENT_TOKEN` | unset | Bearer token for `/api/agent/*` (drafts from Claude). Unset means those routes answer 404 |
+| `WA_APP_PUSH_SUBJECT` | unset | Contact for Web Push, a `mailto:` or `https:` URL that push services can reach you on. Required for notifications: unset means push is off and `/api/push/key` answers 503 |
 | `WA_APP_INSECURE_COOKIES` | unset | `1` drops the `Secure` cookie flag, for local http development only |
 
 The login rate limit keys on the client address; behind a loopback proxy (tailscale serve) it uses the last `X-Forwarded-For` hop (the proxy appends the real client; earlier hops are client-controlled), trusted only from a loopback peer.
@@ -51,6 +52,29 @@ for any future upload route).
 A voice note from a chat marked local only is only ever transcribed by a local backend (whisper server, mlx,
 faster-whisper). If none works the request fails with "Local transcription unavailable"; it never falls back to Groq.
 `TRANSCRIBE_CLOUD_FALLBACK=0` in the shared `.env` turns the Groq fallback off for every chat.
+
+## Notifications
+
+The app notifies on every incoming message, with the sender and the text, except muted chats and the chat open in a visible app window.
+
+1. Set `WA_APP_PUSH_SUBJECT` (a `mailto:` address or `https:` URL you control) in wa-app's environment and restart. Never commit it.
+2. The VAPID key pair is created on first use as `vapid.pem` in `WA_APP_DATA` (mode 600). **Back it up with `app.db`**: a new key makes every existing subscription invalid, and each device must switch notifications on again.
+3. **On iPhone, install the app to the Home Screen** (Share, Add to Home Screen) and open it from there; iOS only delivers push to the installed app. Then Settings, Notifications on, and "Send a test".
+4. Turn off the phone WhatsApp's own notifications to avoid doubles.
+
+Payloads are encrypted end to end, so Apple and Google relay ciphertext only. Bodies are cut to 180 characters, and a chat shows one notification at a time (a new message replaces the old one). Messages older than 120 seconds, your own, system messages, deleted messages and call-log entries never notify. Only devices with a live login get a push.
+
+## Sending photos, files and voice notes
+
+The attach button sends a photo or a file with an optional caption (up to 1024 characters) and a reply. Uploads are limited to 64 MiB and at most 2 run at once. The file is streamed to a private temp folder under `/tmp` and deleted after the send.
+
+The mic button records a voice note in the browser (webm/opus, or mp4 on iPhone), up to 15 minutes. The MCP side converts it to Ogg Opus before sending. The browser asks for the microphone the first time, and recording needs https.
+
+Every send, uploads included, goes through the bridge's send allowlists.
+
+## Reply privately
+
+In a group, a message's menu has **Reply privately**. It opens the sender's own chat with the group message quoted. If the bridge cannot resolve the message, the send is refused rather than sent without the quote.
 
 ## AI drafts
 

@@ -53,14 +53,14 @@ Built 2026-11-23 (code landed; deploy and the week of real use are still open).
   week.
 
 ## M3: the rest of WhatsApp-parity
-- **Push notifications:** spike pywebpush against Apple first.
-- **Sending:** voice notes recorded in the app, and attachments (photo, file,
-  document).
+- [x] **Push notifications:** spike passed on an iPhone; a notification for every incoming message (M3a).
+- [x] **Sending:** voice notes recorded in the app, and attachments (photo, file,
+  document) (M3a).
 - **Search:** keyword search plus search by meaning, from the chats list and inside a
   chat.
-- **Private reply:** reply privately to a group message, quoting it in the sender's
+- [x] **Private reply:** reply privately to a group message, quoting it in the sender's
   own chat (idea from GOWA; Simon, 2026-11-22). Needs a bridge change to quote across
-  chats.
+  chats (M3a).
 - **Contacts and groups:** contact and group info from the directory, a Communities
   tab, a call log tab, and a polls UI.
 - **Done when:** the maintainer goes a week without needing WhatsApp on the phone for
