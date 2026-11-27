@@ -129,6 +129,7 @@ describe('HistorySection', () => {
         { jid: 'cy@x', result: 'skipped', detail: 'no messages', oldest: null },
         { jid: 'ana@x', result: 'more', detail: '', oldest: null },
         { jid: 'zz@x', result: 'failed', detail: 'phone offline', oldest: null },
+        { jid: 'ana@x', result: 'failed', detail: '', oldest: null },
       ],
     })
     await tick()
@@ -137,6 +138,8 @@ describe('HistorySection', () => {
     expect(screen.getByText('Cy: Skipped: nothing to anchor on')).toBeTruthy()
     expect(screen.getByText('Ana: More available, run again')).toBeTruthy()
     expect(screen.getByText('zz: Failed: phone offline')).toBeTruthy()
+    expect(screen.getByText('Ana: Failed')).toBeTruthy()
+    expect(screen.getByText('Last fill')).toBeTruthy()
     expect(api.fetchCoverage).toHaveBeenCalledTimes(2)
     // idle now: no more polling
     await tick(20000)

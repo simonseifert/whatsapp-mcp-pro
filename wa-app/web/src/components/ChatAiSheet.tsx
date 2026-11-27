@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchBackends, fetchChatAi, loadChatHistory, saveChatAi } from '../api'
-import type { BackendCfg, BackendsResponse, ChatAi, HistoryStatus } from '../api-types'
+import type { BackendCfg, BackendsResponse, ChatAi } from '../api-types'
 import { formatMonth } from '../format'
 import { Icon } from './Icon'
 import { useDialog } from './useDialog'
+import { RESULT, useHistoryStatus } from './useHistoryStatus'
 
 const MAX_NOTE = 500
 const MAX_RULES = 2000
@@ -31,7 +32,10 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
   const [failed, setFailed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [older, setOlder] = useState<HistoryStatus | null>(null)
+  const [asked, setAsked] = useState(false)
+  const { status: older, setStatus: setOlder } = useHistoryStatus(
+    (st) => st.running?.jid === jid || st.queued.includes(jid),
+  )
   const [olderError, setOlderError] = useState<string | null>(null)
   const [olderBusy, setOlderBusy] = useState(false)
 
@@ -96,6 +100,7 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
     setOlderError(null)
     try {
       setOlder((await loadChatHistory(jid, 'all')).status)
+      setAsked(true)
     } catch (err) {
       setOlderError(err instanceof Error ? err.message : "Couldn't start")
     } finally {
@@ -104,11 +109,16 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
   }
 
   const run = older?.running?.jid === jid ? older.running : null
+  const queued = older?.queued.includes(jid) ?? false
+  const last = asked ? older?.done.findLast((d) => d.jid === jid) : undefined
   const olderLine = run
     ? `Loading older messages: ${run.batches} ${run.batches === 1 ? 'batch' : 'batches'}${run.oldest ? `, back to ${formatMonth(run.oldest)}` : ''}`
-    : older
+    : queued
       ? 'Queued'
-      : null
+      : last
+        ? RESULT[last.result](last.detail)
+        : null
+  const loadingOlder = olderBusy || run !== null || queued
 
   return (
     <div className="menu-wrap sheet-wrap">
@@ -191,7 +201,7 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
               </p>
             )}
             <div className="sheet-field">
-              <button className="button-text" type="button" disabled={olderBusy || olderLine !== null} onClick={() => void loadOlder()}>
+              <button className="button-text" type="button" disabled={loadingOlder} onClick={() => void loadOlder()}>
                 Load older messages
               </button>
               {olderLine && <p className="settings-about">{olderLine}</p>}

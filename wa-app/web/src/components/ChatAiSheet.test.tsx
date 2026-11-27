@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../api'
 import type { ChatAi } from '../api-types'
@@ -19,9 +19,11 @@ const backends = {
 beforeEach(() => {
   vi.spyOn(api, 'fetchChatAi').mockResolvedValue(ai)
   vi.spyOn(api, 'fetchBackends').mockResolvedValue(backends as never)
+  vi.spyOn(api, 'fetchHistoryStatus').mockResolvedValue({ running: null, queued: [], done: [] })
 })
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -84,24 +86,48 @@ describe('ChatAiSheet', () => {
     })
   })
 
-  it('queues older messages for this chat and says so', async () => {
-    const load = vi
-      .spyOn(api, 'loadChatHistory')
-      .mockResolvedValue({ added: 1, status: { running: null, queued: [JID], done: [] } })
+  it('follows this chat from queued to running to done, then re-enables the button', async () => {
+    vi.useFakeTimers()
+    const status = vi.mocked(api.fetchHistoryStatus)
+    vi.spyOn(api, 'loadChatHistory').mockResolvedValue({ added: 1, status: { running: null, queued: [JID], done: [] } })
     render(<ChatAiSheet jid={JID} onClose={() => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
-    await waitFor(() => expect(screen.getByText('Queued')).toBeTruthy())
-    expect(load).toHaveBeenCalledWith(JID, 'all')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const button = screen.getByRole('button', { name: 'Load older messages' }) as HTMLButtonElement
+    await act(async () => {
+      fireEvent.click(button)
+    })
+    expect(screen.getByText('Queued')).toBeTruthy()
+    expect(button.disabled).toBe(true)
+    status.mockResolvedValue({ running: { jid: JID, batches: 3, oldest: '2024-05-10T10:00:00Z' }, queued: [], done: [] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(screen.getByText('Loading older messages: 3 batches, back to May 2024')).toBeTruthy()
+    status.mockResolvedValue({ running: null, queued: [], done: [{ jid: JID, result: 'more', detail: '', oldest: null }] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(screen.getByText('More available, run again')).toBeTruthy()
+    expect(screen.queryByText('Queued')).toBeNull()
+    expect(button.disabled).toBe(false)
+    const calls = status.mock.calls.length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000)
+    })
+    expect(status.mock.calls.length).toBe(calls)
   })
 
-  it('shows the running line when this chat is already being filled', async () => {
+  it('does not say Queued when nothing was added and the chat already finished', async () => {
     vi.spyOn(api, 'loadChatHistory').mockResolvedValue({
       added: 0,
-      status: { running: { jid: JID, batches: 3, oldest: '2024-05-10T10:00:00Z' }, queued: [], done: [] },
+      status: { running: null, queued: [], done: [{ jid: JID, result: 'failed', detail: '', oldest: null }] },
     })
     render(<ChatAiSheet jid={JID} onClose={() => {}} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
-    await waitFor(() => expect(screen.getByText('Loading older messages: 3 batches, back to May 2024')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Failed')).toBeTruthy())
+    expect(screen.queryByText('Queued')).toBeNull()
   })
 
   it('shows why older messages could not be queued', async () => {

@@ -1,21 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { cancelHistory, fetchCoverage, fetchHistoryStatus, fillHistory } from '../api'
-import type { HistoryCoverage, HistoryDepth, HistoryDone, HistoryStatus } from '../api-types'
+import { cancelHistory, fetchCoverage, fillHistory } from '../api'
+import type { HistoryCoverage, HistoryDepth } from '../api-types'
 import { formatCount, formatMonth } from '../format'
-
-const POLL_MS = 5000
+import { RESULT, useHistoryStatus } from './useHistoryStatus'
 const DEPTHS: { value: HistoryDepth; label: string }[] = [
   { value: 'year', label: 'Last year' },
   { value: '3y', label: '3 years' },
   { value: 'all', label: 'Everything' },
 ]
-
-const RESULT: Record<HistoryDone['result'], (detail: string) => string> = {
-  done: () => 'Done',
-  more: () => 'More available, run again',
-  failed: (detail) => `Failed: ${detail}`,
-  skipped: () => 'Skipped: nothing to anchor on',
-}
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
 
@@ -23,7 +15,6 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
 export function HistorySection() {
   const [coverage, setCoverage] = useState<HistoryCoverage | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
-  const [status, setStatus] = useState<HistoryStatus | null>(null)
   const [depth, setDepth] = useState<HistoryDepth>('year')
   const [confirm, setConfirm] = useState<'thin' | 'all' | null>(null)
   const [busy, setBusy] = useState(false)
@@ -40,38 +31,15 @@ export function HistorySection() {
       .catch(() => mounted.current && setLoadFailed(true))
   }, [])
 
-  const poll = useCallback(() => {
-    fetchHistoryStatus()
-      .then((s) => mounted.current && setStatus(s))
-      .catch(() => undefined)
-  }, [])
+  const { status, setStatus, active } = useHistoryStatus((st) => st.running !== null || st.queued.length > 0)
 
   useEffect(() => {
     mounted.current = true
     loadCoverage()
-    poll()
     return () => {
       mounted.current = false
     }
-  }, [loadCoverage, poll])
-
-  const active = status !== null && (status.running !== null || status.queued.length > 0)
-
-  // Poll while a job runs or waits; pause while the page is hidden and catch up when it is shown again.
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => {
-      if (!document.hidden) poll()
-    }, POLL_MS)
-    const onVisible = () => {
-      if (!document.hidden) poll()
-    }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [active, poll])
+  }, [loadCoverage])
 
   // New messages arrived while it ran: refresh the numbers once it goes idle.
   const wasActive = useRef(false)
@@ -197,6 +165,8 @@ export function HistorySection() {
           </div>
         )}
         {status && status.done.length > 0 && (
+          <>
+          <div className="settings-label">Last fill</div>
           <ul className="history-list" aria-label="Last fill results">
             {status.done.map((d, i) => (
               <li key={`${d.jid}-${i}`}>
@@ -204,6 +174,7 @@ export function HistorySection() {
               </li>
             ))}
           </ul>
+          </>
         )}
       </div>
     </div>
