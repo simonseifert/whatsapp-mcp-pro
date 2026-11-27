@@ -144,7 +144,7 @@ class Notifier:
                     ro = store.open_ro(self.settings)
                 with appdb.db_lock:
                     chat = store.get_chat(ro, self.appconn, jid)
-                if chat is None or chat.muted:
+                if chat is None or chat.muted or chat.kind == "newsletter":  # Channels are broadcasts: never push
                     continue
                 payload = payload_for(chat, message)
                 if payload is not None:

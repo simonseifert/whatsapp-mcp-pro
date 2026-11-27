@@ -119,6 +119,14 @@ def test_skips_muted_chat(rig) -> None:
     assert sent == []
 
 
+def test_skips_newsletter_channels(rig) -> None:
+    notifier, sent, _, chats = rig
+    jid = "120363000000000099@newsletter"
+    chats[jid] = chat(jid, "Vijesti", "newsletter")
+    notifier.handle([event(message(), jid=jid)])
+    assert sent == []
+
+
 def test_skips_old_message(rig) -> None:
     notifier, sent, _, _ = rig
     notifier.handle([event(message("old", age=121))])

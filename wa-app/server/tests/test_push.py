@@ -64,6 +64,21 @@ def test_subscribe_upserts_and_binds_session(logged_in: TestClient, settings: Se
     db.close()
 
 
+def test_resubscribe_from_a_new_session_rebinds_it(logged_in: TestClient, settings: Settings) -> None:
+    from tests.conftest import PASSPHRASE
+
+    assert logged_in.post("/api/push/subscribe", json=sub()).status_code == 200
+    first = rows(settings)[0][1]
+    assert logged_in.post("/api/auth/login", json={"passphrase": PASSPHRASE}).status_code == 200  # a new session
+    assert logged_in.post("/api/push/subscribe", json=sub()).status_code == 200
+    found = rows(settings)
+    assert len(found) == 1
+    assert found[0][1] != first
+    db = sqlite3.connect(settings.data_dir / "app.db")
+    assert db.execute("SELECT count(*) FROM sessions WHERE token_hash=?", (found[0][1],)).fetchone()[0] == 1
+    db.close()
+
+
 def test_subscribe_validates_body(logged_in: TestClient) -> None:
     assert logged_in.post("/api/push/subscribe", json={"endpoint": GOOD}).status_code == 422
     assert (
