@@ -18,3 +18,12 @@ describe('ChatMenu', () => {
     expect(screen.getByRole('button', { name: 'Search' })).toBeTruthy()
   })
 })
+
+describe('ChatMenu lists', () => {
+  it('offers Add to list when the chat can open it', () => {
+    const { rerender } = render(<ChatMenu onAi={() => {}} onClose={() => {}} />)
+    expect(screen.queryByRole('button', { name: 'Add to list' })).toBeNull()
+    rerender(<ChatMenu onAi={() => {}} onLists={() => {}} onClose={() => {}} />)
+    expect(screen.getByRole('button', { name: 'Add to list' })).toBeTruthy()
+  })
+})

@@ -6,6 +6,7 @@ import type { ChatDetail, DraftView, MessageView, QuoteView } from '../api-types
 import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
 import { ChatMenu } from '../components/ChatMenu'
+import { ListSheet } from '../components/ListSheet'
 import { ChatAiSheet } from '../components/ChatAiSheet'
 import { ChatSearchBar } from '../components/ChatSearchBar'
 import { AttachSheet } from '../components/AttachSheet'
@@ -115,6 +116,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const [replacing, setReplacing] = useState<{ draft: DraftView; text: string } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
+  const [listsOpen, setListsOpen] = useState(false)
   const [attached, setAttached] = useState<File | null>(null)
   const [searching, setSearching] = useState(false)
   const [flashId, setFlashId] = useState<string | null>(null)
@@ -396,12 +398,17 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             setMenuOpen(false)
             setSearching(true)
           }}
+          onLists={() => {
+            setMenuOpen(false)
+            setListsOpen(true)
+          }}
           onAi={() => {
             setMenuOpen(false)
             setAiOpen(true)
           }}
         />
       )}
+      {listsOpen && <ListSheet jid={chatJid} onClose={() => setListsOpen(false)} />}
       {aiOpen && <ChatAiSheet jid={chatJid} onClose={() => setAiOpen(false)} />}
       {menuMessage && (
         <MessageMenu

@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, history, live, media, push, search, sending, store, transcripts
+from . import appdb, auth, history, lists, live, media, push, search, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
 from .ai import context as ai_context_store
@@ -195,7 +195,9 @@ def routes(
 
     async def chats(request: Request) -> Response:
         chat_filter = request.query_params.get("filter", "all")
-        if chat_filter not in store.FILTERS:
+        with appdb.db_lock:
+            known = lists.valid_filter(conn, chat_filter)
+        if not known:
             return _error(400, "Unknown filter")
         archived = request.query_params.get("archived", "").lower() in ("1", "true")
         query = request.query_params.get("q")
@@ -210,7 +212,7 @@ def routes(
             listed, archived_count, has_more = store.list_chats_page(
                 ro,
                 conn,
-                filter=chat_filter,  # type: ignore[arg-type]
+                filter=chat_filter,
                 archived=archived,
                 query=query,
                 before=before,
@@ -223,6 +225,74 @@ def routes(
             return _error(503, "Message store unavailable")
         finally:
             ro.close()
+
+    async def chat_filters(request: Request) -> Response:
+        with appdb.db_lock:
+            return JSONResponse({"filters": lists.chips(conn)})
+
+    async def lists_index(request: Request) -> Response:
+        if request.method == "GET":
+            chat = request.query_params.get("chat")
+            with appdb.db_lock:
+                rows = lists.list_all(conn)
+            if chat:
+
+                def mark(ro: sqlite3.Connection) -> Response:
+                    with appdb.db_lock:
+                        mine = lists.lists_of(conn, ro, chat)
+                    return JSONResponse({"lists": [{**row, "member": row["id"] in mine} for row in rows]})
+
+                return await run_in_threadpool(with_store, mark)
+            return JSONResponse({"lists": rows})
+        body = await body_of(request)
+        try:
+            with appdb.db_lock:
+                made = lists.create(conn, body.get("name") if isinstance(body, dict) else None)
+        except lists.ListError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse(made)
+
+    def _list_id(request: Request) -> int | None:
+        raw = request.path_params["id"]
+        return int(raw) if raw.isdigit() else None
+
+    async def list_item(request: Request) -> Response:
+        list_id = _list_id(request)
+        if list_id is None:
+            return _error(404, "List not found")
+        body = await body_of(request) if request.method == "PUT" else None
+        if request.method == "PUT" and not isinstance(body, dict):
+            return _error(422, "A JSON object is required")
+        try:
+            with appdb.db_lock:
+                if isinstance(body, dict):
+                    lists.update(conn, list_id, name=body.get("name"), position=body.get("position"))
+                else:
+                    lists.delete(conn, list_id)
+        except lists.ListError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse({"ok": True})
+
+    async def list_chats(request: Request) -> Response:
+        list_id = _list_id(request)
+        body = await body_of(request)
+        add = body.get("add", []) if isinstance(body, dict) else None
+        remove = body.get("remove", []) if isinstance(body, dict) else None
+        for group in (add, remove):
+            if not isinstance(group, list) or not all(isinstance(j, str) and j for j in group) or len(group) > 500:
+                return _error(422, "'add' and 'remove' must be lists of chat JIDs")
+        if list_id is None:
+            return _error(404, "List not found")
+
+        def work(ro: sqlite3.Connection) -> Response:
+            try:
+                with appdb.db_lock:
+                    lists.change_chats(conn, ro, list_id, add, remove)  # type: ignore[arg-type]
+            except lists.ListError as exc:
+                return _error(exc.status, exc.message)
+            return JSONResponse({"ok": True})
+
+        return await run_in_threadpool(with_store, work)
 
     def with_store(work):  # noqa: ANN001, ANN202
         try:
@@ -749,6 +819,10 @@ def routes(
         Route("/api/push/test", push_test, methods=["POST"]),
         Route("/api/about", about, methods=["GET"]),
         Route("/api/chats", chats, methods=["GET"]),
+        Route("/api/chat-filters", chat_filters, methods=["GET"]),
+        Route("/api/lists", lists_index, methods=["GET", "POST"]),
+        Route("/api/lists/{id}/chats", list_chats, methods=["PUT"]),
+        Route("/api/lists/{id}", list_item, methods=["PUT", "DELETE"]),
         Route("/api/history/coverage", history_coverage, methods=["GET"]),
         Route("/api/history/fill", history_fill, methods=["POST"]),
         Route("/api/history/status", history_status, methods=["GET"]),

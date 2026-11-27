@@ -25,6 +25,11 @@ export type ChatSummary = {
   community_name: string | null
 }
 
+/** One chip above the chat list: a built-in filter or `list:<id>` for a custom list. The server decides the set and order. */
+export type FilterChip = { id: string; label: string }
+/** A custom chat list. `member` is only present when the request named a chat. */
+export type ChatList = { id: number; name: string; position: number; count: number; member?: boolean }
+
 export type ChatsResponse = { chats: ChatSummary[]; archived_count: number; has_more: boolean }
 
 export type MediaView = {

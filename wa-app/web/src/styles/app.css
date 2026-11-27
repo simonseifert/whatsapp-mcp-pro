@@ -2447,3 +2447,23 @@ input {
     background: var(--accent-soft);
   }
 }
+
+/* Settings > Lists */
+.list-row {
+  border-bottom: 1px solid var(--hair);
+}
+
+.list-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-height: var(--spacing-row);
+  padding: var(--spacing-sm) var(--spacing-lg);
+}
+
+.list-name {
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

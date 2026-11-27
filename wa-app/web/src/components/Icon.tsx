@@ -101,6 +101,12 @@ const PATHS: Record<string, ReactNode> = {
   ),
   up: <path d="M5 15l7-7 7 7" />,
   down: <path d="M5 9l7 7 7-7" />,
+  list: (
+    <>
+      <path d="M9 6h11M9 12h11M9 18h11" />
+      <path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" />
+    </>
+  ),
   chevron: <path d="M9 5l7 7-7 7" />,
   back: <path d="M15 5l-7 7 7 7" />,
   megaphone: (

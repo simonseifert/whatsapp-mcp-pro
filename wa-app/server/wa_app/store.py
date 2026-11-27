@@ -15,8 +15,9 @@ from .config import Settings
 from .mcp_lib import resolve_display_names
 from .unread import NOT_POLL_VOTE, UnreadCounter
 
-ChatFilter = Literal["all", "unread", "favourites", "groups"]
-FILTERS: tuple[str, ...] = ("all", "unread", "favourites", "groups")
+# "all", "unread", "favourites", "groups", "mentions", or "list:<id>" (a custom list, see lists.py).
+ChatFilter = str
+FILTERS: tuple[str, ...] = ("all", "unread", "favourites", "groups", "mentions")
 GROUP_KINDS = ("group", "community_group", "announcement")
 PREVIEW_MAX = 300
 _PHONE_SUFFIX = "@s.whatsapp.net"
@@ -439,9 +440,15 @@ def list_chats_page(
     convs = _conversations(conn)
     states = _states(conn, convs)
     archived_count = sum(1 for c in convs if states.get(c.jid, _State()).archived)
+    list_id = _list_id(filter)
+    if list_id is not None:  # a list shows its archived chats too: archiving never hides a chat from its own list
+        archived = None
     convs = [c for c in convs if archived is None or states.get(c.jid, _State()).archived == archived]
     if only_jid is not None:
         convs = [c for c in convs if only_jid == c.jid or only_jid in c.forms]
+    if list_id is not None:
+        members = _list_members(appconn, list_id)
+        convs = [c for c in convs if members & {c.jid, *c.forms}]
 
     mcols = _columns(conn, "messages")
     deleted_sql = (
@@ -450,6 +457,20 @@ def list_chats_page(
     )
     store_dir = _db_dir(conn)
     now = time.time()
+    counter = UnreadCounter(conn, appconn)
+    if filter == "mentions":
+        convs = [
+            c
+            for c in convs
+            if c.jid.endswith("@g.us")
+            and _has_unread_mention(
+                conn,
+                c,
+                (counter.marker(c.forms, states.get(c.jid, _State()).last_read_at) or counter.tracking_since),
+                mcols,
+                store_dir,
+            )
+        ]
 
     # Last message per conversation; one without any message (a community shell, an empty chat) is not listed.
     found: list[tuple[_Conversation, tuple]] = []
@@ -471,7 +492,6 @@ def list_chats_page(
         conn,
         [(c.jid, last[0], c.forms) for c, last in found if last[6] and not last[10]],
     )
-    counter = UnreadCounter(conn, appconn)
     community_names: dict[str, str | None] = {}
     summaries: list[ChatSummary] = []
     for conv, last in found:
@@ -566,6 +586,72 @@ def list_chats_page(
         while end < len(summaries) and _sort_key(summaries[end].last_message.timestamp_iso) == edge:
             end += 1
     return summaries[:end], archived_count, len(summaries) > end
+
+
+def _list_id(filter: str) -> int | None:  # noqa: A002
+    prefix, _, rest = filter.partition(":")
+    return int(rest) if prefix == "list" and rest.isdigit() else None
+
+
+def _list_members(appconn: sqlite3.Connection, list_id: int) -> set[str]:
+    """The chat JIDs stored for a list; matched against every form of a conversation, so a chat that changed form
+    (phone JID to LID, a merge) stays in its lists."""
+    try:
+        return {r[0] for r in appconn.execute("SELECT chat_jid FROM list_chats WHERE list_id = ?", (list_id,))}
+    except sqlite3.OperationalError:  # an app db from before lists
+        return set()
+
+
+_EVERYONE = re.compile(r"(?<![\w@])@(?:all|everyone)\b", re.IGNORECASE)
+
+
+def _has_unread_mention(
+    conn: sqlite3.Connection,
+    conv: _Conversation,
+    marker: datetime | None,
+    mcols: set[str],
+    store_dir: Path | None,
+) -> bool:
+    """WhatsApp's "mentions and replies": an unread incoming message that @-mentions me (phone or LID form), quotes
+    one of my messages, or says @all / @everyone. Without a read marker nothing counts (no way to say what is unread).
+    A store without `mentioned_jids` (an older bridge) still matches replies and @all."""
+    if marker is None:
+        return False
+    forms = conv.forms
+    quote = [c for c in ("quoted_message_id", "reply_to_message_id") if c in mcols]
+    quote_id = f"COALESCE({', '.join('m.' + c for c in quote)})" if quote else "NULL"
+    mentioned = "m.mentioned_jids" if "mentioned_jids" in mcols else "NULL"
+    deleted = "AND m.deleted_at IS NULL" if "deleted_at" in mcols else ""
+    bound = marker.isoformat(sep=" ")
+    marks = _marks(forms)
+    rows = conn.execute(
+        f"""
+        SELECT m.content, {mentioned},
+               {quote_id} IS NOT NULL AND EXISTS (
+                   SELECT 1 FROM messages q
+                   WHERE q.id = {quote_id} AND q.chat_jid IN ({marks}) AND COALESCE(q.is_from_me, 0) = 1)
+        FROM messages m
+        WHERE m.chat_jid IN ({marks}) AND COALESCE(m.is_from_me, 0) = 0 AND COALESCE(m.is_system_message, 0) = 0
+          {deleted} AND {NOT_POLL_VOTE.replace("content", "m.content")}
+          AND m.timestamp >= date(?, '-1 day') AND datetime(m.timestamp) > datetime(?)""",
+        (*forms, *forms, bound, bound),
+    ).fetchall()
+    if not rows:
+        return False
+    own: set[str] | None = None
+    for content, mentions, replied in rows:
+        if replied or _EVERYONE.search(content or ""):
+            return True
+        if mentions:
+            try:
+                wanted = {_bare(j) for j in json.loads(mentions) if isinstance(j, str)}
+            except ValueError:
+                continue
+            if wanted:
+                own = _own_ids(conn, store_dir, forms) if own is None else own
+                if wanted & own:
+                    return True
+    return False
 
 
 def _sort_key(iso: str) -> float:

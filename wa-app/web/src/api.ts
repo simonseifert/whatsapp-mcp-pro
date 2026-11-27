@@ -4,6 +4,8 @@ import type {
   BackendsResponse,
   BackendTestResult,
   ChatAi,
+  ChatList,
+  FilterChip,
   DraftContext,
   DraftView,
   HistoryCoverage,
@@ -299,4 +301,32 @@ export function searchMessages(q: string, opts: { chat?: string; before?: string
   if (opts.chat) params.set('chat', opts.chat)
   if (opts.before) params.set('before', opts.before)
   return apiFetch<SearchResponse>(`/api/search?${params.toString()}`)
+}
+
+/** The chips above the chat list. Null when the server's answer is not a chip list (the app then shows its built-ins). */
+export async function fetchChatFilters(): Promise<FilterChip[] | null> {
+  const body = await apiFetch<{ filters?: FilterChip[] }>('/api/chat-filters')
+  return Array.isArray(body?.filters) ? body.filters : null
+}
+
+/** The custom lists in saved order; with `chat`, each says whether that chat is in it. */
+export async function fetchLists(chat?: string): Promise<ChatList[]> {
+  const query = chat ? `?chat=${encodeURIComponent(chat)}` : ''
+  return (await apiFetch<{ lists: ChatList[] }>(`/api/lists${query}`)).lists
+}
+
+export function createList(name: string): Promise<ChatList> {
+  return apiFetch<ChatList>('/api/lists', { method: 'POST', body: JSON.stringify({ name }) })
+}
+
+export async function updateList(id: number, patch: { name?: string; position?: number }): Promise<void> {
+  await apiFetch(`/api/lists/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
+}
+
+export async function deleteList(id: number): Promise<void> {
+  await apiFetch(`/api/lists/${id}`, { method: 'DELETE' })
+}
+
+export async function changeListChats(id: number, change: { add: string[]; remove: string[] }): Promise<void> {
+  await apiFetch(`/api/lists/${id}/chats`, { method: 'PUT', body: JSON.stringify(change) })
 }

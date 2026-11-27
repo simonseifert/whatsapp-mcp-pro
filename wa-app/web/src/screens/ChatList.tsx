@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
+import { fetchChatFilters } from '../api'
+import type { FilterChip } from '../api-types'
 import { ChatRow } from '../components/ChatRow'
 import { FilterChips, type Filter } from '../components/FilterChips'
 import { Icon } from '../components/Icon'
@@ -10,15 +12,28 @@ import { useChats } from '../useChats'
 const SEARCH_DEBOUNCE_MS = 250
 
 export function ChatList({ archived = false }: { archived?: boolean }) {
-  const [filter, setFilter] = useState<Filter>('all')
+  const [picked, setFilter] = useState<Filter>('all')
+  const [chips, setChips] = useState<FilterChip[] | null>(null)
   const [text, setText] = useState('')
   const [query, setQuery] = useState('')
+  // A list deleted since it was chosen is gone from the chips: show All instead.
+  const filter = chips && !chips.some((c) => c.id === picked) ? 'all' : picked
   const { data, error, loadedQuery, retry, loadMore } = useChats(filter, archived, query)
   const sentinel = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const messageSearch = `/search?q=${encodeURIComponent(text.trim())}`
   const canSearchMessages = !archived && text.trim().length >= MIN_QUERY
 
+  // The chips come from the server (built-ins, then custom lists in saved order); a failed load keeps the built-ins.
+  useEffect(() => {
+    let live = true
+    fetchChatFilters()
+      .then((loaded) => live && setChips(loaded))
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [])
   useEffect(() => {
     const id = window.setTimeout(() => setQuery(text.trim()), SEARCH_DEBOUNCE_MS)
     return () => window.clearTimeout(id)
@@ -83,7 +98,7 @@ export function ChatList({ archived = false }: { archived?: boolean }) {
           </label>
         </form>
       </header>
-      {!archived && <FilterChips value={filter} onChange={setFilter} />}
+      {!archived && <FilterChips chips={chips} value={filter} onChange={setFilter} />}
       {error && !data && (
         <div className="empty-state" role="alert">
           <p>Could not load chats.</p>
