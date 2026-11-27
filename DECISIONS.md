@@ -410,3 +410,17 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   daily). The M1 and M2 "Done when" weeks stay open and run alongside.
 - **Built 2026-11-27, deploy pending:** M3a is built: notifications, photos and files, voice notes and private reply. Live checks are
   still open; see `docs/reviews/milestone-3a.md`.
+
+## D26 - 2026-11-27 - WhatsApp-parity backlog and the M3b/M3c/M3d split
+
+- **Why:** WhatsApp Business now ships Meta Business Agent (per chat: My reply / Suggestions / AI agent, learns from
+  past chats, part of a paid Meta One tier). wa-app keeps its own angle (personal account, any model including local,
+  learns from edits, never sends by itself) and closes the everyday feature gap instead.
+- **M3b, find and organise** (`docs/superpowers/plans/2026-11-27-wa-app-m3b-find-and-organise.md`): message search,
+  custom lists plus a Mentions and replies filter, edit, delete for everyone, star, forward, pin, mute, archive, mark
+  unread, quick replies, and a per-chat AI mode sheet (My reply / Suggestions; Auto shown as coming later).
+- **M3c:** polls (create and vote), contact and group info, Communities, catch-me-up summaries, translation.
+- **M3d:** call log (view only; linked devices cannot place WhatsApp calls), status viewing, Auto mode replies last,
+  since it is the only feature that sends without a tap.
+- **Left out:** catalogs and shop features, broadcast lists (ban risk for an unofficial client), ads, Meta Verified.
+- **Order:** M3a first (live since 2026-11-27); M3b after.
