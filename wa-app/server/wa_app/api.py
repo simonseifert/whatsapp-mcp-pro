@@ -1,10 +1,12 @@
 """JSON API routes."""
 
+import asyncio
 import importlib.metadata
 import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import unquote
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -233,7 +235,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         jid = request.path_params["jid"]
 
         def work(ro: sqlite3.Connection) -> Response:
-            chat = store.get_chat(ro, conn, jid)
+            chat = store.get_chat(ro, conn, jid) or store.direct_chat_for(ro, conn, jid)  # known person, no chat yet
             if chat is None:
                 return _error(404, "Chat not found")
             return JSONResponse({"chat": asdict(chat), "members_line": store.members_line(ro, chat.jid)})
@@ -440,6 +442,74 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
 
     async def chat_send(request: Request) -> Response:
         return await outward(request, sending.send_text)
+
+    uploads = asyncio.Semaphore(2)  # at most two uploads are staged at once (/tmp is RAM here); a third waits
+
+    async def chat_media(request: Request) -> Response:
+        # The body streams straight into the temp file; the middleware refuses a declared or streamed body over
+        # MAX_UPLOAD, and the count below is the second line.
+        headers = request.headers
+        try:
+            filename = unquote(headers.get("x-filename", ""), errors="strict")
+            raw_caption = headers.get("x-caption")
+            if raw_caption is not None and len(raw_caption) > sending.MAX_CAPTION_ENCODED:
+                return _error(422, "Caption too long")
+            caption = unquote(raw_caption, errors="strict") if raw_caption is not None else None
+        except UnicodeDecodeError:
+            return _error(422, "Bad header encoding")
+        try:
+            raw_reply_chat = headers.get("x-reply-chat")
+            if raw_reply_chat is not None and len(raw_reply_chat) > sending.MAX_JID_ENCODED:
+                return _error(422, "Bad reply_chat")
+            reply_chat = unquote(raw_reply_chat, errors="strict") if raw_reply_chat else None
+        except UnicodeDecodeError:
+            return _error(422, "Bad header encoding")
+        kind = headers.get("x-kind", "file")
+        if kind not in ("file", "voice"):
+            return _error(422, "Bad kind")
+        key = sending.valid_key(headers.get("x-client-key"))
+        if key is None:
+            return _error(422, "client_key must be a UUID")
+        if caption is not None and len(caption) > sending.MAX_CAPTION:
+            return _error(422, "Caption too long")
+        async with uploads:
+            directory: str | None = None
+            try:
+                try:
+                    directory, path = sending.new_stage(filename)
+                    total = 0
+                    with open(path, "wb") as handle:
+                        async for chunk in request.stream():
+                            total += len(chunk)
+                            if total > auth.MAX_UPLOAD:
+                                return _error(413, "Body too large")
+                            handle.write(chunk)
+                except (OSError, sending.StageError):
+                    return JSONResponse(
+                        {"ok": False, "error": "Not sent: couldn't prepare the file", "retryable": True},
+                        status_code=502,
+                    )
+                if total == 0:
+                    return _error(422, "Empty file")
+                try:
+                    outcome = await run_in_threadpool(
+                        lambda: sending.send_media(
+                            settings,
+                            conn,
+                            request.path_params["jid"],
+                            path=path,
+                            caption=caption,
+                            reply_to=headers.get("x-reply-to") or None,
+                            reply_chat=reply_chat,
+                            client_key=key,
+                            kind=kind,  # type: ignore[arg-type]
+                        )
+                    )
+                except sqlite3.Error:
+                    return _error(503, "Message store unavailable")
+                return JSONResponse(outcome.body, status_code=outcome.status)
+            finally:
+                sending.drop_stage(directory)
 
     async def chat_react(request: Request) -> Response:
         return await outward(request, sending.send_reaction)
@@ -655,6 +725,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
+        Route("/api/chats/{jid}/media", chat_media, methods=["POST"]),
         Route("/api/chats/{jid}/react", chat_react, methods=["POST"]),
         Route("/api/ai/backends", ai_backends, methods=["GET", "PUT"]),
         Route("/api/ai/backends/{id}", ai_backend_delete, methods=["DELETE"]),

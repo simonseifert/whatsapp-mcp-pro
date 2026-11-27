@@ -1276,6 +1276,7 @@ def send_message(
     mentioned_jids: list[str] | None = None,
     quoted_message_id: str | None = None,
     idempotency_key: str | None = None,
+    quoted_chat_jid: str | None = None,
 ) -> dict[str, Any]:
     """Send a WhatsApp message and return structured result with message_id.
 
@@ -1286,6 +1287,8 @@ def send_message(
         quoted_message_id: Optional ID of a message to quote/reply to
         idempotency_key: Dedupe key; a fresh random one per call when omitted
             (see lib/idempotency.py)
+        quoted_chat_jid: Chat the quoted message lives in, when it is not the
+            recipient's chat (a private reply to a group message)
     """
     try:
         # Validate input
@@ -1301,6 +1304,8 @@ def send_message(
             payload["mentioned_jids"] = mentioned_jids
         if quoted_message_id:
             payload["quoted_message_id"] = quoted_message_id
+        if quoted_chat_jid:
+            payload["quoted_chat_jid"] = quoted_chat_jid
 
         key = resolve_idempotency_key(
             idempotency_key,
@@ -1308,6 +1313,7 @@ def send_message(
             recipient,
             message,
             quoted_message_id,
+            quoted_chat_jid,
             ",".join(mentioned_jids or []),
         )
         result, meta = _send_request(url, payload, key)
@@ -1336,8 +1342,14 @@ def send_file(
     file_content_base64: str | None = None,
     filename: str | None = None,
     idempotency_key: str | None = None,
+    caption: str | None = None,
+    quoted_message_id: str | None = None,
+    quoted_chat_jid: str | None = None,
 ) -> dict[str, Any]:
     """Send a file via WhatsApp and return structured result with message_id.
+
+    caption is sent as the media's caption; quoted_message_id (and
+    quoted_chat_jid, when that message is in another chat) quotes a message.
 
     Accepts either a path on this server's filesystem, or the file's bytes as
     base64. The latter exists because MCP clients generally run somewhere else:
@@ -1406,11 +1418,24 @@ def send_file(
 
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
+        if caption:
+            payload["message"] = caption
+        if quoted_message_id:
+            payload["quoted_message_id"] = quoted_message_id
+        if quoted_chat_jid:
+            payload["quoted_chat_jid"] = quoted_chat_jid
 
         # Hash the bytes, not the path: a base64 upload is staged under a fresh
         # temp dir each call, so the path differs between identical retries.
         key = resolve_idempotency_key(
-            idempotency_key, "send_file", recipient, file_sha256(media_path), os.path.basename(media_path)
+            idempotency_key,
+            "send_file",
+            recipient,
+            file_sha256(media_path),
+            os.path.basename(media_path),
+            caption,
+            quoted_message_id,
+            quoted_chat_jid,
         )
         result, meta = _send_request(url, payload, key, timeout=MEDIA_SEND_TIMEOUT)
         if result is None:
@@ -1438,7 +1463,13 @@ def send_file(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def send_audio_message(recipient: str, media_path: str, idempotency_key: str | None = None) -> dict[str, Any]:
+def send_audio_message(
+    recipient: str,
+    media_path: str,
+    idempotency_key: str | None = None,
+    quoted_message_id: str | None = None,
+    quoted_chat_jid: str | None = None,
+) -> dict[str, Any]:
     """Send an audio message via WhatsApp and return structured result with message_id.
 
     idempotency_key is a fresh random one per call when omitted
@@ -1465,7 +1496,14 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
             return {"success": False, "error": MEDIA_UNAVAILABLE}
 
         # Keyed on the source bytes: conversion writes a new temp file each call.
-        key = resolve_idempotency_key(idempotency_key, "send_audio_message", recipient, file_sha256(media_path))
+        key = resolve_idempotency_key(
+            idempotency_key,
+            "send_audio_message",
+            recipient,
+            file_sha256(media_path),
+            quoted_message_id,
+            quoted_chat_jid,
+        )
 
         if not media_path.endswith(".ogg"):
             try:
@@ -1478,6 +1516,10 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
 
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
+        if quoted_message_id:
+            payload["quoted_message_id"] = quoted_message_id
+        if quoted_chat_jid:
+            payload["quoted_chat_jid"] = quoted_chat_jid
 
         result, meta = _send_request(url, payload, key, timeout=MEDIA_SEND_TIMEOUT)
         if result is None:

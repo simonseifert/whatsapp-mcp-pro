@@ -286,6 +286,8 @@ type SendMessageRequest struct {
 	MediaPath       string   `json:"media_path,omitempty"`
 	MentionedJIDs   []string `json:"mentioned_jids,omitempty"`
 	QuotedMessageID string   `json:"quoted_message_id,omitempty"`
+	// QuotedChatJID: chat of the quoted message when it differs from recipient.
+	QuotedChatJID string `json:"quoted_chat_jid,omitempty"`
 	// IdempotencyKey dedupes retries; also accepted as the Idempotency-Key header.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }

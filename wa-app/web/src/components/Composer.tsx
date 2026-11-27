@@ -1,8 +1,12 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 import type { MessageView } from '../api-types'
 import { Icon } from './Icon'
+import { RecordBar } from './RecordBar'
+import { canRecord, useRecorder, voiceFilename } from '../useRecorder'
 
 export const MAX_TEXT = 4096
+const MIC_SEEN = 'wa-mic-explained'
+export const MIC_EXPLAINER = 'wa-app needs the microphone to record voice messages.'
 const MAX_ROWS_PX = 132 // about five lines, then the box scrolls
 
 /** What the chat screen may do to the box from outside: read it and fill it (a draft's "Use"). */
@@ -15,6 +19,10 @@ type Props = {
   replyTo: MessageView | null
   onCancelReply: () => void
   onSend: (text: string) => void
+  /** A file was picked with the paperclip (photos, camera and any file). */
+  onAttach?: (file: File) => void
+  /** A voice note was recorded and Send was tapped. Nothing is uploaded before that. */
+  onVoice?: (file: File) => void
   ref?: Ref<ComposerHandle>
   /** Ask for a one-off draft; the button is absent without it. */
   onDraft?: () => void
@@ -49,12 +57,29 @@ function useKeyboardInset(target: React.RefObject<HTMLElement | null>) {
   }, [target])
 }
 
-/** The message box: a pill, 16 px text, 44 px targets. Attach is a placeholder until a later version; no mic in M1. */
-export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, drafting, onTextChange }: Props) {
+/** The message box: a pill, 16 px text, 44 px targets. The paperclip opens the system file picker (on a phone: camera, photos, files). */
+export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, ref, onDraft, drafting, onTextChange }: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
+  const picker = useRef<HTMLInputElement>(null)
   useKeyboardInset(wrap)
+  const rec = useRecorder()
+  const recording = rec.state !== 'idle'
+  const [explain, setExplain] = useState(false)
+
+  // The first time, say why before the browser asks for the microphone.
+  function onMic() {
+    let seen = true
+    try {
+      seen = localStorage.getItem(MIC_SEEN) === '1'
+      if (!seen) localStorage.setItem(MIC_SEEN, '1')
+    } catch {
+      // Storage is blocked: skip the note rather than ask every time.
+    }
+    if (seen) void rec.start()
+    else setExplain(true)
+  }
 
   useLayoutEffect(() => {
     const el = box.current
@@ -122,13 +147,62 @@ export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, draftin
           Message too long ({text.length} / {MAX_TEXT})
         </p>
       )}
+      {explain && !recording && (
+        <div className="micnote">
+          <p>{MIC_EXPLAINER}</p>
+          <button
+            type="button"
+            className="micnote-go"
+            onClick={() => {
+              setExplain(false)
+              void rec.start()
+            }}
+          >
+            Continue
+          </button>
+        </div>
+      )}
+      {rec.state === 'idle' && rec.message && (
+        <p className="toolong" role="alert">
+          {rec.message}
+        </p>
+      )}
+      {recording ? (
+        <RecordBar
+          state={rec.state}
+          seconds={rec.seconds}
+          blob={rec.blob}
+          message={rec.message}
+          onStop={rec.stop}
+          onCancel={rec.cancel}
+          onSend={(blob) => {
+            const file = new File([blob], voiceFilename(blob), { type: blob.type })
+            rec.cancel()
+            onVoice?.(file)
+          }}
+        />
+      ) : (
       <div className="composer-row">
+        <input
+          ref={picker}
+          type="file"
+          hidden
+          tabIndex={-1}
+          aria-hidden="true"
+          data-testid="file-input"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            e.target.value = '' // the same file can be picked again
+            if (file) onAttach?.(file)
+          }}
+        />
         <button
           className="iconbtn attach"
           type="button"
-          disabled
-          title="In a later version"
-          aria-label="Attach, in a later version"
+          disabled={!onAttach}
+          aria-label="Attach a photo or file"
+          title="Attach a photo or file"
+          onClick={() => picker.current?.click()}
         >
           <Icon name="attach" size={22} />
         </button>
@@ -158,12 +232,27 @@ export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, draftin
           }}
           onKeyDown={onKeyDown}
         />
-        {canSend && (
+        {canSend ? (
           <button className="sendbtn" type="button" aria-label="Send" onClick={submit}>
             <Icon name="send" size={22} />
           </button>
+        ) : (
+          onVoice &&
+          text.length === 0 &&
+          canRecord() && (
+            <button
+              className="sendbtn"
+              type="button"
+              aria-label="Record voice message"
+              title="Record voice message"
+              onClick={onMic}
+            >
+              <Icon name="mic" size={22} />
+            </button>
+          )
         )}
       </div>
+      )}
     </div>
   )
 }

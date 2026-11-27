@@ -424,6 +424,7 @@ def send_message(
     mentioned_jids: list[str] | None = None,
     quoted_message_id: str | None = None,
     idempotency_key: str | None = None,
+    quoted_chat_jid: str | None = None,
 ) -> dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
 
@@ -443,12 +444,16 @@ def send_message(
         mentioned_jids: Optional list of JIDs to mention in the message (e.g. ["123456789@s.whatsapp.net"])
         quoted_message_id: Optional ID of a message to quote or reply to
         idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
+        quoted_chat_jid: Optional chat the quoted message lives in, when it is not the recipient's chat
+                 (a private reply to a group message)
 
     Returns:
         A dictionary with success, message_id, deduplicated, idempotency_key, and on
         failure error, http_status, code (e.g. "reachout_timelock"), retryable, hint
     """
-    return whatsapp_send_message(recipient, message, mentioned_jids, quoted_message_id, idempotency_key)
+    return whatsapp_send_message(
+        recipient, message, mentioned_jids, quoted_message_id, idempotency_key, quoted_chat_jid=quoted_chat_jid
+    )
 
 
 @tool("media", "Send File", read_only=False)
@@ -458,6 +463,9 @@ def send_file(
     file_content_base64: str | None = None,
     filename: str | None = None,
     idempotency_key: str | None = None,
+    caption: str | None = None,
+    quoted_message_id: str | None = None,
+    quoted_chat_jid: str | None = None,
 ) -> dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
 
@@ -484,6 +492,9 @@ def send_file(
         filename: Name for the file, including extension (e.g. "screenshot.png"). Required
                  with file_content_base64; the extension determines how WhatsApp shows it.
         idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
+        caption: Optional caption shown with the file
+        quoted_message_id: Optional ID of a message to quote or reply to
+        quoted_chat_jid: Optional chat the quoted message lives in, when it is not the recipient's chat
 
     Returns:
         A dictionary containing success status and a status message
@@ -493,11 +504,26 @@ def send_file(
         - To send an image you just created locally, base64-encode it and pass
           file_content_base64 with a filename
     """
-    return whatsapp_send_file(recipient, media_path, file_content_base64, filename, idempotency_key)
+    return whatsapp_send_file(
+        recipient,
+        media_path,
+        file_content_base64,
+        filename,
+        idempotency_key,
+        caption=caption,
+        quoted_message_id=quoted_message_id,
+        quoted_chat_jid=quoted_chat_jid,
+    )
 
 
 @tool("media", "Send Audio Message", read_only=False)
-def send_audio_message(recipient: str, media_path: str, idempotency_key: str | None = None) -> dict[str, Any]:
+def send_audio_message(
+    recipient: str,
+    media_path: str,
+    idempotency_key: str | None = None,
+    quoted_message_id: str | None = None,
+    quoted_chat_jid: str | None = None,
+) -> dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
 
     Sends are safe to retry. A request that times out is retried once automatically
@@ -515,11 +541,15 @@ def send_audio_message(recipient: str, media_path: str, idempotency_key: str | N
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file).
                  Same path rules as send_file: /tmp or a MEDIA_ALLOWED_DIRS directory only.
         idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
+        quoted_message_id: Optional ID of a message to quote or reply to
+        quoted_chat_jid: Optional chat the quoted message lives in, when it is not the recipient's chat
 
     Returns:
         A dictionary containing success status and a status message
     """
-    return whatsapp_audio_voice_message(recipient, media_path, idempotency_key)
+    return whatsapp_audio_voice_message(
+        recipient, media_path, idempotency_key, quoted_message_id=quoted_message_id, quoted_chat_jid=quoted_chat_jid
+    )
 
 
 @tool("media", "Download Media", read_only=True, idempotent=True, open_world=False)

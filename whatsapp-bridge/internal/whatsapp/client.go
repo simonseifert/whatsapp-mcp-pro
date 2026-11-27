@@ -37,6 +37,9 @@ type Client struct {
 	logger waLog.Logger
 	cfg    *config.Config
 
+	// uploadHook replaces the media upload in tests.
+	uploadHook func(ctx context.Context, data []byte, mediaType whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
+
 	appStateSyncing atomic.Bool // guards StartAppStateFullSync
 
 	// Connection state tracking

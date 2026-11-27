@@ -1535,6 +1535,31 @@ input {
   font-size: var(--text-caption);
 }
 
+.micnote {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin: 0 var(--spacing-sm);
+  font-size: var(--text-caption);
+  color: var(--muted);
+}
+
+.micnote p {
+  margin: 0;
+}
+
+.micnote-go {
+  min-height: 44px;
+  padding: 0 var(--spacing-sm);
+  border: 0;
+  background: none;
+  color: var(--accent, inherit);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .notice {
   padding: 0 var(--spacing-sm);
   background: var(--bg);
@@ -2214,4 +2239,123 @@ input {
 
 .history-list li .settings-about {
   flex-basis: 100%;
+}
+
+/* --- sending photos and files ---------------------------------------------------------------------------------- */
+.attach-preview {
+  align-self: center;
+  max-width: 100%;
+  max-height: 40vh;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+.attach-file,
+.uprow {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+}
+
+.attach-name,
+.upname {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-body-sm);
+}
+
+.attach-size,
+.upsize {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.uprow {
+  width: 248px;
+  max-width: 100%;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.upinfo {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  min-width: 0;
+}
+
+.upbar {
+  width: 100%;
+  height: 4px;
+  appearance: none;
+  border: 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.upbar::-webkit-progress-bar {
+  background: transparent;
+}
+
+.upbar::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.upbar::-moz-progress-bar {
+  background: var(--accent);
+}
+
+.recordbar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  min-height: var(--spacing-touch);
+}
+
+.record-fill {
+  flex: 1;
+}
+
+.record-time {
+  font-size: var(--text-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.record-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: var(--danger-ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .record-dot {
+    animation: record-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes record-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.record-stop {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+.record-denied {
+  flex: 1;
+  margin: 0;
+  font-size: var(--text-body);
 }

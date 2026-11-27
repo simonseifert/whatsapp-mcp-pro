@@ -16,7 +16,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import agent_api, api, appdb, auth, config, history, live, mcp_lib
+from . import agent_api, api, appdb, auth, config, history, live, mcp_lib, notify, sending
 from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
@@ -69,11 +69,14 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     poller = live.Poller(settings)
     worker = DraftWorker(settings, hub, appconn=conn)
     poller.on_events.append(worker.on_events)
+    notifier = notify.Notifier(settings, conn, hub)
+    poller.on_events.append(notifier.on_events)
     backfill = history.BackfillQueue(mcp_lib.start_history_backfill, mcp_lib.history_backfill_status)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
         queue: history.BackfillQueue = app.state.backfill
+        sending.sweep_stale_uploads()
         draft_task = asyncio.create_task(worker.run(), name="draft worker")
         draft_task.add_done_callback(_log_worker_end)
         backfill_task = asyncio.create_task(queue.run(), name="history backfill queue")
@@ -90,6 +93,7 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
             with contextlib.suppress(asyncio.CancelledError):
                 await draft_task
             worker.close()
+            notifier.close()
         # Under uvicorn the real work is timeout_graceful_shutdown (it waits for streams before lifespan shutdown).
         hub.close()
 

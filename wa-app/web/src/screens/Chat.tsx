@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router'
-import type { DraftView, MessageView, QuoteView } from '../api-types'
+import { Link, useNavigate, useSearchParams } from 'react-router'
+import { apiFetch } from '../api'
+import { setOpenChat } from '../live'
+import type { ChatDetail, DraftView, MessageView, QuoteView } from '../api-types'
 import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
 import { ChatMenu } from '../components/ChatMenu'
 import { ChatAiSheet } from '../components/ChatAiSheet'
+import { AttachSheet } from '../components/AttachSheet'
 import { Composer, type ComposerHandle } from '../components/Composer'
 import { DraftCard } from '../components/DraftCard'
 import { MessageMenu } from '../components/MessageMenu'
@@ -21,6 +24,7 @@ import {
   react,
   reconcile,
   retry,
+  sendFile,
   sendText,
   useOutbox,
   withReactions,
@@ -82,9 +86,22 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   useEffect(() => {
     aliases.current = box.aliases
   }, [box.aliases])
-  const [replyTo, setReplyTo] = useState<MessageView | null>(null)
+  const [replyTo, setReplyToState] = useState<MessageView | null>(null)
+  // A private reply: the group the quote comes from. Any other reply, or none, clears it.
+  const [replyChat, setReplyChat] = useState<string | null>(null)
+  const setReplyTo = useCallback((m: MessageView | null) => {
+    setReplyToState(m)
+    setReplyChat(null)
+  }, [])
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const privateReply = params.get('reply') && params.get('from') ? { id: params.get('reply')!, from: params.get('from')! } : null
   const [menuId, setMenuId] = useState<string | null>(null)
   const chatJid = detail?.chat.jid ?? jid
+  // Report the canonical jid, not the route's (a "Reply privately" link carries an LID), so this chat does not push.
+  useEffect(() => {
+    if (active) setOpenChat(chatJid)
+  }, [active, chatJid])
   const composer = useRef<ComposerHandle>(null)
   const { draft, error: draftError, request: requestDraft, dismiss: dismissDraft } = useDraft(jid)
   // The draft whose text is in the composer: the next send carries its id as a hint, until the box is emptied.
@@ -95,6 +112,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const [replacing, setReplacing] = useState<{ draft: DraftView; text: string } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
+  const [attached, setAttached] = useState<File | null>(null)
   const card = draft && draft.id !== hiddenDraft && ['pending', 'ready', 'failed'].includes(draft.status) ? draft : null
   useEffect(() => reconcile(jid, messages), [jid, messages])
   // The loaded messages with my optimistic reactions applied, then the texts still on their way out.
@@ -117,7 +135,17 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     const fromDraft = usedDraft
     usedNow.current = null
     setUsedDraft(null)
-    void sendText(jid, text, reply ? quoteOf(reply) : null, fromDraft)
+    void sendText(jid, text, reply ? quoteOf(reply) : null, fromDraft, reply ? replyChat : null)
+    const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
+    stickToEnd.current = true
+    atBottom.current = true
+    setRiseKey(key)
+    setUnseen(false)
+  }
+  function sendAttachment(file: File, caption: string, quote: QuoteView | null, kind: 'file' | 'voice' = 'file') {
+    setAttached(null)
+    setReplyTo(null)
+    void sendFile(jid, file, caption, quote, kind, quote ? replyChat : null)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true
     atBottom.current = true
@@ -137,6 +165,31 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     if ((composer.current?.getText() ?? '').trim()) setReplacing({ draft: d, text })
     else applyDraft(d, text)
   }
+  // Arriving from "Reply privately": the quote is the group message, labelled with the group's name.
+  const privateKey = privateReply ? `${privateReply.from}/${privateReply.id}` : null
+  useEffect(() => {
+    if (status !== 'ready' || !privateKey) return
+    const [from, id] = [privateKey.slice(0, privateKey.indexOf('/')), privateKey.slice(privateKey.indexOf('/') + 1)]
+    let current = true
+    void Promise.all([
+      apiFetch<{ message: MessageView }>(`/api/chats/${encodeURIComponent(from)}/messages/${encodeURIComponent(id)}`),
+      apiFetch<ChatDetail>(`/api/chats/${encodeURIComponent(from)}`),
+    ])
+      .then(([{ message }, group]) => {
+        if (!current) return
+        const who = message.sender_name ?? detail?.chat.name ?? 'Reply'
+        setReplyToState({ ...message, sender_name: `${who} · ${group.chat.name}` })
+        setReplyChat(from)
+        setParams({}, { replace: true })
+      })
+      .catch(() => {
+        if (current) setParams({}, { replace: true }) // the message is gone: open the chat without a quote
+      })
+    return () => {
+      current = false
+    }
+  }, [status, privateKey, detail?.chat.name, setParams])
+
   const anchor = useRef<{ height: number; top: number } | null>(null)
   const firstId = messages[0]?.id
   const lastId = messages[messages.length - 1]?.id
@@ -221,7 +274,11 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
       </header>
       {loadingOlder && <p className="older">Loading older messages…</p>}
       {status === 'loading' && <p className="empty-state">Loading…</p>}
-      {status === 'missing' && <p className="empty-state">This chat does not exist.</p>}
+      {status === 'missing' && (
+        <p className="empty-state">
+          {privateReply ? "Can't reply privately to this person yet." : 'This chat does not exist.'}
+        </p>
+      )}
       {status === 'error' && (
         <div className="empty-state" role="alert">
           <p>Could not load this chat.</p>
@@ -258,7 +315,18 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
                 groupAvatar={inGroup && !m.from_me}
                 tail={item.tail}
                 rise={key === riseKey}
-                delivery={pending && { state: pending.status, error: pending.error, retryable: pending.retryable }}
+                delivery={
+                  pending && {
+                    state: pending.status,
+                    error: pending.error,
+                    retryable: pending.retryable,
+                    upload: pending.upload && {
+                      name: pending.upload.name,
+                      size: pending.upload.size,
+                      progress: pending.upload.progress,
+                    },
+                  }
+                }
                 onRetry={pending && (() => void retry(jid, pending.key))}
                 onDismiss={pending && (() => dismiss(jid, pending.key))}
                 onReply={m.actionable ? () => setReplyTo(m) : undefined}
@@ -267,6 +335,14 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             )
           })}
         </div>
+      )}
+      {attached && (
+        <AttachSheet
+          file={attached}
+          replyTo={replyTo ? quoteOf(replyTo) : null}
+          onSend={sendAttachment}
+          onClose={() => setAttached(null)}
+        />
       )}
       {menuOpen && (
         <ChatMenu
@@ -291,6 +367,16 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             setMenuId(null)
             setReplyTo(menuMessage)
           }}
+          onReplyPrivately={
+            inGroup && !menuMessage.from_me && menuMessage.sender_jid
+              ? () => {
+                  setMenuId(null)
+                  void navigate(
+                    `/chat/${encodeURIComponent(menuMessage.sender_jid!)}?reply=${encodeURIComponent(menuMessage.id)}&from=${encodeURIComponent(chatJid)}`,
+                  )
+                }
+              : undefined
+          }
           onCopy={() => {
             setMenuId(null)
             void navigator.clipboard?.writeText(menuMessage.text ?? '')
@@ -359,6 +445,8 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
           onSend={send}
+          onAttach={setAttached}
+          onVoice={(file) => sendAttachment(file, '', replyTo ? quoteOf(replyTo) : null, 'voice')}
           onTextChange={(t) => {
             if (t.trim() !== '') return
             // The box was emptied by hand (not by a send or a dismiss): the draft's card may come back.

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveEvent } from './api-types'
-import { backoffDelay, connectLive, SAFETY_RESYNC_MS, type SourceFactory } from './live'
+import { backoffDelay, connectLive, SAFETY_RESYNC_MS, setOpenChat, type SourceFactory } from './live'
 
 class FakeSource {
   static all: FakeSource[] = []
@@ -119,15 +119,35 @@ describe('connectLive', () => {
     const report = vi.fn()
     const stop = connectLive((e) => seen.push(e), { factory, report })
     FakeSource.all[0].emit('hello', { client: 'c1' })
-    expect(report).toHaveBeenLastCalledWith('c1', true)
+    expect(report).toHaveBeenLastCalledWith('c1', true, null)
     setVisibility('hidden')
-    expect(report).toHaveBeenLastCalledWith('c1', false)
+    expect(report).toHaveBeenLastCalledWith('c1', false, null)
     expect(FakeSource.all).toHaveLength(1)
     setVisibility('visible')
-    expect(report).toHaveBeenLastCalledWith('c1', true)
+    expect(report).toHaveBeenLastCalledWith('c1', true, null)
     expect(FakeSource.all).toHaveLength(2)
     expect(FakeSource.all[0].closed).toBe(true)
     expect(seen).toEqual([{ name: 'resync', data: {} }])
     stop()
+  })
+
+  it('reports the open chat with the visibility and again when it changes', () => {
+    const report = vi.fn()
+    const stop = connectLive(() => {}, { factory, report })
+    FakeSource.all[0].emit('hello', { client: 'c1' })
+    expect(report).toHaveBeenLastCalledWith('c1', true, null)
+    setOpenChat('385911110001@s.whatsapp.net')
+    expect(report).toHaveBeenLastCalledWith('c1', true, '385911110001@s.whatsapp.net')
+    setVisibility('hidden')
+    expect(report).toHaveBeenLastCalledWith('c1', false, '385911110001@s.whatsapp.net')
+    setOpenChat(null)
+    expect(report).toHaveBeenLastCalledWith('c1', false, null)
+    const calls = report.mock.calls.length
+    setOpenChat(null) // unchanged: nothing to report
+    expect(report.mock.calls).toHaveLength(calls)
+    stop()
+    setOpenChat('x')
+    expect(report.mock.calls).toHaveLength(calls)
+    setOpenChat(null)
   })
 })

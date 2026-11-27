@@ -28,10 +28,15 @@ const defaultFactory: SourceFactory = (url) => new EventSource(url, { withCreden
  */
 export function connectLive(
   onEvent: (event: LiveEvent) => void,
-  options: { factory?: SourceFactory; report?: (client: string, visible: boolean) => void } = {},
+  options: {
+    factory?: SourceFactory
+    report?: (client: string, visible: boolean, chat: string | null) => void
+    chat?: () => string | null
+  } = {},
 ): () => void {
   const factory = options.factory ?? defaultFactory
   const report = options.report ?? reportVisibility
+  const currentChat = options.chat ?? (() => openChat)
   let source: Source | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   let attempt = 0
@@ -49,7 +54,7 @@ export function connectLive(
       if (e.lastEventId) lastId = e.lastEventId // the server's current cursor: a drop before any event still resumes
       attempt = 0
       client = (JSON.parse(e.data) as { client: string }).client
-      report(client, document.visibilityState === 'visible')
+      report(client, document.visibilityState === 'visible', currentChat())
     })
     for (const name of EVENT_NAMES) {
       next.addEventListener(name, (e) => {
@@ -78,7 +83,7 @@ export function connectLive(
 
   function onVisibility() {
     const visible = document.visibilityState === 'visible'
-    if (client) report(client, visible)
+    if (client) report(client, visible, currentChat())
     startSafety(visible)
     if (!visible) return
     attempt = 0
@@ -86,11 +91,17 @@ export function connectLive(
     onEvent({ name: 'resync', data: {} })
   }
 
+  function onChat() {
+    if (client) report(client, document.visibilityState === 'visible', currentChat())
+  }
+
+  chatWatchers.add(onChat)
   document.addEventListener('visibilitychange', onVisibility)
   startSafety(document.visibilityState === 'visible')
   open()
   return () => {
     stopped = true
+    chatWatchers.delete(onChat)
     document.removeEventListener('visibilitychange', onVisibility)
     if (timer) clearTimeout(timer)
     if (safety) clearInterval(safety)
@@ -98,12 +109,23 @@ export function connectLive(
   }
 }
 
-function reportVisibility(client: string, visible: boolean) {
+// The chat the user has open, reported with every visibility report so the server does not push for it while it is
+// on screen. The open Chat sets its canonical jid; AppShell sets null when no chat is routed.
+let openChat: string | null = null
+const chatWatchers = new Set<() => void>()
+
+export function setOpenChat(jid: string | null): void {
+  if (jid === openChat) return
+  openChat = jid
+  chatWatchers.forEach((w) => w())
+}
+
+function reportVisibility(client: string, visible: boolean, chat: string | null) {
   void fetch('/api/live/visibility', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ client, visible }),
+    body: JSON.stringify({ client, visible, chat }),
     keepalive: true,
   }).catch(() => {})
 }

@@ -301,7 +301,8 @@ func writeReplay(w http.ResponseWriter, rec *database.IdempotencyRecord) {
 //   - recipient: WhatsApp JID (required, e.g., "1234567890@s.whatsapp.net")
 //   - message: Text content (required if media_path not provided)
 //   - media_path: Path to media file (optional, for images/videos/documents/voice)
-//   - quoted_message_id, mentioned_jids: optional
+//   - quoted_message_id, quoted_chat_jid, mentioned_jids: optional (quoted_chat_jid
+//     names the quoted message's chat when it is not the recipient's)
 //   - idempotency_key: optional (or Idempotency-Key header), see top of file
 //
 // Response: { success, message_id, timestamp, recipient, message (error text),
@@ -350,6 +351,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			Message:         req.Message,
 			MediaPath:       req.MediaPath,
 			QuotedMessageID: req.QuotedMessageID,
+			QuotedChatJID:   req.QuotedChatJID,
 			MentionedJIDs:   req.MentionedJIDs,
 			MessageID:       priorID,
 			BeforeDispatch:  beforeDispatch,

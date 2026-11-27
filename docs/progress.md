@@ -28,3 +28,12 @@ untrusted-message framing; draft worker (instant when the app is open, 20 s debo
 closed); draft card; outcomes (used, edited, ignored) and distilled per-chat rules; AI
 settings screen and per-chat sheet. Every task reviewed with fix rounds; rulings in
 DECISIONS D22. Not deployed yet, and the week of real use is still open.
+
+# wa-app M3a progress
+
+Plan: docs/superpowers/plans/2026-11-25-wa-app-m3a-notify-and-send.md. Branch feat/m3a-notify-send.
+
+2026-11-27: the push spike passed on an iPhone (Home Screen app). Tasks 2 to 6 are built and reviewed: a notification
+for every incoming message, captions and quotes across chats in the bridge and MCP layer, sending photos and files,
+recording and sending voice notes, and private reply. Live checks are pending: a photo, a file, a voice note, a private
+reply and a day of real notifications. Results go in docs/reviews/milestone-3a.md.

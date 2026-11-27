@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { sendMessage, sendReaction } from './api'
+import { sendMedia, sendMessage, sendReaction } from './api'
 import type { MessageView, QuoteView, ReactionView } from './api-types'
 
 /** A text this device is sending. `sending` and `sent` show as an outgoing bubble, `failed` with its line and Retry. */
@@ -8,6 +8,8 @@ export type Pending = {
   key: string
   text: string
   replyTo: QuoteView | null
+  /** A private reply: the group the quoted message lives in. */
+  replyChat?: string
   /** The draft this text started from: sent along as a hint so the server can learn from the outcome. */
   draftId?: number
   at: string
@@ -16,6 +18,8 @@ export type Pending = {
   retryable?: boolean
   /** The id the bridge gave it; the live message with this id replaces the optimistic bubble. */
   messageId?: string
+  /** A photo or file on its way out (`text` is then its caption). Kept in memory so Retry can send it again. */
+  upload?: { file: File; name: string; size: number; kind: 'file' | 'voice'; progress: number }
 }
 
 /** My reaction on a message as the UI shows it before the server's copy agrees. "" is removed. */
@@ -78,7 +82,19 @@ async function attempt(jid: string, p: Pending): Promise<void> {
   inflight.add(p.key)
   patch(jid, p.key, { status: 'sending', error: undefined })
   try {
-    const result = await sendMessage(jid, p.text, p.replyTo?.id ?? null, p.key, p.draftId)
+    const up = p.upload
+    const result = up
+      ? await sendMedia(jid, {
+          file: up.file,
+          filename: up.name,
+          caption: p.text.trim() || null,
+          replyTo: p.replyTo?.id ?? null,
+          replyChat: p.replyChat ?? null,
+          clientKey: p.key,
+          kind: up.kind,
+          onProgress: (fraction) => patch(jid, p.key, { upload: { ...up, progress: fraction } }),
+        })
+      : await sendMessage(jid, p.text, p.replyTo?.id ?? null, p.key, p.draftId, ...(p.replyChat ? [p.replyChat] : []))
     if (result.ok) {
       patch(jid, p.key, {
         status: 'sent',
@@ -103,14 +119,43 @@ async function attempt(jid: string, p: Pending): Promise<void> {
 }
 
 /** Puts the text in the chat as sending and sends it. Resolves when the first try has an answer. */
-export function sendText(jid: string, text: string, replyTo: QuoteView | null, draftId?: number | null): Promise<void> {
+export function sendText(
+  jid: string,
+  text: string,
+  replyTo: QuoteView | null,
+  draftId?: number | null,
+  replyChat?: string | null,
+): Promise<void> {
   const p: Pending = {
     key: crypto.randomUUID(),
     text,
     replyTo,
+    ...(replyChat ? { replyChat } : {}),
     ...(draftId != null ? { draftId } : {}),
     at: new Date().toISOString(),
     status: 'sending',
+  }
+  update(jid, (b) => ({ ...b, pending: [...b.pending, p] }))
+  return attempt(jid, p)
+}
+
+/** Puts a photo or file (with an optional caption) in the chat as sending and sends it. */
+export function sendFile(
+  jid: string,
+  file: File,
+  caption: string,
+  replyTo: QuoteView | null,
+  kind: 'file' | 'voice' = 'file',
+  replyChat?: string | null,
+): Promise<void> {
+  const p: Pending = {
+    key: crypto.randomUUID(),
+    text: caption,
+    replyTo,
+    ...(replyChat ? { replyChat } : {}),
+    at: new Date().toISOString(),
+    status: 'sending',
+    upload: { file, name: file.name || 'file', size: file.size, kind, progress: 0 },
   }
   update(jid, (b) => ({ ...b, pending: [...b.pending, p] }))
   return attempt(jid, p)
@@ -211,6 +256,7 @@ export function reconcile(jid: string, messages: MessageView[]): void {
       // No id came back: the same text from me, stored after the send, is that message.
       (p.status === 'sent' &&
         !p.messageId &&
+        !p.upload &&
         messages.some(
           (m) => m.from_me && m.text === sentText(p.text) && Date.parse(m.timestamp_iso) >= Date.parse(p.at) - SKEW_MS,
         )),

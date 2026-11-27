@@ -125,14 +125,34 @@ communities are offered later.
   - iOS requirements are verified from WebKit/Apple docs: home-screen install,
     `display: standalone`, permission from a tap, `userVisibleOnly`, and a clean
     `mailto:` `sub`.
-  - No action buttons on iOS, so tapping opens the chat with its draft.
-  - pywebpush against Apple's push service is **not yet verified**. It is the first
-    spike in M3.
+  - No action buttons on iOS; tapping a notification opens the chat.
+  - pywebpush against Apple's push service passed the spike on an iPhone Home Screen app (2026-11-27).
+  - The VAPID key pair is created on first use in the data directory (`vapid.pem`, mode 600). The `sub` claim comes
+    from `WA_APP_PUSH_SUBJECT`; without it push stays off.
+  - Routes: `GET /api/push/key`, `POST /api/push/subscribe`, `POST /api/push/unsubscribe`, `POST /api/push/test`.
 - The server needs outbound HTTPS to `*.push.apple.com` and the other push services.
-- **When it notifies (decided 2026-11-21):** only when a draft is ready in a chat with
-  drafts switched on. The phone's own WhatsApp already notifies for every message.
-  - The payload carries the chat name and "draft ready", never message or draft text,
-    because push payloads pass through Apple's and Google's servers.
+- **When it notifies (decided 2026-11-25, replaces the 2026-11-21 rule of draft-ready only):** every incoming
+  message, like WhatsApp. See DECISIONS D25.
+  - Skipped: own and system messages, deleted messages, call-log entries, muted chats, the chat open in a visible
+    app window, messages older than 120 s, and sessions that are no longer live (only live sessions' subscriptions
+    get a push).
+  - Title is the chat name. Body is the text, or a label for media (photo, voice note, file and so on), cut to 180
+    characters; in a group the body starts with the sender ("Sender: text"). Channels never notify. A tag per chat means a new message replaces the previous notification of
+    that chat.
+  - Payloads are encrypted end to end (RFC 8291), so Apple and Google relay ciphertext only. Turn off the phone
+    WhatsApp's own notifications to avoid doubles.
+  - iOS delivers push only to the Home Screen app, not to Safari tabs.
+
+## Uploads
+
+- `POST /api/chats/{jid}/media` takes the file as a raw request body, up to 64 MiB. It is streamed to a private
+  temp directory under `/tmp` and removed after the send, and at most 2 uploads run at once.
+- Headers: `X-Filename` (percent-encoded), `X-Client-Key` (idempotency, as for text sends), `X-Caption` (up to 1024
+  characters and 4 KB encoded), `X-Reply-To`, `X-Reply-Chat` and `X-Kind` (`file` or `voice`).
+- Voice notes are recorded in the browser (`MediaRecorder`, webm/opus, or mp4 where webm is not supported (iPhone), 15 minute cap) and converted to Ogg
+  Opus on the MCP side before the bridge sends them.
+- A private reply to a group message sends with the bridge's `quoted_chat_jid`; the bridge refuses when it cannot
+  resolve the quoted message.
 
 ## Auth and exposure
 

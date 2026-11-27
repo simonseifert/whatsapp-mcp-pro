@@ -2,6 +2,8 @@ package whatsapp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -375,10 +377,16 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 // send (upload, antiban wait, server ack), so a caller that gives up cancels
 // it. On failure SendResult.Err is a *SendError carrying the failure class.
 func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *database.MessageStore, opts SendOptions) bridgeTypes.SendResult {
-	recipient, message, mediaPath, quotedMessageID := opts.Recipient, opts.Message, opts.MediaPath, opts.QuotedMessageID
 	if !c.IsConnected() {
 		return failed(newSendError(SendErrNotConnected, "Not connected to WhatsApp"), "")
 	}
+	return c.sendWithOptions(ctx, messageStore, opts)
+}
+
+// sendWithOptions is SendMessageWithOptions after the connection check (split
+// out so tests can drive the order of the refusals without a live socket).
+func (c *Client) sendWithOptions(ctx context.Context, messageStore *database.MessageStore, opts SendOptions) bridgeTypes.SendResult {
+	recipient, message, mediaPath, quotedMessageID := opts.Recipient, opts.Message, opts.MediaPath, opts.QuotedMessageID
 
 	// Create JID for recipient
 	var recipientJID types.JID
@@ -420,6 +428,17 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		}
 	}
 
+	// Resolve the quote first: a quote that cannot be built (a broken participant is delivered as a reply to
+	// nothing and still reports success) refuses the send before any presence, upload or typing.
+	var quoteCtx *waE2E.ContextInfo
+	if quotedMessageID != "" && messageStore != nil {
+		var qErr error
+		quoteCtx, qErr = c.buildQuoteContext(messageStore, quotedMessageID, opts.QuotedChatJID, recipientJID)
+		if qErr != nil {
+			return failed(newSendError(SendErrInvalid, "cannot quote message %s: %w", quotedMessageID, qErr), "")
+		}
+	}
+
 	// Refused sends leave no trace: no presence, upload or typing first.
 	if err := c.antiban.Precheck(c.antibanRequest(messageStore, antiban.Text, recipientJID, len(message), recipient)); err != nil {
 		return failed(classify(err, "antiban blocked send: %w"), "")
@@ -444,7 +463,7 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		mediaType, mimeType := mediaTypeAndMimeType(mediaPath)
 
 		// Upload media to WhatsApp servers
-		resp, err := c.Upload(ctx, mediaData, mediaType)
+		resp, err := c.uploadMedia(ctx, mediaData, mediaType)
 		if err != nil {
 			return failed(classify(err, "Error uploading media: %w"), "")
 		}
@@ -520,32 +539,19 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		}
 	}
 
-	// Build quoted message context if quotedMessageID is provided
-	if quotedMessageID != "" && messageStore != nil {
-		content, sender, isFromMe, err := messageStore.GetMessageContentAndSender(quotedMessageID)
-		if err == nil {
-			quoted, pErr := c.quotedParticipant(messageStore, sender, recipientJID, isFromMe)
-			if pErr != nil {
-				// A quote with a broken participant is delivered as a reply to
-				// nothing and still reports success, so refuse instead.
-				return failed(newSendError(SendErrInvalid, "cannot quote message %s: %w", quotedMessageID, pErr), "")
-			}
-			participant := quoted.String()
-			contextInfo := &waE2E.ContextInfo{
-				StanzaID:    proto.String(quotedMessageID),
-				Participant: proto.String(participant),
-				QuotedMessage: &waE2E.Message{
-					Conversation: proto.String(content),
-				},
-			}
-
+	// Attach the quote resolved above.
+	{
+		contextInfo := quoteCtx
+		if contextInfo != nil {
 			if msg.ExtendedTextMessage != nil {
 				if msg.ExtendedTextMessage.ContextInfo == nil {
 					msg.ExtendedTextMessage.ContextInfo = contextInfo
 				} else {
-					msg.ExtendedTextMessage.ContextInfo.StanzaID = proto.String(quotedMessageID)
-					msg.ExtendedTextMessage.ContextInfo.Participant = proto.String(participant)
-					msg.ExtendedTextMessage.ContextInfo.QuotedMessage = contextInfo.QuotedMessage
+					ci := msg.ExtendedTextMessage.ContextInfo
+					ci.StanzaID = contextInfo.StanzaID
+					ci.Participant = contextInfo.Participant
+					ci.QuotedMessage = contextInfo.QuotedMessage
+					ci.RemoteJID = contextInfo.RemoteJID
 				}
 			} else if msg.ImageMessage != nil {
 				msg.ImageMessage.ContextInfo = contextInfo
@@ -621,6 +627,14 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		MessageID: string(sendResp.ID),
 		Timestamp: sendResp.Timestamp,
 	}
+}
+
+// uploadMedia uploads to WhatsApp's media servers; tests replace it with uploadHook.
+func (c *Client) uploadMedia(ctx context.Context, data []byte, mediaType whatsmeow.MediaType) (whatsmeow.UploadResponse, error) {
+	if c.uploadHook != nil {
+		return c.uploadHook(ctx, data, mediaType)
+	}
+	return c.Upload(ctx, data, mediaType)
 }
 
 // SendReaction sends an emoji reaction to a message.
@@ -1230,4 +1244,109 @@ func (c *Client) RequestChatHistory(chatJID string, oldestMsgID string, oldestMs
 	c.antiban.AfterSend(antiban.Peer)
 
 	return nil
+}
+
+// quoteChatForms returns the identities a 1:1 chat can be filed under (LID and
+// phone JID, when the mapping is known); a group or unmapped chat yields just
+// itself. Nil-safe, and honours the altJIDLookup test hook.
+func (c *Client) quoteChatForms(chat types.JID) []types.JID {
+	chat = chat.ToNonAD()
+	if chat.Server != types.HiddenUserServer && chat.Server != types.DefaultUserServer {
+		return []types.JID{chat}
+	}
+	var lookup func(context.Context, types.JID) (types.JID, error)
+	switch {
+	case c != nil && c.altJIDLookup != nil:
+		lookup = c.altJIDLookup
+	case c != nil && c.Client != nil && c.Store != nil:
+		lookup = c.Store.GetAltJID
+	default:
+		return []types.JID{chat}
+	}
+	other, err := lookup(context.Background(), chat)
+	if err != nil || other.IsEmpty() {
+		return []types.JID{chat}
+	}
+	other = other.ToNonAD()
+	if chat.Server == types.HiddenUserServer {
+		// The store files 1:1 chats under the phone JID once it is known.
+		return []types.JID{other, chat}
+	}
+	return []types.JID{chat, other}
+}
+
+// buildQuoteContext builds the ContextInfo that quotes a stored message in a
+// send to recipient. quotedChat is the chat the quoted message lives in; empty,
+// or any form of the recipient's own chat, means an ordinary in-chat quote.
+// Otherwise (a private reply to a group message) the message is looked up by id
+// and that chat (trying both forms of a 1:1 chat), RemoteJID names the chat it
+// came from, and the participant is its author as stored there (a LID stays a
+// LID). An unresolvable explicit quoted chat is an error: the caller asked for
+// a specific message, so nothing may go out unquoted. For the in-chat path a
+// message missing from the store returns nil, nil (sent unquoted, as before).
+func (c *Client) buildQuoteContext(store *database.MessageStore, quotedID, quotedChat string, recipient types.JID) (*waE2E.ContextInfo, error) {
+	chat := recipient
+	var candidates []types.JID // quoted chat forms, empty for the in-chat path
+	if quotedChat != "" {
+		qc, err := types.ParseJID(quotedChat)
+		if err != nil {
+			return nil, fmt.Errorf("invalid quoted chat %q: %w", quotedChat, err)
+		}
+		forms := c.quoteChatForms(qc)
+		own := c.quoteChatForms(recipient)
+		same := false
+		for _, f := range forms {
+			for _, o := range own {
+				if f == o {
+					same = true
+				}
+			}
+		}
+		if !same {
+			candidates = forms
+		}
+	}
+
+	var content, sender string
+	var isFromMe bool
+	var err error
+	remote := ""
+	if len(candidates) > 0 {
+		for _, cand := range candidates {
+			content, sender, isFromMe, err = store.GetMessageContentAndSenderInChat(quotedID, cand.String())
+			if err == nil {
+				chat, remote = cand, cand.String()
+				break
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("looking up message in chat %s: %w", cand, err)
+			}
+		}
+		if remote == "" {
+			return nil, fmt.Errorf("message not found in chat %s", quotedChat)
+		}
+	} else {
+		content, sender, isFromMe, err = store.GetMessageContentAndSender(quotedID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("looking up quoted message: %w", err)
+		}
+	}
+	participant, err := c.quotedParticipant(store, sender, chat, isFromMe)
+	if err != nil {
+		return nil, err
+	}
+	ci := &waE2E.ContextInfo{
+		StanzaID:    proto.String(quotedID),
+		Participant: proto.String(participant.String()),
+		QuotedMessage: &waE2E.Message{
+			Conversation: proto.String(content),
+		},
+	}
+	if remote != "" {
+		ci.RemoteJID = proto.String(remote)
+	}
+	return ci, nil
 }

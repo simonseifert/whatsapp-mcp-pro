@@ -8,12 +8,17 @@ marker get one: incoming, not system, not deleted, never an `import-` id, at mos
 """
 
 import logging
+import os
+import re
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from . import appdb, mcp_lib, store, unread
 from .ai import learning
@@ -157,6 +162,9 @@ MSG_LIMIT = "Not sent: limit"
 MSG_PAUSED = "Not sent: new chats are paused for now"
 MSG_FORBIDDEN = "Not sent: this chat isn't allowed"
 MSG_NO_ANSWER = "Not sent: bridge didn't answer"
+MSG_NOT_PRIVATE = "That message can't be replied to privately"
+MSG_NO_DIRECT = "Can't reply privately to this person yet"
+MAX_JID_ENCODED = 200  # the percent-encoded X-Reply-Chat header
 _SHORT = 120
 
 
@@ -192,11 +200,21 @@ def _short(result: dict) -> str:
     return text if len(text) <= _SHORT else text[: _SHORT - 1] + "\u2026"
 
 
-def map_failure(result: dict) -> Outcome:
-    """A bridge result with success false -> the line the user sees, from the structured fields."""
+def map_failure(result: dict, private_reply: bool = False) -> Outcome:
+    """A bridge result with success false -> the line the user sees, from the structured fields.
+
+    For a private reply the bridge refuses a quote it cannot find in the group (invalid_request, "cannot quote
+    message"): that is the 422 copy, never retryable.
+    """
     code = result.get("code")
     http = result.get("http_status")
     retryable = bool(result.get("retryable", False))
+    if (
+        private_reply
+        and (code == "invalid_request" or http == 400)
+        and "cannot quote message" in str(result.get("error"))
+    ):
+        return Outcome(422, {"ok": False, "error": MSG_NOT_PRIVATE, "retryable": False})
     if code == "reachout_timelock":
         return _fail(502, MSG_PAUSED)  # waiting is the only fix; a retry would only poke the lock
     if code in ("rate_limited", "send_cap") or http == 429:
@@ -232,6 +250,45 @@ def _recipient_for(appconn: sqlite3.Connection, key: str, recipient: str) -> str
         return str(appconn.execute("SELECT recipient FROM send_keys WHERE client_key = ?", (key,)).fetchone()[0])
 
 
+def _target(
+    ro: sqlite3.Connection,
+    appconn: sqlite3.Connection,
+    jid: str,
+    reply_to: str | None,
+    reply_chat: str | None,
+) -> tuple[store.ChatSummary, store.MessageView | None, str | None] | Outcome:
+    """The chat to send to, the message to quote and the chat that message lives in when it is not the target's.
+
+    Without `reply_chat` the quote is a message of the target chat. With it (a private reply) the quote is another
+    person's message in that group and the target must be that person's direct chat. Call with appdb.db_lock held.
+    """
+    if reply_chat is None:
+        chat = store.get_chat(ro, appconn, jid)
+        if chat is None:
+            return _bad("Chat not found", 404)
+        quoted = None
+        if reply_to:
+            quoted = store.get_message(ro, chat.jid, reply_to)
+            if quoted is None or not quoted.actionable:
+                return _bad("That message can't be replied to")
+        return chat, quoted, None
+    if not reply_chat or not reply_to:
+        return _bad(MSG_NOT_PRIVATE)
+    group = store.get_chat(ro, appconn, reply_chat)
+    if group is None or group.kind not in store.GROUP_KINDS:
+        return _bad(MSG_NOT_PRIVATE)
+    quoted = store.get_message(ro, group.jid, reply_to)
+    if quoted is None or not quoted.actionable or quoted.from_me or quoted.system or not quoted.sender_jid:
+        return _bad(MSG_NOT_PRIVATE)
+    direct = store.direct_chat_for(ro, appconn, quoted.sender_jid)
+    if direct is None:
+        return _bad(MSG_NO_DIRECT)
+    target = store.direct_chat_for(ro, appconn, jid)
+    if target is None or target.jid != direct.jid:
+        return _bad(MSG_NOT_PRIVATE)
+    return direct, quoted, group.jid
+
+
 def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: object) -> Outcome:
     """Blocking: validate, resolve the recipient, send through the bridge with the client's key."""
     if not isinstance(body, dict):
@@ -251,19 +308,18 @@ def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: o
     draft_id = body.get("draft_id")  # a hint for outcome learning; it never changes what is sent
     if draft_id is not None and (not isinstance(draft_id, int) or isinstance(draft_id, bool)):
         return _bad("Bad draft_id")
+    reply_chat = body.get("reply_chat")
+    if reply_chat is not None and not isinstance(reply_chat, str):
+        return _bad("Bad reply_chat")
     ro = store.open_ro(settings)
     try:
         with appdb.db_lock:
-            chat = store.get_chat(ro, appconn, jid)
-            if chat is None:
-                return _bad("Chat not found", 404)
-            quoted = None
-            if reply_to:
-                quoted = store.get_message(ro, chat.jid, reply_to)
-                if quoted is None or not quoted.actionable:
-                    return _bad("That message can't be replied to")
+            target = _target(ro, appconn, jid, reply_to, reply_chat)
     finally:
         ro.close()
+    if isinstance(target, Outcome):
+        return target
+    chat, quoted, quoted_chat = target
     # The canonical jid the list uses (the phone form when known), never a bare LID that may be unmapped.
     # A retry keeps the recipient of the first attempt: the bridge scopes the key to endpoint + recipient.
     if draft_id is not None:
@@ -274,11 +330,12 @@ def send_text(settings: Settings, appconn: sqlite3.Connection, jid: str, body: o
         text,
         quoted_message_id=quoted.id if quoted else None,
         idempotency_key=key,
+        **({"quoted_chat_jid": quoted_chat} if quoted_chat else {}),
     )
     if not result.get("success"):
         if draft_id is not None:
             learning.clear_hint(chat.jid, draft_id)
-        return map_failure(result)
+        return map_failure(result, private_reply=quoted_chat is not None)
     return Outcome(200, {"ok": True, "message_id": result.get("message_id")})
 
 
@@ -311,3 +368,144 @@ def send_reaction(settings: Settings, appconn: sqlite3.Connection, jid: str, bod
     if not result.get("success"):
         return map_failure(result)
     return Outcome(200, {"ok": True})
+
+
+# --- photos, files and voice notes --------------------------------------------------------------------------------
+
+MAX_FILENAME = 120  # bytes of UTF-8, extension included
+MAX_CAPTION = 1024  # characters
+MAX_CAPTION_ENCODED = 4096  # the percent-encoded header, so no proxy limit is hit
+UPLOAD_PREFIX = "wa-app-up-"
+STALE_UPLOAD_SECONDS = 3600
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_BIDI = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069]")  # can make a name or caption read backwards
+
+
+def _clip(text: str, limit: int) -> str:
+    """At most `limit` bytes of UTF-8, never cutting a character in half."""
+    return text.encode()[:limit].decode(errors="ignore")
+
+
+def clean_caption(caption: str) -> str:
+    """Line breaks kept; other control and bidi characters dropped."""
+    return _BIDI.sub("", re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", caption)).strip()
+
+
+def safe_filename(name: str) -> str:
+    """A name that is safe on disk and in WhatsApp: no path parts, control or bidi characters, letters kept, 120 bytes."""
+    last = name.replace("\\", "/").split("/")[-1]
+    cleaned = _BIDI.sub("", _CONTROL.sub("", last)).strip().strip(".")
+    if len(cleaned.encode()) > MAX_FILENAME:
+        stem, dot, ext = cleaned.rpartition(".")
+        if dot and 0 < len(ext.encode()) <= 10:
+            cleaned = _clip(stem, MAX_FILENAME - len(ext.encode()) - 1) + "." + ext
+        else:
+            cleaned = _clip(cleaned, MAX_FILENAME)
+    return cleaned or "file"
+
+
+class StageError(Exception):
+    """The upload could not be staged on disk (/tmp full or unwritable)."""
+
+
+def new_stage(filename: str) -> tuple[str, str]:
+    """A private (0700) temp dir and the path inside it the upload is written to, named safe_filename(filename).
+
+    The bridge names a document after the file's basename, so the file must carry the name it should show.
+    """
+    try:
+        directory = tempfile.mkdtemp(prefix=UPLOAD_PREFIX, dir="/tmp")
+    except OSError as exc:
+        logger.error("no temp dir for an upload: %s", exc.strerror)
+        raise StageError from exc
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise StageError from None
+    return directory, os.path.join(directory, safe_filename(filename))
+
+
+def drop_stage(directory: str | None) -> None:
+    if directory:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def sweep_stale_uploads(now: float | None = None) -> int:
+    """Remove upload dirs a crash left behind: ours (this user), older than an hour. Returns how many went."""
+    cutoff = (time.time() if now is None else now) - STALE_UPLOAD_SECONDS
+    removed = 0
+    try:
+        entries = list(os.scandir("/tmp"))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if not entry.name.startswith(UPLOAD_PREFIX) or entry.is_symlink() or not entry.is_dir():
+                continue
+            info = entry.stat(follow_symlinks=False)
+            if info.st_uid == os.getuid() and info.st_mtime < cutoff:
+                shutil.rmtree(entry.path, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def send_media(
+    settings: Settings,
+    appconn: sqlite3.Connection,
+    jid: str,
+    *,
+    path: str,
+    caption: str | None,
+    reply_to: str | None,
+    client_key: str,
+    kind: Literal["file", "voice"],
+    reply_chat: str | None = None,
+) -> Outcome:
+    """Blocking: send the already staged file at `path` through the bridge with the client's key.
+
+    The caller owns the staging dir and removes it afterwards, whatever this returns.
+    """
+    key = valid_key(client_key)
+    if key is None:
+        return _bad("client_key must be a UUID")
+    if caption is not None:
+        caption = clean_caption(caption)
+        if len(caption) > MAX_CAPTION:
+            return _bad("Caption too long")
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            target = _target(ro, appconn, jid, reply_to, reply_chat)
+    finally:
+        ro.close()
+    if isinstance(target, Outcome):
+        return target
+    chat, quoted, quoted_chat = target
+    recipient = _recipient_for(appconn, key, chat.jid)
+    quoted_id = quoted.id if quoted else None
+    if kind == "voice":
+        result = _call(
+            mcp_lib.send_audio_message,
+            recipient,
+            file_path=path,
+            quoted_message_id=quoted_id,
+            quoted_chat_jid=quoted_chat,
+            idempotency_key=key,
+        )
+    else:
+        result = _call(
+            mcp_lib.send_file,
+            recipient,
+            file_path=path,
+            filename=os.path.basename(path),
+            caption=caption or None,
+            quoted_message_id=quoted_id,
+            quoted_chat_jid=quoted_chat,
+            idempotency_key=key,
+        )
+    if not result.get("success"):
+        return map_failure(result, private_reply=quoted_chat is not None)
+    return Outcome(200, {"ok": True, "message_id": result.get("message_id")})

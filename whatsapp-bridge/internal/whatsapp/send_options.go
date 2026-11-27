@@ -17,7 +17,10 @@ type SendOptions struct {
 	Message         string
 	MediaPath       string
 	QuotedMessageID string
-	MentionedJIDs   []string
+	// QuotedChatJID is the chat the quoted message lives in, when that is not
+	// the recipient's chat (a private reply to a group message). Empty = same chat.
+	QuotedChatJID string
+	MentionedJIDs []string
 
 	// MessageID forces the WhatsApp message ID. An idempotent retry passes the
 	// ID of the earlier, possibly-delivered attempt: recipients' devices key

@@ -82,7 +82,12 @@ def send(settings: Settings, appconn: sqlite3.Connection, payload: dict) -> int:
         return 0
     key_path, _ = vapid_keys(settings)
     with appdb.db_lock:
-        subs = appconn.execute("SELECT endpoint, p256dh, auth FROM push_subscriptions").fetchall()
+        # Only subscriptions of a session that is still alive: a logged-out device must not keep getting messages.
+        subs = appconn.execute(
+            "SELECT p.endpoint, p.p256dh, p.auth FROM push_subscriptions p"
+            " JOIN sessions s ON s.token_hash = p.session_hash WHERE s.expires_at > ?",
+            (time.time(),),
+        ).fetchall()
     data = json.dumps(payload)
     accepted = 0
     for endpoint, p256dh, auth in subs:

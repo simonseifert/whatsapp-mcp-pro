@@ -1,5 +1,6 @@
 import sqlite3
 import stat
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -60,6 +61,21 @@ def test_subscribe_upserts_and_binds_session(logged_in: TestClient, settings: Se
     assert len(found) == 1
     db = sqlite3.connect(settings.data_dir / "app.db")
     assert found[0][1] == db.execute("SELECT token_hash FROM sessions").fetchone()[0]
+    db.close()
+
+
+def test_resubscribe_from_a_new_session_rebinds_it(logged_in: TestClient, settings: Settings) -> None:
+    from tests.conftest import PASSPHRASE
+
+    assert logged_in.post("/api/push/subscribe", json=sub()).status_code == 200
+    first = rows(settings)[0][1]
+    assert logged_in.post("/api/auth/login", json={"passphrase": PASSPHRASE}).status_code == 200  # a new session
+    assert logged_in.post("/api/push/subscribe", json=sub()).status_code == 200
+    found = rows(settings)
+    assert len(found) == 1
+    assert found[0][1] != first
+    db = sqlite3.connect(settings.data_dir / "app.db")
+    assert db.execute("SELECT count(*) FROM sessions WHERE token_hash=?", (found[0][1],)).fetchone()[0] == 1
     db.close()
 
 
@@ -125,8 +141,27 @@ def _conn_with_row(settings: Settings) -> sqlite3.Connection:
     from wa_app import appdb
 
     conn = appdb.connect(settings)
+    _session(conn, "h", time.time() + 3600)
     push.save_subscription(conn, endpoint=GOOD, p256dh="p", auth="a", session_hash="h")
     return conn
+
+
+def _session(conn: sqlite3.Connection, token_hash: str, expires_at: float) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO sessions (token_hash, created_at, expires_at, user_agent) VALUES (?, 0, ?, NULL)",
+        (token_hash, int(expires_at)),
+    )
+
+
+def test_send_skips_expired_and_unknown_sessions(push_settings: Settings) -> None:
+    conn = _conn_with_row(push_settings)
+    _session(conn, "old", time.time() - 5)
+    push.save_subscription(conn, endpoint="https://web.push.apple.com/old", p256dh="p", auth="a", session_hash="old")
+    push.save_subscription(conn, endpoint="https://web.push.apple.com/gone", p256dh="p", auth="a", session_hash="none")
+    with patch("wa_app.push.webpush", return_value=MagicMock(status_code=201)) as sent:
+        assert push.send(push_settings, conn, {"title": "t"}) == 1
+    assert sent.call_count == 1
+    assert sent.call_args.kwargs["subscription_info"]["endpoint"] == GOOD
 
 
 def test_send_counts_accepted(push_settings: Settings) -> None:
