@@ -198,6 +198,13 @@ and scan that. The code rotates periodically; re-read the file if a scan fails.
 History then syncs in the background, from minutes to tens of minutes depending
 on account size. It is usable before sync finishes.
 
+How much history comes over at first link is set by `HISTORY_SYNC_DAYS_LIMIT` in
+`.env` (default 365 days; `HISTORY_SYNC_SIZE_MB` caps the size). Raise it **before
+linking** if you want more, because it only applies to that first sync. The phone
+decides how much it really sends, so you may get less than you asked for. After
+linking, use wa-app's Settings → History to fill in older messages per chat
+([wa-app README](wa-app/README.md#history-and-draft-context)).
+
 Verify from another terminal:
 
 ```bash

@@ -14,7 +14,7 @@ import pytest
 from tests.conftest import ANA, EKIPA, NEIGHBOURHOOD
 from wa_app import appdb, live, store
 from wa_app.ai import config as ai_config
-from wa_app.ai import drafts
+from wa_app.ai import context, drafts
 from wa_app.ai.backends import BackendError
 from wa_app.ai.drafts import DraftWorker
 
@@ -416,6 +416,21 @@ def test_group_draft_quotes_trigger(settings) -> None:
         ro = store.open_ro(settings)
         view = drafts.current(rig.appconn, EKIPA, ro)
         assert view and view.quote and view.quote.id == "G1" and view.quote.preview == "Tko nosi roštilj?"
+
+    run(settings, scenario)
+
+
+def test_saved_draft_context_reaches_the_prompt(settings) -> None:
+    async def scenario(rig):
+        rig.setup()
+        context.save_context(rig.appconn, {"own_examples": 2, "about_me": "I keep it short and lowercase"})
+        _insert(settings, ANA, "N1")
+        await feed(rig, _event(ANA, "N1"))
+        assert rig.rows() == [("ready", None)]
+        prompt = rig.fake.calls[0][1]
+        assert "I keep it short and lowercase" in prompt.chat_system
+        own = prompt.chat_system.split("```examples\n")[1].split("\n```")[0]
+        assert len([ln for ln in own.splitlines() if ln.startswith("- ")]) <= 2
 
     run(settings, scenario)
 

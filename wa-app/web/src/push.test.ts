@@ -1,0 +1,115 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { disablePush, enablePush, pushSupport, pushState } from './push'
+
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'
+const original = { ua: navigator.userAgent, matchMedia: window.matchMedia }
+
+function setUa(ua: string) {
+  Object.defineProperty(navigator, 'userAgent', { value: ua, configurable: true })
+}
+
+function mockStandalone(on: boolean) {
+  window.matchMedia = ((q: string) => ({ matches: on && q.includes('standalone') })) as never
+}
+
+function mockPush(subscription: unknown = null) {
+  const pushManager = {
+    subscribe: vi.fn().mockResolvedValue({ toJSON: () => ({ endpoint: 'https://web.push.apple.com/x', keys: { p256dh: 'p', auth: 'a' } }) }),
+    getSubscription: vi.fn().mockResolvedValue(subscription),
+  }
+  Object.defineProperty(navigator, 'serviceWorker', { value: { ready: Promise.resolve({ pushManager }) }, configurable: true })
+  vi.stubGlobal('PushManager', class {})
+  ;(window as unknown as Record<string, unknown>).PushManager = class {}
+  return pushManager
+}
+
+beforeEach(() => {
+  mockStandalone(false)
+})
+
+afterEach(() => {
+  setUa(original.ua)
+  window.matchMedia = original.matchMedia
+  delete (window as unknown as Record<string, unknown>).PushManager
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+describe('pushSupport', () => {
+  it('asks iOS users to install first when PushManager exists but the app is not standalone', () => {
+    mockPush()
+    setUa(IPHONE)
+    expect(pushSupport()).toBe('install-first')
+  })
+
+  it('asks for the install on iOS even when Safari hides PushManager', () => {
+    setUa(IPHONE)
+    expect(pushSupport()).toBe('install-first')
+  })
+
+  it('is ok in a standalone iOS app', () => {
+    mockPush()
+    mockStandalone(true)
+    vi.stubGlobal('Notification', { permission: 'default' })
+    setUa(IPHONE)
+    expect(pushSupport()).toBe('ok')
+  })
+
+  it('is unsupported without PushManager elsewhere', () => {
+    expect(pushSupport()).toBe('unsupported')
+  })
+})
+
+describe('enablePush', () => {
+  it('returns denied and posts nothing when permission is refused', async () => {
+    const manager = mockPush()
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn().mockResolvedValue('denied') })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await enablePush()).toBe('denied')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(manager.subscribe).not.toHaveBeenCalled()
+  })
+
+  it('subscribes with the server key and registers the subscription', async () => {
+    const manager = mockPush()
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn().mockResolvedValue('granted') })
+    const fetchMock = vi.fn().mockImplementation(async (path: string) =>
+      new Response(JSON.stringify(path === '/api/push/key' ? { key: 'AQID' } : { ok: true }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await enablePush()).toBe('on')
+    expect(manager.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: new Uint8Array([1, 2, 3]) })
+    const post = fetchMock.mock.calls.find(([p]) => p === '/api/push/subscribe')
+    expect(JSON.parse(post![1].body).endpoint).toBe('https://web.push.apple.com/x')
+  })
+
+  it('returns failed when the server has no push key', async () => {
+    mockPush()
+    vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn().mockResolvedValue('granted') })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'Push not configured' }), { status: 503 })))
+    expect(await enablePush()).toBe('failed')
+  })
+})
+
+describe('pushState and disablePush', () => {
+  it('reports denied, on and off', async () => {
+    vi.stubGlobal('Notification', { permission: 'denied' })
+    expect(await pushState()).toBe('denied')
+    vi.stubGlobal('Notification', { permission: 'granted' })
+    mockPush({ endpoint: 'e' })
+    expect(await pushState()).toBe('on')
+    mockPush(null)
+    expect(await pushState()).toBe('off')
+  })
+
+  it('unsubscribes locally and tells the server', async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true)
+    mockPush({ endpoint: 'https://fcm.googleapis.com/z', unsubscribe })
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await disablePush()
+    expect(unsubscribe).toHaveBeenCalled()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/push/unsubscribe')
+  })
+})

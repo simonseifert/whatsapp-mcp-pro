@@ -113,6 +113,19 @@ You can also tap Draft in a chat to ask for one.
 
 Your next own message in the chat, within 15 minutes of the draft, is compared with the closest alternative: **used** (about identical), **edited** (close) or **ignored** (different, which teaches nothing). Edited outcomes become examples for later drafts, next to your last 30 replies in the chat. After every 10 new used or edited outcomes, and nightly at 03:30 for chats with new ones, the model distils the chat's rules from them.
 
+## History and draft context
+
+Drafts are only as good as the messages wa-app has stored. **Settings → History** shows what it has:
+
+- **Coverage**: total messages and chats, the oldest month, and a row per chat (the 50 most recently active, archived ones included) with message count, how many of those are yours, and the oldest month stored.
+- **Thin**: a chat with fewer than 30 of your own text messages stored. There is too little of your writing for the AI to copy your style, so drafts there read generic.
+- **Fill**: pick how far back (Last year, 3 years, Everything; 3 years is the default), then **Fill thin chats** (or **Fill all 50**). wa-app asks your phone for older messages, one chat at a time, in batches. Your phone shows a "Finished syncing" notice for each batch, so keep it online and charging. Progress and a result per chat show on the same screen: Done, More available (run again), Failed, or Skipped (a chat with no stored message gives the phone nothing to anchor on). If the phone sends nothing back for two chats in a row (it is probably offline), the rest of the queue is paused and shown as skipped. A chat that stops making progress for five minutes is marked Failed once the phone is done with it. Stop drops the chats still waiting; the one running finishes.
+- **Load older messages**: the same for a single chat, in the chat's AI sheet. It always goes as far back as the phone allows.
+
+To check by hand, open an old chat and scroll up: after a fill the older messages are there, and the oldest month in Settings → History moves back.
+
+What a draft sees is set in **Settings → Draft context**: **About me** (up to 1500 characters on who you are and how you write, used for every draft), how many recent messages a draft reads (10 to 100, default 30) and how many of your past replies it learns from (0 to 100, default 30). About me goes in as quoted data, never as instructions. The first-link history size is a bridge setting, see [SETUP.md](../SETUP.md).
+
 ## Drafts from Claude
 
 Tell Claude "draft a reply to Ana saying I'll be there at 7". Claude pushes the text into wa-app; it shows on that chat's draft card, live, labelled **Draft · from Claude**. Tap it to fill the composer, then edit, check and send it yourself. **Nothing is ever sent by Claude**: the agent routes and the MCP tools have no path to sending, and a pushed draft makes no AI call. A new push replaces the chat's current draft. Claude can also switch a chat's automatic drafts on or off (the switch in the chat's AI sheet).

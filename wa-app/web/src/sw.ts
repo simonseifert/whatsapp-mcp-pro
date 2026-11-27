@@ -4,12 +4,31 @@
 
 interface WorkerScope {
   skipWaiting(): Promise<void>
-  clients: { claim(): Promise<void> }
+  clients: {
+    claim(): Promise<void>
+    matchAll(options: { type: 'window'; includeUncontrolled: boolean }): Promise<WindowClientLike[]>
+    openWindow(url: string): Promise<unknown>
+  }
+  registration: {
+    showNotification(title: string, options: { body?: string; tag?: string; data?: { url: string } }): Promise<void>
+  }
   addEventListener(type: 'install' | 'activate', listener: (event: WaitEvent) => void): void
+  addEventListener(type: 'push', listener: (event: PushEv) => void): void
+  addEventListener(type: 'notificationclick', listener: (event: ClickEv) => void): void
   addEventListener(type: 'fetch', listener: (event: FetchEv) => void): void
 }
 interface WaitEvent {
   waitUntil(work: Promise<unknown>): void
+}
+interface WindowClientLike {
+  focus(): Promise<unknown>
+  navigate(url: string): Promise<unknown>
+}
+interface PushEv extends WaitEvent {
+  data: { json(): unknown } | null
+}
+interface ClickEv extends WaitEvent {
+  notification: { close(): void; data?: { url?: unknown } }
 }
 interface FetchEv {
   request: Request
@@ -38,6 +57,58 @@ self.addEventListener('activate', (event) => {
       .keys()
       .then((keys) => Promise.all(keys.filter((k) => k.startsWith(PREFIX) && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
+  )
+})
+
+/** Same-origin URL or '/': rejects other origins and tricks like '/\\evil.com' (browsers read the backslash as a slash). */
+function safeUrl(raw: unknown): string {
+  if (typeof raw !== 'string') return '/'
+  try {
+    const parsed = new URL(raw, location.origin)
+    return parsed.origin === location.origin ? parsed.pathname + parsed.search + parsed.hash : '/'
+  } catch {
+    return '/'
+  }
+}
+
+// Payload: {title, body?, tag?, url?}. Without a title there is nothing to show, so it is ignored.
+self.addEventListener('push', (event) => {
+  let p: unknown
+  try {
+    p = event.data?.json() ?? null
+  } catch {
+    return
+  }
+  const fields = p as { title?: unknown; body?: unknown; tag?: unknown; url?: unknown } | null
+  if (!fields || typeof fields.title !== 'string' || !fields.title) return
+  const url = safeUrl(fields.url)
+  event.waitUntil(
+    self.registration.showNotification(fields.title, {
+      body: typeof fields.body === 'string' ? fields.body : undefined,
+      tag: typeof fields.tag === 'string' ? fields.tag : undefined,
+      data: { url },
+    }),
+  )
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const raw = event.notification.data?.url
+  const url = safeUrl(raw)
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (all) => {
+      const open = all[0]
+      if (open) {
+        try {
+          await open.focus()
+          await open.navigate(url)
+        } catch {
+          await self.clients.openWindow(url)
+        }
+      } else {
+        await self.clients.openWindow(url)
+      }
+    }),
   )
 })
 

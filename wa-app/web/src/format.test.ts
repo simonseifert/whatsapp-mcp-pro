@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fold, formatDayLabel, formatDuration, formatListTime, initials, isNumberLike, linkParts, telHref } from './format'
+import { fold, formatCount, formatDayLabel, formatDuration, formatListTime, initials, formatMonth, isNumberLike, linkParts, telHref } from './format'
 
 // Local-time constructors so the cases hold in any timezone the tests run in.
 const at = (y: number, m: number, d: number, h = 0, min = 0) => new Date(y, m - 1, d, h, min)
@@ -91,5 +91,14 @@ describe('chat formatting', () => {
     expect(telHref('+385 (91) 000-0777')).toBe('tel:+385910000777')
     expect(telHref('n/a')).toBeNull()
     expect(telHref('+')).toBeNull()
+  })
+})
+
+describe('history formatting', () => {
+  it('groups thousands and names the month', () => {
+    expect(formatCount(12345)).toBe('12,345')
+    expect(formatMonth('2019-03-15T10:00:00Z')).toBe('Mar 2019')
+    expect(formatMonth(null)).toBe('')
+    expect(formatMonth('nope')).toBe('')
   })
 })

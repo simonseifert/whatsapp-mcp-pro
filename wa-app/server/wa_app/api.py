@@ -11,12 +11,15 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, live, media, sending, store, transcripts
+from . import appdb, auth, history, live, media, push, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
+from .ai import context as ai_context_store
 from .ai import drafts, learning, policy
 from .config import Settings
+from .tokens import token_hash
 
+_DEPTHS = ("year", "3y", "all")
 MEDIA_RETRY_SECONDS = 6 * 3600
 
 
@@ -116,7 +119,11 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         return start_session(request)
 
     async def logout(request: Request) -> Response:
-        auth.end_session(conn, auth.session_token(request.cookies))
+        token = auth.session_token(request.cookies)
+        if token:
+            with appdb.db_lock:
+                push.drop_for_session(conn, token_hash(token))
+        auth.end_session(conn, token)
         response = JSONResponse({"ok": True})
         _drop_session_cookies(response)
         return response
@@ -125,10 +132,52 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         # /api/auth/* is open to the middleware, so this one checks the session itself.
         if not auth.session_valid(conn, auth.session_token(request.cookies)):
             return _error(401, "Not logged in")
+        with appdb.db_lock:
+            push.drop_all(conn)
         auth.end_all_sessions(conn)
         response = JSONResponse({"ok": True})
         _drop_session_cookies(response)
         return response
+
+    async def push_key(request: Request) -> Response:
+        if not settings.push_subject:
+            return _error(503, "Push not configured")
+        return JSONResponse({"key": await run_in_threadpool(lambda: push.vapid_keys(settings)[1])})
+
+    async def push_subscribe(request: Request) -> Response:
+        body = await body_of(request)
+        keys = body.get("keys") if isinstance(body, dict) else None
+        endpoint = body.get("endpoint") if isinstance(body, dict) else None
+        p256dh = keys.get("p256dh") if isinstance(keys, dict) else None
+        secret = keys.get("auth") if isinstance(keys, dict) else None
+        if not (isinstance(endpoint, str) and isinstance(p256dh, str) and isinstance(secret, str)):
+            return _error(422, "'endpoint' and 'keys' (p256dh, auth) are required")
+        if not push.endpoint_allowed(endpoint):
+            return _error(422, "Unsupported push service")
+        if not (0 < len(p256dh) <= push.MAX_FIELD and 0 < len(secret) <= push.MAX_FIELD):
+            return _error(422, "Invalid keys")
+        token = auth.session_token(request.cookies)
+        with appdb.db_lock:
+            push.save_subscription(
+                conn, endpoint=endpoint, p256dh=p256dh, auth=secret, session_hash=token_hash(token or "")
+            )
+        return JSONResponse({"ok": True})
+
+    async def push_unsubscribe(request: Request) -> Response:
+        body = await body_of(request)
+        endpoint = body.get("endpoint") if isinstance(body, dict) else None
+        if not isinstance(endpoint, str):
+            return _error(422, "'endpoint' is required")
+        with appdb.db_lock:
+            push.drop_subscription(conn, endpoint)
+        return JSONResponse({"ok": True})
+
+    async def push_test(request: Request) -> Response:
+        if not settings.push_subject:
+            return _error(503, "Push not configured")
+        payload = {"title": "wa-app", "body": "Notifications work.", "tag": "test", "url": "/"}
+        sent = await run_in_threadpool(push.send, settings, conn, payload)
+        return JSONResponse({"sent": sent})
 
     async def about(request: Request) -> Response:
         try:
@@ -190,6 +239,65 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             return JSONResponse({"chat": asdict(chat), "members_line": store.members_line(ro, chat.jid)})
 
         return with_store(work)
+
+    async def history_coverage(request: Request) -> Response:
+        def work(ro: sqlite3.Connection) -> Response:
+            return JSONResponse(
+                {
+                    "totals": history.totals(ro),
+                    "chats": [asdict(c) for c in history.coverage(ro, conn)],
+                    "thin_threshold": history.THIN_OWN,
+                }
+            )
+
+        return await run_in_threadpool(with_store, work)
+
+    def fill_response(request: Request, items: list[tuple[str, str | None, str | None]], depth: str) -> Response:
+        """Runs on the event loop: the queue is not thread-safe, so never call this from the threadpool."""
+        queue: history.BackfillQueue = request.app.state.backfill
+        added = queue.enqueue(items, depth)  # type: ignore[arg-type]
+        return JSONResponse({"added": added, "status": queue.snapshot()})
+
+    async def history_fill(request: Request) -> Response:
+        body = await body_of(request)
+        scope = body.get("scope") if isinstance(body, dict) else None
+        depth = body.get("depth") if isinstance(body, dict) else None
+        if scope not in ("thin", "all") or depth not in _DEPTHS:
+            return _error(422, "'scope' must be thin or all and 'depth' year, 3y or all")
+
+        def work(ro: sqlite3.Connection) -> list[tuple[str, str | None, str | None]] | Response:
+            return [
+                (c.jid, c.backfill_jid, c.backfill_oldest)
+                for c in history.coverage(ro, conn)
+                if scope == "all" or c.thin
+            ]
+
+        items = await run_in_threadpool(with_store, work)
+        if isinstance(items, Response):
+            return items
+        return fill_response(request, items, depth)
+
+    async def chat_history(request: Request) -> Response:
+        body = await body_of(request)
+        depth = body.get("depth") if isinstance(body, dict) else None
+        if depth not in _DEPTHS:
+            return _error(422, "'depth' must be year, 3y or all")
+        jid = request.path_params["jid"]
+
+        def work(ro: sqlite3.Connection) -> history.ChatCoverage | Response:
+            return history.chat_coverage(ro, conn, jid) or _error(404, "Chat not found")
+
+        found = await run_in_threadpool(with_store, work)
+        if isinstance(found, Response):
+            return found
+        return fill_response(request, [(found.jid, found.backfill_jid, found.backfill_oldest)], depth)
+
+    async def history_status(request: Request) -> Response:
+        return JSONResponse(request.app.state.backfill.snapshot())
+
+    async def history_cancel(request: Request) -> Response:
+        request.app.state.backfill.cancel()
+        return JSONResponse(request.app.state.backfill.snapshot())
 
     async def chat_messages(request: Request) -> Response:
         jid = request.path_params["jid"]
@@ -404,6 +512,21 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             return ai_failure(exc)
         return JSONResponse({"default_id": backend_id})
 
+    async def ai_context(request: Request) -> Response:
+        if request.method == "PUT":
+            body = await body_of(request)
+            if not isinstance(body, dict):
+                return _error(422, "Expected a JSON object")
+            try:
+                with appdb.db_lock:
+                    saved = ai_context_store.save_context(conn, body)
+            except ai_config.ConfigError as exc:
+                return ai_failure(exc)
+        else:
+            with appdb.db_lock:
+                saved = ai_context_store.get_context(conn)
+        return JSONResponse({"context": asdict(saved)})
+
     async def chat_ai_settings(request: Request) -> Response:
         body: dict | None = None
         if request.method == "PUT":
@@ -518,8 +641,17 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/auth/login", login, methods=["POST"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/auth/logout-all", logout_all, methods=["POST"]),
+        Route("/api/push/key", push_key, methods=["GET"]),
+        Route("/api/push/subscribe", push_subscribe, methods=["POST"]),
+        Route("/api/push/unsubscribe", push_unsubscribe, methods=["POST"]),
+        Route("/api/push/test", push_test, methods=["POST"]),
         Route("/api/about", about, methods=["GET"]),
         Route("/api/chats", chats, methods=["GET"]),
+        Route("/api/history/coverage", history_coverage, methods=["GET"]),
+        Route("/api/history/fill", history_fill, methods=["POST"]),
+        Route("/api/history/status", history_status, methods=["GET"]),
+        Route("/api/history/cancel", history_cancel, methods=["POST"]),
+        Route("/api/chats/{jid}/history", chat_history, methods=["POST"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
@@ -528,6 +660,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/ai/backends/{id}", ai_backend_delete, methods=["DELETE"]),
         Route("/api/ai/backends/{id}/test", ai_backend_test, methods=["POST"]),
         Route("/api/ai/default", ai_default, methods=["PUT"]),
+        Route("/api/ai/context", ai_context, methods=["GET", "PUT"]),
         Route("/api/chats/{jid}/ai", chat_ai_settings, methods=["GET", "PUT"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
         Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),

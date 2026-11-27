@@ -16,7 +16,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import agent_api, api, appdb, auth, config, live
+from . import agent_api, api, appdb, auth, config, history, live, mcp_lib
 from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
@@ -40,14 +40,15 @@ class SpaFiles(StaticFiles):
 
 
 def _log_worker_end(task: "asyncio.Task[None]") -> None:
-    """The draft worker only ends when cancelled; anything else is a bug worth a line (type and traceback, no text:
-    exception messages may quote chat content)."""
+    """A background worker only ends when cancelled; anything else is a bug worth a line (type and traceback, no
+    text: exception messages may quote chat content)."""
     if task.cancelled():
         return
     exc = task.exception()
     if exc is not None:
         logger.error(
-            "draft worker stopped unexpectedly (%s)\n%s",
+            "%s stopped unexpectedly (%s)\n%s",
+            task.get_name(),
             type(exc).__name__,
             "\n".join(f"  {f.filename}:{f.lineno} in {f.name}" for f in traceback.extract_tb(exc.__traceback__)),
         )
@@ -68,15 +69,23 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     poller = live.Poller(settings)
     worker = DraftWorker(settings, hub, appconn=conn)
     poller.on_events.append(worker.on_events)
+    backfill = history.BackfillQueue(mcp_lib.start_history_backfill, mcp_lib.history_backfill_status)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
-        draft_task = asyncio.create_task(worker.run())
+        queue: history.BackfillQueue = app.state.backfill
+        draft_task = asyncio.create_task(worker.run(), name="draft worker")
         draft_task.add_done_callback(_log_worker_end)
+        backfill_task = asyncio.create_task(queue.run(), name="history backfill queue")
+        backfill_task.add_done_callback(_log_worker_end)
         try:
             async with live.running(poller, hub):
                 yield
         finally:
+            queue.stop()
+            backfill_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await backfill_task
             draft_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await draft_task
@@ -98,7 +107,7 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
             return JSONResponse({"error": "Web build missing (run pnpm build in wa-app/web)"}, status_code=503)
 
         routes.append(Route("/{rest:path}", no_build))
-    return Starlette(
+    app = Starlette(
         routes=routes,
         middleware=[
             Middleware(SecurityHeadersMiddleware),
@@ -106,6 +115,8 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
         ],
         lifespan=lifespan,
     )
+    app.state.backfill = backfill
+    return app
 
 
 def run() -> None:

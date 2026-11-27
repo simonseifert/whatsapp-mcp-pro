@@ -102,3 +102,15 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
+
+/** A count with thousands separators: "12,345". */
+export function formatCount(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
+/** "Mar 2019" from an ISO timestamp; '' when it is missing or invalid. */
+export function formatMonth(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+}

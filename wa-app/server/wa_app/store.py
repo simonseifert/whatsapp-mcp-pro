@@ -691,6 +691,16 @@ def _own_ids(conn: sqlite3.Connection, store_dir: Path | None, forms: list[str])
     return own
 
 
+def own_text_filter(*, deleted_col: bool = True) -> str:
+    """SQL condition (no leading AND) for the user's own plain-text messages: sent by me, no media, not empty, not a
+    poll or contact card, not deleted. Shared by the draft prompt's examples and the history coverage count."""
+    return (
+        "COALESCE(is_from_me, 0) = 1 AND COALESCE(media_type, '') = '' AND TRIM(COALESCE(content, '')) <> ''"
+        " AND content NOT LIKE '[Poll: %' AND content NOT LIKE '[Contact: %'"
+        + (" AND deleted_at IS NULL" if deleted_col else "")
+    )
+
+
 def _forms_of(conn: sqlite3.Connection, chat_jid: str) -> list[str]:
     for conv in _conversations(conn):
         if chat_jid == conv.jid or chat_jid in conv.forms:

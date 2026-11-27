@@ -1,8 +1,19 @@
 import { useEffect, useState } from 'react'
-import { apiFetch, deleteBackend, fetchBackends, saveBackend, setDefaultBackend, testBackend } from '../api'
-import type { BackendCfg, BackendInput, BackendTestResult } from '../api-types'
+import {
+  apiFetch,
+  deleteBackend,
+  fetchBackends,
+  fetchDraftContext,
+  saveBackend,
+  saveDraftContext,
+  setDefaultBackend,
+  testBackend,
+} from '../api'
+import type { BackendCfg, BackendInput, BackendTestResult, DraftContext } from '../api-types'
+import { HistorySection } from '../components/HistorySection'
 import { BackendForm } from '../components/BackendForm'
 import { UpdateRow } from '../components/UpdateRow'
+import { disablePush, enablePush, pushState, pushSupport } from '../push'
 import { readTheme, saveTheme, THEMES, type ThemePref } from '../theme'
 
 const KIND_LABEL: Record<BackendCfg['kind'], string> = {
@@ -13,6 +24,126 @@ const KIND_LABEL: Record<BackendCfg['kind'], string> = {
 
 function secondsLine(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`
+}
+
+const MAX_ABOUT = 1500
+
+/** What every draft knows: the About me note, and how much chat and how many past replies it reads. */
+function DraftContextSection() {
+  const [saved, setSaved] = useState<DraftContext | null>(null)
+  const [form, setForm] = useState<DraftContext | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    fetchDraftContext()
+      .then((c) => {
+        if (!live) return
+        if (!c) throw new Error('empty')
+        setSaved(c)
+        setForm(c)
+      })
+      .catch(() => live && setLoadFailed(true))
+    return () => {
+      live = false
+    }
+  }, [])
+
+  if (!saved || !form) {
+    return loadFailed ? (
+      <div className="settings-group">
+        <div className="settings-label">Draft context</div>
+        <p className="form-error">Couldn&apos;t load the draft context.</p>
+      </div>
+    ) : null
+  }
+
+  const changed: Partial<DraftContext> = {}
+  if (form.about_me !== saved.about_me) changed.about_me = form.about_me
+  if (form.context_messages !== saved.context_messages) changed.context_messages = form.context_messages
+  if (form.own_examples !== saved.own_examples) changed.own_examples = form.own_examples
+  const dirty = Object.keys(changed).length > 0
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      const next = await saveDraftContext(changed)
+      setSaved(next)
+      setForm(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="settings-group">
+      <div className="settings-label">Draft context</div>
+      <div className="ai-form">
+        <label className="ai-field">
+          <span>About me</span>
+          <textarea
+            aria-label="About me"
+            rows={4}
+            maxLength={MAX_ABOUT}
+            value={form.about_me}
+            placeholder="Who you are and how you write. Used for every draft."
+            onChange={(e) => setForm({ ...form, about_me: e.target.value })}
+          />
+          <span>{`${form.about_me.length}/${MAX_ABOUT}`}</span>
+        </label>
+        <label className="ai-field">
+          <span>Messages a draft reads</span>
+          <span className="ai-range">
+            <input
+              type="range"
+              min={10}
+              max={100}
+              step={10}
+              value={form.context_messages}
+              onChange={(e) => setForm({ ...form, context_messages: Number(e.target.value) })}
+            />
+            <output>{form.context_messages}</output>
+          </span>
+        </label>
+        <label className="ai-field">
+          <span>Your past replies it learns from</span>
+          <span className="ai-range">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={10}
+              value={form.own_examples}
+              onChange={(e) => setForm({ ...form, own_examples: Number(e.target.value) })}
+            />
+            <output>{form.own_examples}</output>
+          </span>
+        </label>
+        <p className="settings-about">Higher values make drafts slower and can overflow small local models.</p>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="ai-form-actions">
+          <button
+            className="button-text"
+            type="button"
+            aria-label="Save draft context"
+            disabled={!dirty || saving}
+            onClick={() => void save()}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /** The AIs that write drafts: add, edit, test, pick the default, delete. Keys go in and never come back out. */
@@ -234,6 +365,83 @@ function AiSection() {
   )
 }
 
+/** Notifications: the permission prompt only ever comes from tapping the switch, after the line that says why. */
+function NotificationsSection() {
+  const support = pushSupport()
+  const [state, setState] = useState<'on' | 'off' | 'denied' | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (support !== 'ok') return
+    let live = true
+    pushState()
+      .then((s) => live && setState(s))
+      .catch(() => live && setState('off'))
+    return () => {
+      live = false
+    }
+  }, [support])
+
+  async function toggle(next: boolean) {
+    setBusy(true)
+    setNote(null)
+    try {
+      if (next) {
+        const result = await enablePush()
+        setState(result === 'on' ? 'on' : result === 'denied' ? 'denied' : 'off')
+        if (result === 'failed') setNote("Couldn't turn notifications on")
+      } else {
+        await disablePush()
+        setState('off')
+      }
+    } catch {
+      setNote("Couldn't change notifications")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function sendTest() {
+    setNote(null)
+    try {
+      const { sent } = await apiFetch<{ sent: number }>('/api/push/test', { method: 'POST' })
+      setNote(sent > 0 ? 'Test sent' : 'No device accepted the test')
+    } catch {
+      setNote("Couldn't send the test")
+    }
+  }
+
+  const disabled = support !== 'ok' || state === null || state === 'denied' || busy
+  return (
+    <div className="settings-group">
+      <label className="sheet-row">
+        <span>Notifications</span>
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label="Notifications"
+          checked={state === 'on'}
+          disabled={disabled}
+          onChange={(e) => void toggle(e.target.checked)}
+        />
+      </label>
+      {support === 'install-first' && <p className="settings-about">Add wa-app to your Home Screen first</p>}
+      {support === 'unsupported' && <p className="settings-about">This browser can&apos;t show notifications</p>}
+      {support === 'ok' && state === 'off' && <p className="settings-about">Get a notification when a message arrives.</p>}
+      {state === 'denied' && <p className="settings-about">Notifications are blocked in this browser&apos;s settings.</p>}
+      {state === 'on' && (
+        <div className="settings-actions">
+          <button className="button-text" type="button" onClick={() => void sendTest()}>
+            Send a test
+          </button>
+        </div>
+      )}
+      {note && <p className="settings-about" role="status">{note}</p>}
+    </div>
+  )
+}
+
 export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void }) {
   const [theme, setTheme] = useState<ThemePref>(readTheme)
   const [version, setVersion] = useState<string | null>(null)
@@ -294,7 +502,10 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
             )}
           </div>
         </div>
+        <NotificationsSection />
+        <HistorySection />
         <AiSection />
+        <DraftContextSection />
         <UpdateRow />
         {version && <p className="settings-about">wa-app {version}</p>}
       </div>

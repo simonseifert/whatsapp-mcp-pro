@@ -37,6 +37,20 @@ def download_media(message_id: str, chat_jid: str, *, no_phone_retry: bool) -> s
     return whatsapp.download_media(message_id, chat_jid, no_phone_retry=no_phone_retry)
 
 
+def start_history_backfill(chat_jid: str, until: str | None, max_batches: int) -> dict:
+    """Start the bridge's background backfill for one chat (blocking HTTP: call from a worker thread)."""
+    import whatsapp
+
+    return whatsapp.start_history_backfill(chat_jid, until=until, max_batches=max_batches)
+
+
+def history_backfill_status() -> dict:
+    """The bridge's backfill jobs since it came up (blocking HTTP: call from a worker thread)."""
+    import whatsapp
+
+    return whatsapp.history_backfill_status()
+
+
 def get_profile_picture(jid: str, preview: bool = True) -> dict:
     import whatsapp
 
@@ -88,10 +102,12 @@ __all__ = [
     "download_media",
     "is_local_only_chat",
     "get_profile_picture",
+    "history_backfill_status",
     "mark_messages_read",
     "resolve_display_names",
     "send_message",
     "send_reaction",
     "server_dir",
+    "start_history_backfill",
     "transcribe_file",
 ]

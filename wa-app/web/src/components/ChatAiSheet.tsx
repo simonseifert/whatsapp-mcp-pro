@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBackends, fetchChatAi, saveChatAi } from '../api'
+import { fetchBackends, fetchChatAi, loadChatHistory, saveChatAi } from '../api'
 import type { BackendCfg, BackendsResponse, ChatAi } from '../api-types'
+import { formatMonth } from '../format'
 import { Icon } from './Icon'
 import { useDialog } from './useDialog'
+import { RESULT, useHistoryStatus } from './useHistoryStatus'
 
 const MAX_NOTE = 500
 const MAX_RULES = 2000
@@ -30,6 +32,12 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
   const [failed, setFailed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [asked, setAsked] = useState(false)
+  const { status: older, setStatus: setOlder } = useHistoryStatus(
+    (st) => st.running?.jid === jid || st.queued.includes(jid),
+  )
+  const [olderError, setOlderError] = useState<string | null>(null)
+  const [olderBusy, setOlderBusy] = useState(false)
 
   useEffect(() => {
     let current = true
@@ -86,6 +94,31 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
       setSaving(false)
     }
   }
+
+  async function loadOlder() {
+    setOlderBusy(true)
+    setOlderError(null)
+    try {
+      setOlder((await loadChatHistory(jid, 'all')).status)
+      setAsked(true)
+    } catch (err) {
+      setOlderError(err instanceof Error ? err.message : "Couldn't start")
+    } finally {
+      setOlderBusy(false)
+    }
+  }
+
+  const run = older?.running?.jid === jid ? older.running : null
+  const queued = older?.queued.includes(jid) ?? false
+  const last = asked ? older?.done.findLast((d) => d.jid === jid) : undefined
+  const olderLine = run
+    ? `Loading older messages: ${run.batches} ${run.batches === 1 ? 'batch' : 'batches'}${run.oldest ? `, back to ${formatMonth(run.oldest)}` : ''}`
+    : queued
+      ? 'Queued'
+      : last
+        ? RESULT[last.result](last.detail)
+        : null
+  const loadingOlder = olderBusy || run !== null || queued
 
   return (
     <div className="menu-wrap sheet-wrap">
@@ -167,6 +200,14 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
                 <span>Add a local AI in Settings first</span>
               </p>
             )}
+            <div className="sheet-field">
+              <button className="button-text" type="button" disabled={loadingOlder} onClick={() => void loadOlder()}>
+                Load older messages
+              </button>
+              {olderLine && <p className="settings-about">{olderLine}</p>}
+              {olderError && <p role="alert">{olderError}</p>}
+              <p className="settings-about">Your phone shows a &apos;Finished syncing&apos; notice for each batch.</p>
+            </div>
             {saveError && <p role="alert">{saveError}</p>}
             <button className="sheet-save" type="button" disabled={saving || cloudChoice} onClick={() => void save()}>
               Save

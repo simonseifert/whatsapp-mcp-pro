@@ -395,3 +395,16 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   `TRANSCRIBE_CLOUD_FALLBACK` stays on; whether to make it opt-in is the owner's decision.
 - Not done here: network and account items from the audit (public Funnel exposure of the MCP, send allowlists, a
   separate env file for wa-app) are deployment settings for the owner.
+
+## D25 - 2026-11-25 - M3 notifications and the M3 split
+
+- **Notifications (Simon, 2026-11-25):** the app notifies on every incoming message with sender and text, like
+  WhatsApp, except muted chats and the chat open in a visible app window. This replaces the 21 Nov rule (a push only
+  when a draft is ready): the M3 goal is a week without WhatsApp on the phone, which needs the app to notify. Web Push
+  payloads are encrypted end to end (RFC 8291), so Apple and Google relay ciphertext only. Turn off the phone
+  WhatsApp's own notifications to avoid doubles.
+- **Split:** M3a (notifications, photos and files, voice notes, private reply) is planned in
+  `docs/superpowers/plans/2026-11-25-wa-app-m3a-notify-and-send.md`; M3b (search, contacts, groups and Communities,
+  call log, polls) gets its own plan after M3a, so it can use what M3a taught.
+- **Started before the M1/M2 week of real use** (Simon, 2026-11-25: notifications are what he needs to use the app
+  daily). The M1 and M2 "Done when" weeks stay open and run alongside.
