@@ -2183,3 +2183,35 @@ input {
   align-items: center;
   gap: var(--spacing-sm);
 }
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.history-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacing-xxs) var(--spacing-xs);
+}
+
+.history-name {
+  font-weight: var(--font-weight-title);
+}
+
+.history-tag {
+  padding: 0 var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.history-list li .settings-about {
+  flex-basis: 100%;
+}

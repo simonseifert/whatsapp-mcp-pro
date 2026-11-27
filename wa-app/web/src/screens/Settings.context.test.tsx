@@ -9,6 +9,8 @@ beforeEach(() => {
   vi.spyOn(api, 'apiFetch').mockResolvedValue({ version: '0.0.0' })
   vi.spyOn(api, 'fetchBackends').mockResolvedValue({ backends: [], default_id: null })
   vi.spyOn(api, 'fetchDraftContext').mockResolvedValue(stored)
+  vi.spyOn(api, 'fetchCoverage').mockResolvedValue({ totals: { messages: 5, chats: 1, oldest: null }, chats: [], thin_threshold: 30 })
+  vi.spyOn(api, 'fetchHistoryStatus').mockResolvedValue({ running: null, queued: [], done: [] })
 })
 afterEach(() => {
   cleanup()
@@ -22,6 +24,13 @@ async function open() {
 }
 
 describe('Settings draft context', () => {
+  it('shows the History section above the AI section', async () => {
+    await open()
+    const history = await screen.findByText('History')
+    const ai = screen.getByText('Draft context')
+    expect(history.compareDocumentPosition(ai) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('loads the saved values into the fields', async () => {
     await open()
     expect((screen.getByLabelText('Messages a draft reads') as HTMLInputElement).value).toBe('30')

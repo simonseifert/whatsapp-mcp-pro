@@ -1,4 +1,15 @@
-import type { BackendCfg, BackendInput, BackendsResponse, BackendTestResult, ChatAi, DraftContext, DraftView } from './api-types'
+import type {
+  BackendCfg,
+  BackendInput,
+  BackendsResponse,
+  BackendTestResult,
+  ChatAi,
+  DraftContext,
+  DraftView,
+  HistoryCoverage,
+  HistoryDepth,
+  HistoryStatus,
+} from './api-types'
 
 export class ApiError extends Error {
   status: number
@@ -73,6 +84,29 @@ export async function saveDraftContext(patch: Partial<DraftContext>): Promise<Dr
   return (
     await apiFetch<{ context: DraftContext }>('/api/ai/context', { method: 'PUT', body: JSON.stringify(patch) })
   ).context
+}
+
+export function fetchCoverage(): Promise<HistoryCoverage> {
+  return apiFetch<HistoryCoverage>('/api/history/coverage')
+}
+
+export function fetchHistoryStatus(): Promise<HistoryStatus> {
+  return apiFetch<HistoryStatus>('/api/history/status')
+}
+
+/** Queues older messages for the thin chats, or all of the most recent 50. */
+export function fillHistory(scope: 'thin' | 'all', depth: HistoryDepth): Promise<{ added: number; status: HistoryStatus }> {
+  return apiFetch(`/api/history/fill`, { method: 'POST', body: JSON.stringify({ scope, depth }) })
+}
+
+/** Queues older messages for one chat. Throws ApiError (404 for chats that have no history to load). */
+export function loadChatHistory(jid: string, depth: HistoryDepth): Promise<{ added: number; status: HistoryStatus }> {
+  return apiFetch(`${chatPath(jid)}/history`, { method: 'POST', body: JSON.stringify({ depth }) })
+}
+
+/** Drops what is queued; a chat already running finishes. */
+export function cancelHistory(): Promise<HistoryStatus> {
+  return apiFetch<HistoryStatus>('/api/history/cancel', { method: 'POST' })
 }
 
 export function fetchBackends(): Promise<BackendsResponse> {

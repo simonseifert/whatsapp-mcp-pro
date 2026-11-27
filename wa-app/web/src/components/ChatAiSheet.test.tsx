@@ -83,4 +83,31 @@ describe('ChatAiSheet', () => {
       rules: '',
     })
   })
+
+  it('queues older messages for this chat and says so', async () => {
+    const load = vi
+      .spyOn(api, 'loadChatHistory')
+      .mockResolvedValue({ added: 1, status: { running: null, queued: [JID], done: [] } })
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
+    await waitFor(() => expect(screen.getByText('Queued')).toBeTruthy())
+    expect(load).toHaveBeenCalledWith(JID, 'all')
+  })
+
+  it('shows the running line when this chat is already being filled', async () => {
+    vi.spyOn(api, 'loadChatHistory').mockResolvedValue({
+      added: 0,
+      status: { running: { jid: JID, batches: 3, oldest: '2024-05-10T10:00:00Z' }, queued: [], done: [] },
+    })
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
+    await waitFor(() => expect(screen.getByText('Loading older messages: 3 batches, back to May 2024')).toBeTruthy())
+  })
+
+  it('shows why older messages could not be queued', async () => {
+    vi.spyOn(api, 'loadChatHistory').mockRejectedValue(new api.ApiError(404, 'Chat not found'))
+    render(<ChatAiSheet jid={JID} onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
+    await waitFor(() => expect(screen.getByText('Chat not found')).toBeTruthy())
+  })
 })

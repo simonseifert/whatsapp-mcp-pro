@@ -10,6 +10,7 @@ import {
   testBackend,
 } from '../api'
 import type { BackendCfg, BackendInput, BackendTestResult, DraftContext } from '../api-types'
+import { HistorySection } from '../components/HistorySection'
 import { BackendForm } from '../components/BackendForm'
 import { UpdateRow } from '../components/UpdateRow'
 import { disablePush, enablePush, pushState, pushSupport } from '../push'
@@ -501,6 +502,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
           </div>
         </div>
         <NotificationsSection />
+        <HistorySection />
         <AiSection />
         <DraftContextSection />
         <UpdateRow />

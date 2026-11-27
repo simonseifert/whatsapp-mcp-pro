@@ -113,6 +113,30 @@ export type ChatAi = {
 
 export type DraftContext = { context_messages: number; own_examples: number; about_me: string }
 
+export type HistoryDepth = 'year' | '3y' | 'all'
+export type HistoryChat = {
+  jid: string
+  name: string
+  kind: string
+  messages: number
+  own_texts: number
+  oldest: string | null
+  last_active: string | null
+  thin: boolean
+  backfill_jid: string | null
+}
+export type HistoryCoverage = {
+  totals: { messages: number; chats: number; oldest: string | null }
+  chats: HistoryChat[]
+  thin_threshold: number
+}
+export type HistoryDone = { jid: string; result: 'done' | 'more' | 'failed' | 'skipped'; detail: string; oldest: string | null }
+export type HistoryStatus = {
+  running: { jid: string; batches: number; oldest: string | null } | null
+  queued: string[]
+  done: HistoryDone[]
+}
+
 /** What /api/live pushes. `resync` means "refetch": the server could not replay what was missed (or the page has
  *  just come back to the foreground). */
 export type LiveEvent =
