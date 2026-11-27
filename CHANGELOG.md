@@ -36,6 +36,10 @@ App and MCP audit fixes (see DECISIONS.md D24):
 
 ### Added
 
+- Captions and quotes on media, and quoting across chats: `send_file` takes `caption`, `quoted_message_id` and
+  `quoted_chat_jid`; `send_audio_message` takes the quote; `send_message` takes `quoted_chat_jid`. `/api/send` accepts
+  `quoted_chat_jid` (private reply to a group message): the quote's `RemoteJID` is that chat, the quoted message is
+  looked up by id and chat, and its author is kept as stored (a LID stays a LID).
 - Drafts from Claude: wa-app's `/api/agent/*` routes (bearer `WA_APP_AGENT_TOKEN`, off without it) and an opt-in
   `drafts` MCP toolset (`push_draft`, `set_auto_drafts`, `get_auto_drafts`; 42 tools with every toolset). A pushed
   draft shows on the chat's draft card as "Draft · from Claude"; nothing is ever sent. `drafts.source` column added.

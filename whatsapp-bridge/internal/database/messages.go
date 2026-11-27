@@ -546,6 +546,17 @@ func (store *MessageStore) GetMessageContentAndSender(messageID string) (content
 	return
 }
 
+// GetMessageContentAndSenderInChat is GetMessageContentAndSender restricted to
+// one chat: message IDs are only unique per chat, so a quote that crosses chats
+// must name the chat it takes the message from.
+func (store *MessageStore) GetMessageContentAndSenderInChat(messageID, chatJID string) (content string, sender string, isFromMe bool, err error) {
+	err = store.db.QueryRow(
+		"SELECT COALESCE(content, ''), COALESCE(sender, ''), COALESCE(is_from_me, 0) FROM messages WHERE id = ? AND chat_jid = ?",
+		messageID, chatJID,
+	).Scan(&content, &sender, &isFromMe)
+	return
+}
+
 // GetPreviousMessageTime returns the timestamp of the message sent immediately before the given time in same chat.
 func (store *MessageStore) GetPreviousMessageTime(chatJID string, currentTime time.Time) (time.Time, error) {
 	query := `

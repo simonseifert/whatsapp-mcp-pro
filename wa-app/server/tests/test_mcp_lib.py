@@ -32,3 +32,58 @@ def test_history_backfill_pass_throughs(monkeypatch) -> None:
     assert mcp_lib.start_history_backfill("x@s.whatsapp.net", "2025-01-01", 200) == {"success": True}
     assert seen["start"] == ("x@s.whatsapp.net", "2025-01-01", 200)
     assert mcp_lib.history_backfill_status() == {"success": True, "jobs": []}
+
+
+def test_send_pass_throughs(monkeypatch) -> None:
+    import whatsapp
+
+    calls: dict[str, tuple] = {}
+
+    def fake(name):
+        def inner(*args, **kwargs):
+            calls[name] = (args, kwargs)
+            return {"success": True, "message_id": "M1"}
+
+        return inner
+
+    monkeypatch.setattr(whatsapp, "send_message", fake("message"))
+    monkeypatch.setattr(whatsapp, "send_file", fake("file"))
+    monkeypatch.setattr(whatsapp, "send_audio_message", fake("audio"))
+    assert {"send_file", "send_audio_message"} <= set(mcp_lib.__all__)
+    group = "120363000000000001@g.us"
+
+    mcp_lib.send_message("a@s.whatsapp.net", "hi", "Q1", "k1", quoted_chat_jid=group)
+    assert calls["message"] == (
+        ("a@s.whatsapp.net", "hi"),
+        {"quoted_message_id": "Q1", "idempotency_key": "k1", "quoted_chat_jid": group},
+    )
+
+    result = mcp_lib.send_file(
+        "a@s.whatsapp.net",
+        file_path="/tmp/x/račun.pdf",
+        filename="račun.pdf",
+        caption="Evo",
+        quoted_message_id="Q1",
+        quoted_chat_jid=group,
+        idempotency_key="k2",
+    )
+    assert result["success"] is True
+    assert calls["file"] == (
+        ("a@s.whatsapp.net",),
+        {
+            "media_path": "/tmp/x/račun.pdf",
+            "filename": "račun.pdf",
+            "idempotency_key": "k2",
+            "caption": "Evo",
+            "quoted_message_id": "Q1",
+            "quoted_chat_jid": group,
+        },
+    )
+
+    mcp_lib.send_audio_message(
+        "a@s.whatsapp.net", file_path="/tmp/x/v.ogg", quoted_message_id="Q1", idempotency_key="k3"
+    )
+    assert calls["audio"] == (
+        ("a@s.whatsapp.net", "/tmp/x/v.ogg"),
+        {"idempotency_key": "k3", "quoted_message_id": "Q1", "quoted_chat_jid": None},
+    )

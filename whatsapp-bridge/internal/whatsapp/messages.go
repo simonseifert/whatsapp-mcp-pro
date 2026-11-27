@@ -522,30 +522,22 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 
 	// Build quoted message context if quotedMessageID is provided
 	if quotedMessageID != "" && messageStore != nil {
-		content, sender, isFromMe, err := messageStore.GetMessageContentAndSender(quotedMessageID)
-		if err == nil {
-			quoted, pErr := c.quotedParticipant(messageStore, sender, recipientJID, isFromMe)
-			if pErr != nil {
-				// A quote with a broken participant is delivered as a reply to
-				// nothing and still reports success, so refuse instead.
-				return failed(newSendError(SendErrInvalid, "cannot quote message %s: %w", quotedMessageID, pErr), "")
-			}
-			participant := quoted.String()
-			contextInfo := &waE2E.ContextInfo{
-				StanzaID:    proto.String(quotedMessageID),
-				Participant: proto.String(participant),
-				QuotedMessage: &waE2E.Message{
-					Conversation: proto.String(content),
-				},
-			}
-
+		contextInfo, qErr := c.buildQuoteContext(messageStore, quotedMessageID, opts.QuotedChatJID, recipientJID)
+		if qErr != nil {
+			// A quote with a broken participant is delivered as a reply to
+			// nothing and still reports success, so refuse instead.
+			return failed(newSendError(SendErrInvalid, "cannot quote message %s: %w", quotedMessageID, qErr), "")
+		}
+		if contextInfo != nil {
 			if msg.ExtendedTextMessage != nil {
 				if msg.ExtendedTextMessage.ContextInfo == nil {
 					msg.ExtendedTextMessage.ContextInfo = contextInfo
 				} else {
-					msg.ExtendedTextMessage.ContextInfo.StanzaID = proto.String(quotedMessageID)
-					msg.ExtendedTextMessage.ContextInfo.Participant = proto.String(participant)
-					msg.ExtendedTextMessage.ContextInfo.QuotedMessage = contextInfo.QuotedMessage
+					ci := msg.ExtendedTextMessage.ContextInfo
+					ci.StanzaID = contextInfo.StanzaID
+					ci.Participant = contextInfo.Participant
+					ci.QuotedMessage = contextInfo.QuotedMessage
+					ci.RemoteJID = contextInfo.RemoteJID
 				}
 			} else if msg.ImageMessage != nil {
 				msg.ImageMessage.ContextInfo = contextInfo
@@ -1230,4 +1222,53 @@ func (c *Client) RequestChatHistory(chatJID string, oldestMsgID string, oldestMs
 	c.antiban.AfterSend(antiban.Peer)
 
 	return nil
+}
+
+// buildQuoteContext builds the ContextInfo that quotes a stored message in a
+// send to recipient. quotedChat is the chat the quoted message lives in; empty
+// or equal to the recipient means an ordinary in-chat quote. Otherwise (a
+// private reply to a group message) the message is looked up by id and that
+// chat, RemoteJID names the chat it came from, and the participant is its
+// author as stored there (a LID stays a LID). It returns nil, nil when the
+// message is not in the store: the send then goes out unquoted, as before.
+func (c *Client) buildQuoteContext(store *database.MessageStore, quotedID, quotedChat string, recipient types.JID) (*waE2E.ContextInfo, error) {
+	chat := recipient
+	remote := ""
+	if quotedChat != "" {
+		qc, err := types.ParseJID(quotedChat)
+		if err != nil {
+			return nil, fmt.Errorf("invalid quoted chat %q: %w", quotedChat, err)
+		}
+		if qc.ToNonAD() != recipient.ToNonAD() {
+			chat = qc.ToNonAD()
+			remote = chat.String()
+		}
+	}
+
+	var content, sender string
+	var isFromMe bool
+	var err error
+	if remote != "" {
+		content, sender, isFromMe, err = store.GetMessageContentAndSenderInChat(quotedID, remote)
+	} else {
+		content, sender, isFromMe, err = store.GetMessageContentAndSender(quotedID)
+	}
+	if err != nil {
+		return nil, nil
+	}
+	participant, err := c.quotedParticipant(store, sender, chat, isFromMe)
+	if err != nil {
+		return nil, err
+	}
+	ci := &waE2E.ContextInfo{
+		StanzaID:    proto.String(quotedID),
+		Participant: proto.String(participant.String()),
+		QuotedMessage: &waE2E.Message{
+			Conversation: proto.String(content),
+		},
+	}
+	if remote != "" {
+		ci.RemoteJID = proto.String(remote)
+	}
+	return ci, nil
 }

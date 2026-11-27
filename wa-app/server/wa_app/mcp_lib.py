@@ -65,13 +65,72 @@ def mark_messages_read(chat_jid: str, message_ids: list[str], sender_jid: str | 
 
 
 def send_message(
-    recipient: str, message: str, quoted_message_id: str | None = None, idempotency_key: str | None = None
+    recipient: str,
+    message: str,
+    quoted_message_id: str | None = None,
+    idempotency_key: str | None = None,
+    quoted_chat_jid: str | None = None,
 ) -> dict:
-    """Send a text through the bridge (blocking HTTP: call from a worker thread). Every bridge cap and lock applies."""
+    """Send a text through the bridge (blocking HTTP: call from a worker thread). Every bridge cap and lock applies.
+
+    `quoted_chat_jid` is the chat the quoted message lives in when it is not `recipient`'s (a private reply).
+    """
     import whatsapp
 
     return whatsapp.send_message(
-        recipient, message, quoted_message_id=quoted_message_id, idempotency_key=idempotency_key
+        recipient,
+        message,
+        quoted_message_id=quoted_message_id,
+        idempotency_key=idempotency_key,
+        quoted_chat_jid=quoted_chat_jid,
+    )
+
+
+def send_file(
+    recipient: str,
+    *,
+    file_path: str,
+    filename: str | None,
+    caption: str | None,
+    quoted_message_id: str | None,
+    quoted_chat_jid: str | None,
+    idempotency_key: str,
+) -> dict:
+    """Send a file through the bridge (blocking HTTP: call from a worker thread). Every bridge cap and lock applies.
+
+    The bridge names the document after `file_path`'s basename, so stage the file under the name it should carry;
+    `filename` is only accepted to keep the caller's call explicit.
+    """
+    import whatsapp
+
+    return whatsapp.send_file(
+        recipient,
+        media_path=file_path,
+        filename=filename,
+        idempotency_key=idempotency_key,
+        caption=caption,
+        quoted_message_id=quoted_message_id,
+        quoted_chat_jid=quoted_chat_jid,
+    )
+
+
+def send_audio_message(
+    recipient: str,
+    *,
+    file_path: str,
+    quoted_message_id: str | None,
+    quoted_chat_jid: str | None = None,
+    idempotency_key: str,
+) -> dict:
+    """Send a voice note through the bridge (blocking HTTP: call from a worker thread)."""
+    import whatsapp
+
+    return whatsapp.send_audio_message(
+        recipient,
+        file_path,
+        idempotency_key=idempotency_key,
+        quoted_message_id=quoted_message_id,
+        quoted_chat_jid=quoted_chat_jid,
     )
 
 
@@ -105,6 +164,8 @@ __all__ = [
     "history_backfill_status",
     "mark_messages_read",
     "resolve_display_names",
+    "send_audio_message",
+    "send_file",
     "send_message",
     "send_reaction",
     "server_dir",
