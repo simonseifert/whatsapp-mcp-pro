@@ -10,7 +10,7 @@ interface WorkerScope {
     openWindow(url: string): Promise<unknown>
   }
   registration: {
-    showNotification(title: string, options: { body?: string; tag?: string; data?: { url: string } }): Promise<void>
+    showNotification(title: string, options: { body?: string; tag?: string; renotify?: boolean; data?: { url: string } }): Promise<void>
   }
   addEventListener(type: 'install' | 'activate', listener: (event: WaitEvent) => void): void
   addEventListener(type: 'push', listener: (event: PushEv) => void): void
@@ -86,6 +86,8 @@ self.addEventListener('push', (event) => {
     self.registration.showNotification(fields.title, {
       body: typeof fields.body === 'string' ? fields.body : undefined,
       tag: typeof fields.tag === 'string' ? fields.tag : undefined,
+      // A replaced notification (same tag) stays audible on Chrome and Android; renotify needs a tag.
+      renotify: typeof fields.tag === 'string' && fields.tag !== '' ? true : undefined,
       data: { url },
     }),
   )
