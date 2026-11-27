@@ -62,13 +62,13 @@ The app notifies on every incoming message, with the sender and the text, except
 3. **On iPhone, install the app to the Home Screen** (Share, Add to Home Screen) and open it from there; iOS only delivers push to the installed app. Then Settings, Notifications on, and "Send a test".
 4. Turn off the phone WhatsApp's own notifications to avoid doubles.
 
-Payloads are encrypted end to end, so Apple and Google relay ciphertext only. Bodies are cut to 180 characters, and a chat shows one notification at a time (a new message replaces the old one). Messages older than 120 seconds, your own, system messages, deleted messages and call-log entries never notify. Only devices with a live login get a push.
+Payloads are encrypted end to end, so Apple and Google relay ciphertext only. Bodies are cut to 180 characters, and a chat shows one notification at a time (a new message replaces the old one). Messages older than 120 seconds, your own, system messages, deleted messages, call-log entries and Channels never notify. Only devices with a live login get a push.
 
 ## Sending photos, files and voice notes
 
 The attach button sends a photo or a file with an optional caption (up to 1024 characters) and a reply. Uploads are limited to 64 MiB and at most 2 run at once. The file is streamed to a private temp folder under `/tmp` and deleted after the send.
 
-The mic button records a voice note in the browser (webm/opus, or mp4 on iPhone), up to 15 minutes. The MCP side converts it to Ogg Opus before sending. The browser asks for the microphone the first time, and recording needs https.
+The mic button records a voice note in the browser (webm/opus; the iPhone records mp4 only because it does not support webm), up to 15 minutes. The MCP side converts it to Ogg Opus before sending. The first time, the app says it needs the microphone to record voice messages and shows a Continue button before the browser asks for permission. Recording needs https.
 
 Every send, uploads included, goes through the bridge's send allowlists.
 
