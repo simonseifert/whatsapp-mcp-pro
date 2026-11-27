@@ -11,7 +11,6 @@ from .config import ChatAi
 MAX_LINE = 500
 MAX_EXAMPLE = 300
 MAX_RULE = 300
-OWN_EXAMPLES = 30
 EDITED_EXAMPLES = 10
 _BACKTICK = "ˋ"  # modifier letter grave accent: reads the same, cannot close a fence
 _MEDIA = {"image": "[photo]", "video": "[video]", "sticker": "[sticker]", "document": "[file]", "gif": "[video]"}
@@ -90,7 +89,9 @@ def _render(
     return f"[{clock}] {who}: {clean_line(body, MAX_LINE)}"
 
 
-def _own_replies(ro: sqlite3.Connection, chat_jid: str) -> list[str]:
+def _own_replies(ro: sqlite3.Connection, chat_jid: str, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
     forms = store._forms_of(ro, chat_jid)
     deleted = " AND deleted_at IS NULL" if "deleted_at" in store._columns(ro, "messages") else ""
     rows = ro.execute(
@@ -98,7 +99,7 @@ def _own_replies(ro: sqlite3.Connection, chat_jid: str) -> list[str]:
         " AND COALESCE(media_type, '') = '' AND TRIM(COALESCE(content, '')) <> ''"
         " AND content NOT LIKE '[Poll: %' AND content NOT LIKE '[Contact: %'"
         f" AND julianday(timestamp) IS NOT NULL{deleted} ORDER BY julianday(timestamp) DESC LIMIT ?",
-        [*forms, OWN_EXAMPLES],
+        [*forms, limit],
     ).fetchall()
     return [clean_line(r[0], MAX_EXAMPLE) for r in reversed(rows)]
 
@@ -121,6 +122,8 @@ def build_draft_prompt(
     chat_ai: ChatAi,
     *,
     n_messages: int = 30,
+    own_examples: int = 30,
+    about_me: str = "",
 ) -> Prompt:
     summary = store.get_chat(ro, appconn, chat_jid)
     chat_name = summary.name if summary else chat_jid
@@ -142,13 +145,15 @@ def build_draft_prompt(
             target = n
 
     chat_parts: list[str] = []
+    if about_me.strip():
+        chat_parts.append("```about\nAbout the user (written by the user):\n" + clean_line(about_me, 1500) + "\n```")
     if chat_ai.note and chat_ai.note.strip():
         chat_parts.append("```note\nAbout this chat (written by the user):\n" + clean_line(chat_ai.note, 400) + "\n```")
     if chat_ai.rules and chat_ai.rules.strip():  # may be distilled model output: data, like the examples
         rules = [clean_line(r, MAX_RULE) for r in chat_ai.rules.splitlines() if r.strip()]
         chat_parts.append("```rules\nStyle rules for this chat:\n" + "\n".join(rules) + "\n```")
     examples: list[str] = []
-    if own := _own_replies(ro, chat_jid):
+    if own := _own_replies(ro, chat_jid, own_examples):
         examples += ["The user's own replies here (oldest first):", *(f"- {o}" for o in own)]
     if edited := _edited(appconn, chat_jid):
         examples += [

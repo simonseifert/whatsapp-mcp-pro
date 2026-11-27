@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
-import { apiFetch, deleteBackend, fetchBackends, saveBackend, setDefaultBackend, testBackend } from '../api'
-import type { BackendCfg, BackendInput, BackendTestResult } from '../api-types'
+import {
+  apiFetch,
+  deleteBackend,
+  fetchBackends,
+  fetchDraftContext,
+  saveBackend,
+  saveDraftContext,
+  setDefaultBackend,
+  testBackend,
+} from '../api'
+import type { BackendCfg, BackendInput, BackendTestResult, DraftContext } from '../api-types'
 import { BackendForm } from '../components/BackendForm'
 import { UpdateRow } from '../components/UpdateRow'
 import { disablePush, enablePush, pushState, pushSupport } from '../push'
@@ -14,6 +23,125 @@ const KIND_LABEL: Record<BackendCfg['kind'], string> = {
 
 function secondsLine(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`
+}
+
+const MAX_ABOUT = 1500
+
+/** What every draft knows: the About me note, and how much chat and how many past replies it reads. */
+function DraftContextSection() {
+  const [saved, setSaved] = useState<DraftContext | null>(null)
+  const [form, setForm] = useState<DraftContext | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    fetchDraftContext()
+      .then((c) => {
+        if (!live) return
+        if (!c) throw new Error('empty')
+        setSaved(c)
+        setForm(c)
+      })
+      .catch(() => live && setLoadFailed(true))
+    return () => {
+      live = false
+    }
+  }, [])
+
+  if (!saved || !form) {
+    return loadFailed ? (
+      <div className="settings-group">
+        <div className="settings-label">Draft context</div>
+        <p className="form-error">Couldn&apos;t load the draft context.</p>
+      </div>
+    ) : null
+  }
+
+  const changed: Partial<DraftContext> = {}
+  if (form.about_me !== saved.about_me) changed.about_me = form.about_me
+  if (form.context_messages !== saved.context_messages) changed.context_messages = form.context_messages
+  if (form.own_examples !== saved.own_examples) changed.own_examples = form.own_examples
+  const dirty = Object.keys(changed).length > 0
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      const next = await saveDraftContext(changed)
+      setSaved(next)
+      setForm(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="settings-group">
+      <div className="settings-label">Draft context</div>
+      <div className="ai-form">
+        <label className="ai-field">
+          <span>About me</span>
+          <textarea
+            aria-label="About me"
+            rows={4}
+            maxLength={MAX_ABOUT}
+            value={form.about_me}
+            placeholder="Who you are and how you write. Used for every draft."
+            onChange={(e) => setForm({ ...form, about_me: e.target.value })}
+          />
+          <span>{`${form.about_me.length}/${MAX_ABOUT}`}</span>
+        </label>
+        <label className="ai-field">
+          <span>Messages a draft reads</span>
+          <span className="ai-range">
+            <input
+              type="range"
+              min={10}
+              max={100}
+              step={10}
+              value={form.context_messages}
+              onChange={(e) => setForm({ ...form, context_messages: Number(e.target.value) })}
+            />
+            <output>{form.context_messages}</output>
+          </span>
+        </label>
+        <label className="ai-field">
+          <span>Your past replies it learns from</span>
+          <span className="ai-range">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={10}
+              value={form.own_examples}
+              onChange={(e) => setForm({ ...form, own_examples: Number(e.target.value) })}
+            />
+            <output>{form.own_examples}</output>
+          </span>
+        </label>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="ai-form-actions">
+          <button
+            className="button-text"
+            type="button"
+            aria-label="Save draft context"
+            disabled={!dirty || saving}
+            onClick={() => void save()}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /** The AIs that write drafts: add, edit, test, pick the default, delete. Keys go in and never come back out. */
@@ -374,6 +502,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
         </div>
         <NotificationsSection />
         <AiSection />
+        <DraftContextSection />
         <UpdateRow />
         {version && <p className="settings-about">wa-app {version}</p>}
       </div>

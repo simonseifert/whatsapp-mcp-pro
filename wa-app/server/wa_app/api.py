@@ -14,6 +14,7 @@ from starlette.routing import Route
 from . import appdb, auth, live, media, push, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
+from .ai import context as ai_context_store
 from .ai import drafts, learning, policy
 from .config import Settings
 from .tokens import token_hash
@@ -451,6 +452,21 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             return ai_failure(exc)
         return JSONResponse({"default_id": backend_id})
 
+    async def ai_context(request: Request) -> Response:
+        if request.method == "PUT":
+            body = await body_of(request)
+            if not isinstance(body, dict):
+                return _error(422, "Expected a JSON object")
+            try:
+                with appdb.db_lock:
+                    saved = ai_context_store.save_context(conn, body)
+            except ai_config.ConfigError as exc:
+                return ai_failure(exc)
+        else:
+            with appdb.db_lock:
+                saved = ai_context_store.get_context(conn)
+        return JSONResponse({"context": asdict(saved)})
+
     async def chat_ai_settings(request: Request) -> Response:
         body: dict | None = None
         if request.method == "PUT":
@@ -579,6 +595,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/ai/backends/{id}", ai_backend_delete, methods=["DELETE"]),
         Route("/api/ai/backends/{id}/test", ai_backend_test, methods=["POST"]),
         Route("/api/ai/default", ai_default, methods=["PUT"]),
+        Route("/api/ai/context", ai_context, methods=["GET", "PUT"]),
         Route("/api/chats/{jid}/ai", chat_ai_settings, methods=["GET", "PUT"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
         Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),

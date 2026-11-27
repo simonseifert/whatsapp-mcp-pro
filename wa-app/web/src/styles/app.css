@@ -2136,6 +2136,43 @@ input {
   outline-offset: -2px;
 }
 
+.ai-field textarea {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body);
+  resize: vertical;
+}
+
+.ai-field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ai-range {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.ai-range input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  accent-color: var(--accent);
+}
+
+.ai-range output {
+  min-width: 3ch;
+  text-align: right;
+  color: var(--fg);
+  font-size: var(--text-body);
+}
+
 .ai-remove {
   align-self: flex-start;
   padding-left: 0;

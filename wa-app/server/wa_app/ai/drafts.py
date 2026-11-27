@@ -26,7 +26,7 @@ from typing import Any
 
 from .. import appdb, live, store
 from ..config import Settings
-from . import backends, learning, policy
+from . import backends, context, learning, policy
 from . import config as ai_config
 from . import prompt as prompts
 
@@ -618,12 +618,22 @@ class DraftWorker:
             chat = ai_config.chat_ai(self._appconn, job.chat_jid)
             cfg = ai_config.effective_backend(self._appconn, job.chat_jid)
             secret = ai_config.backend_secret(self._appconn, self.settings, cfg.id) if cfg else None
+            ctx = context.get_context(self._appconn)
         policy.check(chat, cfg)  # raises Refused before any content is read or sent
         assert cfg is not None
         local = policy.is_local(cfg)
         ro = store.open_ro(self.settings)
         try:
-            prompt = prompts.build_draft_prompt(ro, self._appconn, job.chat_jid, job.trigger_id, chat)
+            prompt = prompts.build_draft_prompt(
+                ro,
+                self._appconn,
+                job.chat_jid,
+                job.trigger_id,
+                chat,
+                n_messages=ctx.context_messages,
+                own_examples=ctx.own_examples,
+                about_me=ctx.about_me,
+            )
         finally:
             ro.close()
         return cfg, secret, prompt, local

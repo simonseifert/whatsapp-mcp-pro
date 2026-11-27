@@ -111,6 +111,8 @@ export type ChatAi = {
   rules: string | null
 }
 
+export type DraftContext = { context_messages: number; own_examples: number; about_me: string }
+
 /** What /api/live pushes. `resync` means "refetch": the server could not replay what was missed (or the page has
  *  just come back to the foreground). */
 export type LiveEvent =
