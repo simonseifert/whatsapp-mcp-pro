@@ -304,6 +304,36 @@ def test_edits_and_revokes_made_while_the_app_was_down(settings, indexed) -> Non
     assert indexed.execute("SELECT COUNT(*) FROM msg_fts WHERE message_id='D2'").fetchone()[0] == 0
 
 
+def test_failed_reindex_leaves_the_edit_cursor_so_the_next_run_retries(settings, indexed, monkeypatch) -> None:
+    with bridge(settings) as b:
+        add(b, fx.ANA, "F1", "prije", sender=fx.ANA)
+    with ro_of(settings) as ro:
+        search.index_messages(indexed, ro)
+        search.reconcile(indexed, ro)  # takes the baseline
+    with appdb.db_lock:
+        before = search._meta_int(indexed, search.META_EDIT)
+    with bridge(settings) as b:
+        b.execute(
+            "INSERT INTO message_edits (message_id, chat_jid, edit_id, new_content, edited_at)"
+            " VALUES ('F1', ?, 'e', 'poslije', ?)",
+            (fx.ANA, now()),
+        )
+        b.execute("UPDATE messages SET content='poslije' WHERE id='F1'")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("index down")
+
+    monkeypatch.setattr(search, "reindex", boom)
+    with ro_of(settings) as ro, pytest.raises(RuntimeError):
+        search.reconcile(indexed, ro)
+    with appdb.db_lock:
+        assert search._meta_int(indexed, search.META_EDIT) == before
+    monkeypatch.undo()
+    with ro_of(settings) as ro:
+        search.reconcile(indexed, ro)
+    assert find(settings, indexed, "poslije")
+
+
 def test_chat_moving_to_its_phone_form_keeps_one_row(settings, indexed) -> None:
     with bridge(settings) as b:
         add(b, fx.TOMO_LID, "M1", "dvaputa ista", sender=fx.TOMO_LID)

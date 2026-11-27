@@ -71,7 +71,7 @@ describe('ChatAiSheet', () => {
     const save = vi.spyOn(api, 'saveChatAi').mockResolvedValue(ai)
     render(<ChatAiSheet jid={JID} onClose={() => {}} />)
     const auto = (await screen.findByRole('radio', { name: /Auto/ })) as HTMLInputElement
-    expect(auto.getAttribute('aria-disabled')).toBe('true')
+    expect(auto.disabled).toBe(true)
     fireEvent.click(auto)
     expect(auto.checked).toBe(false)
     expect((screen.getByRole('radio', { name: /My reply/ }) as HTMLInputElement).checked).toBe(true)

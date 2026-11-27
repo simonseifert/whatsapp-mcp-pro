@@ -7,7 +7,7 @@ afterEach(cleanup)
 describe('FilterChips', () => {
   it('shows the built-in chips until the server answers', () => {
     render(<FilterChips chips={null} value="all" onChange={() => {}} />)
-    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual(['All', 'Unread', 'Favourites', 'Groups'])
+    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual(['All', 'Unread', 'Favourites', 'Groups', 'Mentions and replies'])
   })
 
   it('shows the server chips in their order, custom lists last', () => {

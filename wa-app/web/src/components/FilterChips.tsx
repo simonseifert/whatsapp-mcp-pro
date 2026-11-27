@@ -9,6 +9,7 @@ export const BUILT_IN_CHIPS: FilterChip[] = [
   { id: 'unread', label: 'Unread' },
   { id: 'favourites', label: 'Favourites' },
   { id: 'groups', label: 'Groups' },
+  { id: 'mentions', label: 'Mentions and replies' },
 ]
 
 export function FilterChips({

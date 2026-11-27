@@ -162,7 +162,7 @@ export function ChatAiSheet({ jid, onClose }: { jid: string; onClose: () => void
                 </span>
               </label>
               <label className="mode-row disabled">
-                <input type="radio" name="ai-mode" checked={false} readOnly aria-disabled="true" onClick={(e) => e.preventDefault()} />
+                <input type="radio" name="ai-mode" checked={false} readOnly disabled />
                 <span>
                   <b>Auto</b>
                   <small>Coming later</small>

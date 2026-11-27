@@ -79,6 +79,11 @@ export function Composer({
   onCancelEdit,
 }: Props) {
   const [text, setText] = useState('')
+  const current = useRef(text)
+  useEffect(() => {
+    current.current = text
+  })
+  const stash = useRef('') // what was half typed when edit mode began
   const box = useRef<HTMLTextAreaElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
   const picker = useRef<HTMLInputElement>(null)
@@ -118,13 +123,15 @@ export function Composer({
   const wasEditing = useRef(false)
   useEffect(() => {
     if (editId !== null) {
+      if (!wasEditing.current) stash.current = current.current
       wasEditing.current = true
       // eslint-disable-next-line react-hooks/set-state-in-effect -- the box takes the edited message's text once
       setText(editText)
       box.current?.focus()
     } else if (wasEditing.current) {
       wasEditing.current = false
-      setText('')
+      setText(stash.current)
+      stash.current = ''
     }
   }, [editId, editText])
 
@@ -138,7 +145,7 @@ export function Composer({
     let live = true
     fetchQuickReplies()
       .then((r) => live && setReplies(r))
-      .catch(() => live && setReplies([]))
+      .catch(() => undefined) // leave it unloaded: the next open asks again
     return () => {
       live = false
     }
@@ -146,6 +153,7 @@ export function Composer({
   const matches = pickerOpen && replies ? filterReplies(replies, text.slice(1)) : []
 
   function pick(reply: QuickReply) {
+    setPickerOff(false)
     setText(reply.text)
     current.current = reply.text
     onTextChange?.(reply.text)
@@ -154,16 +162,13 @@ export function Composer({
     void markQuickReplyUsed(reply.shortcut).catch(() => undefined) // the count is a nicety; the text is already in the box
   }
 
-  const current = useRef(text)
-  useEffect(() => {
-    current.current = text
-  })
   useImperativeHandle(
     ref,
     () => ({
       getText: () => current.current,
       fill: (value) => {
         current.current = value
+        setPickerOff(false)
         setText(value)
         onTextChange?.(value)
         box.current?.focus()
@@ -184,6 +189,7 @@ export function Composer({
     }
     if (!canSend) return
     onSend(text)
+    setPickerOff(false)
     onTextChange?.('')
     setText('') // synchronous: a second tap or Enter finds an empty box and sends nothing
     box.current?.focus()
@@ -203,6 +209,7 @@ export function Composer({
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
     if (!enterSends()) return
     event.preventDefault()
+    if (pickerOpen && replies === null) return // still loading: never send a bare "/"
     if (pickerOpen && matches.length > 0) pick(matches[0])
     else submit()
   }

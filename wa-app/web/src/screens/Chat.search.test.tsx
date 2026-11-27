@@ -83,6 +83,19 @@ describe('Chat: jumping to a message and searching inside the chat', () => {
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull()
   })
 
+  it('sending from a window around an old message jumps to the latest first', async () => {
+    render(
+      <MemoryRouter initialEntries={[`/chat/${encodeURIComponent(ANA)}?around=O2`]}>
+        <Where />
+        <Chat jid={ANA} />
+      </MemoryRouter>,
+    )
+    await screen.findByText('the target')
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Bok' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe(`/chat/${encodeURIComponent(ANA)}`))
+  })
+
   it('the highlight fades after a moment', async () => {
     render(
       <MemoryRouter initialEntries={[`/chat/x?around=O2`]}>

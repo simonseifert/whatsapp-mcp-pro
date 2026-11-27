@@ -262,6 +262,7 @@ def reconcile(appconn: sqlite3.Connection, ro: sqlite3.Connection) -> None:
     """Catch up on what the rowid backfill cannot see: edits and revokes of messages that were already indexed, made
     while the app was not running."""
     pairs: list[tuple[str, str]] = []
+    top: int | None = None
     if store._columns(ro, "message_edits"):
         with appdb.db_lock:
             since = _meta_int(appconn, META_EDIT)
@@ -269,8 +270,6 @@ def reconcile(appconn: sqlite3.Connection, ro: sqlite3.Connection) -> None:
         if since is None:  # first run: the backfill reads current text anyway
             since = top
         pairs += ro.execute("SELECT DISTINCT chat_jid, message_id FROM message_edits WHERE id > ?", (since,)).fetchall()
-        with appdb.db_lock:
-            _set_meta(appconn, META_EDIT, top)
     if "deleted_at" in store._columns(ro, "messages"):
         revoked = ro.execute("SELECT chat_jid, id FROM messages WHERE deleted_at IS NOT NULL").fetchall()
         with appdb.db_lock:
@@ -283,6 +282,9 @@ def reconcile(appconn: sqlite3.Connection, ro: sqlite3.Connection) -> None:
         ]
     for i in range(0, len(pairs), BATCH):
         reindex(appconn, ro, pairs[i : i + BATCH])
+    if top is not None:  # only now: a failed batch leaves the cursor so the next run retries it
+        with appdb.db_lock:
+            _set_meta(appconn, META_EDIT, top)
 
 
 # --- live ---------------------------------------------------------------------------------------------------------

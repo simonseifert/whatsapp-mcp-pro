@@ -19,5 +19,5 @@ export function canRevoke(m: MessageView, now: number = Date.now()): boolean {
 
 /** Anything with something to send again: text or media, not a poll, a deleted or an imported row. */
 export function canForward(m: MessageView): boolean {
-  return m.actionable && !m.system && !m.deleted && !m.poll && (!!m.text || !!m.media || !!m.contact_cards)
+  return m.actionable && !m.system && !m.deleted && !m.poll && (!!m.text || !!m.media) && !m.contact_cards
 }

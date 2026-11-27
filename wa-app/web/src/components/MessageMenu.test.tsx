@@ -49,6 +49,14 @@ describe('MessageMenu actions', () => {
     expect(item('Delete for everyone')).toBeNull()
   })
 
+  it('does not offer Forward on a contact card', () => {
+    open({ text: null, contact_cards: [{ name: 'Ivo', phones: ['+385 91 000 0777'] }] }, { onForward: vi.fn() })
+    expect(item('Forward')).toBeNull()
+    cleanup()
+    open({}, { onForward: vi.fn() })
+    expect(item('Forward')).toBeTruthy()
+  })
+
   it('never offers Edit or Delete for everyone on someone else\'s message, nor Edit on media', () => {
     open({ from_me: false }, { onEdit: vi.fn(), onRevoke: vi.fn() })
     expect(item('Edit')).toBeNull()

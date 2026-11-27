@@ -216,6 +216,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     const fromDraft = usedDraft
     usedNow.current = null
     setUsedDraft(null)
+    if (hasNewer) setParams({}, { replace: true }) // a window around an old message: land at the bottom, as WhatsApp does
     void sendText(jid, text, reply ? quoteOf(reply) : null, fromDraft, reply ? replyChat : null)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true
@@ -226,6 +227,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   function sendAttachment(file: File, caption: string, quote: QuoteView | null, kind: 'file' | 'voice' = 'file') {
     setAttached(null)
     setReplyTo(null)
+    if (hasNewer) setParams({}, { replace: true })
     void sendFile(jid, file, caption, quote, kind, quote ? replyChat : null)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true

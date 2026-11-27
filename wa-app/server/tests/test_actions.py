@@ -139,13 +139,25 @@ def test_revoke_is_for_own_messages_only(logged_in, settings, bridge) -> None:  
     assert calls == []
 
 
-def test_revoked_messages_are_not_revoked_again(logged_in, settings, bridge) -> None:  # noqa: ANN001
+def test_revoking_an_already_deleted_own_message_is_a_quiet_success(logged_in, settings, bridge) -> None:  # noqa: ANN001
     calls, _ = bridge
     conn = db(settings)
     mid = add_message(settings, fx.ANA, 60, from_me=True)
     conn.execute("UPDATE messages SET deleted_at = datetime('now') WHERE id = ?", (mid,))
     conn.commit()
-    assert revoke(logged_in, fx.ANA, mid).status_code == 422
+    res = revoke(logged_in, fx.ANA, mid)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+    assert calls == []  # a retry after a lost answer must not send anything again
+
+
+def test_revoking_someone_elses_deleted_message_is_still_refused(logged_in, settings, bridge) -> None:  # noqa: ANN001
+    calls, _ = bridge
+    conn = db(settings)
+    mid = add_message(settings, fx.EKIPA, 60, from_me=False, sender=LID_SENDER)
+    conn.execute("UPDATE messages SET deleted_at = datetime('now') WHERE id = ?", (mid,))
+    conn.commit()
+    assert revoke(logged_in, fx.EKIPA, mid).status_code == 422
     assert calls == []
 
 
@@ -373,4 +385,12 @@ def test_forward_refuses_polls_deleted_and_imported_rows_per_target(logged_in, b
     for mid in ("E06", "E04", "E15"):  # poll, deleted, system
         body = forward(logged_in, from_chat=fx.EKIPA, message_ids=[mid], to=[fx.ANA]).json()
         assert body["results"][0]["ok"] is False
+    assert calls == []
+
+
+def test_forward_refuses_contact_cards(logged_in, settings, bridge) -> None:  # noqa: ANN001
+    calls, _ = bridge
+    mid = add_message(settings, fx.ANA, 60, "[Contact: Ivo Horvat]\n📞 +385 91 000 0777", from_me=True)
+    body = forward(logged_in, from_chat=fx.ANA, message_ids=[mid], to=[fx.EKIPA]).json()
+    assert body["results"][0]["ok"] is False
     assert calls == []

@@ -592,6 +592,8 @@ def revoke_message(settings: Settings, appconn: sqlite3.Connection, jid: str, me
     if isinstance(found, Outcome):
         return found
     chat, message = found
+    if message.from_me and message.actionable and not message.system and message.deleted:
+        return Outcome(200, {"ok": True})  # a retry after a lost answer: already gone, nothing to send
     if not (message.from_me and message.actionable and not message.system and not message.deleted):
         return _bad("That message can't be deleted for everyone")
     age = _age_seconds(message)
@@ -704,7 +706,9 @@ def forward_messages(settings: Settings, appconn: sqlite3.Connection, body: obje
         return _bad("Message not found", 404)
     found = [m for m in messages if m is not None]
     found.sort(key=lambda m: store.parse_ts(m.timestamp_iso) or datetime.min.replace(tzinfo=UTC))
-    refused = {m.id for m in found if not m.actionable or m.system or m.deleted or m.poll is not None}
+    refused = {
+        m.id for m in found if not m.actionable or m.system or m.deleted or m.poll is not None or m.contact_cards
+    }
     paths: dict[str, str | None] = {}
     for m in found:  # one download per message, before anything goes out
         if m.id not in refused and m.media is not None:
