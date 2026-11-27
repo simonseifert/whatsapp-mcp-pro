@@ -1,19 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatDuration } from '../format'
-import type { RecorderState } from '../useRecorder'
+import { DENIED_MESSAGE, type RecorderState } from '../useRecorder'
 import { Icon } from './Icon'
 
 type Props = {
   state: RecorderState
   seconds: number
   blob: Blob | null
+  /** The line shown when the microphone could not be used. */
+  message?: string | null
   onStop: () => void
   onCancel: () => void
   onSend: (blob: Blob) => void
 }
 
 /** Replaces the message box while a voice note is recorded: red dot and timer, then a preview with Send. */
-export function RecordBar({ state, seconds, blob, onStop, onCancel, onSend }: Props) {
+export function RecordBar({ state, seconds, blob, message, onStop, onCancel, onSend }: Props) {
   const audio = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
 
@@ -37,7 +39,7 @@ export function RecordBar({ state, seconds, blob, onStop, onCancel, onSend }: Pr
     return (
       <div className="recordbar">
         <p className="record-denied" role="alert">
-          Microphone access is off. Allow it in Settings to record.
+          {message ?? DENIED_MESSAGE}
         </p>
         <button className="iconbtn" type="button" aria-label="Close" onClick={onCancel}>
           <Icon name="close" size={22} />

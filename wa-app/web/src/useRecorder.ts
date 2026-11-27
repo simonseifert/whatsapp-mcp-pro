@@ -12,83 +12,130 @@ export const canRecord = () =>
 /** The file name for a recorded blob: iOS gives audio/mp4 (m4a), Chrome and Firefox give webm. */
 export const voiceFilename = (blob: Blob) => (blob.type.startsWith('audio/mp4') ? 'voice-note.m4a' : 'voice-note.webm')
 
+export const DENIED_MESSAGE = 'Microphone access is off. Allow it in Settings to record.'
+const NO_MIC_MESSAGE = 'No microphone found.'
+const FAILED_MESSAGE = "Couldn't start the microphone."
+
+const messageFor = (err: unknown) => {
+  const name = err instanceof DOMException || err instanceof Error ? err.name : ''
+  if (name === 'NotAllowedError' || name === 'SecurityError') return DENIED_MESSAGE
+  if (name === 'NotFoundError') return NO_MIC_MESSAGE
+  return FAILED_MESSAGE
+}
+
+const stopTracks = (media: MediaStream | null) => media?.getTracks().forEach((t) => t.stop())
+
+type Session = { rec: MediaRecorder; media: MediaStream; discarded: boolean }
+
 /**
  * Records one voice note with MediaRecorder. Nothing leaves the device here: `blob` is the result after `stop()`.
  * The microphone is released on stop, cancel, unmount and when the page is hidden mid-recording (that counts as stop).
+ * `state` 'denied' also covers other microphone failures; `message` says which.
  */
 export function useRecorder() {
   const [state, setState] = useState<RecorderState>('idle')
+  const [message, setMessage] = useState<string | null>(null)
   const [seconds, setSeconds] = useState(0)
   const [blob, setBlob] = useState<Blob | null>(null)
-  const recorder = useRef<MediaRecorder | null>(null)
-  const stream = useRef<MediaStream | null>(null)
+  const session = useRef<Session | null>(null)
+  const generation = useRef(0) // cancel and unmount bump it: a getUserMedia answer from before is ignored
+  const asking = useRef(false)
   const chunks = useRef<Blob[]>([])
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
   const ticks = useRef(0)
-  const discard = useRef(false)
 
-  const release = useCallback(() => {
+  const clearTimer = useCallback(() => {
     if (timer.current) clearInterval(timer.current)
     timer.current = null
-    stream.current?.getTracks().forEach((t) => t.stop())
-    stream.current = null
   }, [])
 
   const stop = useCallback(() => {
-    const rec = recorder.current
-    if (rec && rec.state !== 'inactive') rec.stop() // the 'stop' event finishes the job
-  }, [])
+    const cur = session.current
+    if (!cur || cur.rec.state === 'inactive') return
+    clearTimer()
+    cur.rec.stop() // the 'stop' event publishes the blob
+    stopTracks(cur.media) // the microphone is free right now, not when the event arrives
+  }, [clearTimer])
+
+  const discard = useCallback(() => {
+    const cur = session.current
+    session.current = null
+    clearTimer()
+    if (cur) {
+      cur.discarded = true
+      if (cur.rec.state !== 'inactive') cur.rec.stop()
+      stopTracks(cur.media)
+    }
+  }, [clearTimer])
 
   const cancel = useCallback(() => {
-    discard.current = true
-    const rec = recorder.current
-    recorder.current = null
-    if (rec && rec.state !== 'inactive') rec.stop()
-    release()
+    generation.current += 1
+    asking.current = false
+    discard()
     chunks.current = []
     setBlob(null)
     setSeconds(0)
+    setMessage(null)
     setState('idle')
-  }, [release])
+  }, [discard])
 
   const start = useCallback(async () => {
-    if (recorder.current) return
+    if (session.current || asking.current) return
+    const mine = ++generation.current
+    asking.current = true
+    setMessage(null)
     setState('asking')
     let media: MediaStream
     try {
       media = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
+    } catch (err) {
+      if (mine !== generation.current) return
+      asking.current = false
+      setMessage(messageFor(err))
       setState('denied')
       return
     }
+    if (mine !== generation.current) {
+      stopTracks(media) // cancelled or unmounted while the prompt was open
+      return
+    }
+    asking.current = false
     const type = TYPES.find((t) => MediaRecorder.isTypeSupported(t))
-    const rec = new MediaRecorder(media, type ? { mimeType: type } : undefined)
-    stream.current = media
-    recorder.current = rec
-    chunks.current = []
-    discard.current = false
+    let rec: MediaRecorder
+    try {
+      rec = new MediaRecorder(media, type ? { mimeType: type } : undefined)
+      const cur: Session = { rec, media, discarded: false }
+      chunks.current = []
+      rec.addEventListener('dataavailable', (e) => {
+        const data = (e as BlobEvent).data
+        if (!cur.discarded && data && data.size > 0) chunks.current.push(data)
+      })
+      rec.addEventListener('stop', () => {
+        // A late event from a cancelled or replaced recorder must not touch the current one.
+        if (cur.discarded || session.current !== cur) return
+        stopTracks(media)
+        setBlob(new Blob(chunks.current, { type: rec.mimeType || type || 'audio/webm' }))
+        setState('stopped')
+      })
+      session.current = cur
+      rec.start()
+    } catch {
+      session.current = null
+      stopTracks(media)
+      setMessage(FAILED_MESSAGE)
+      setState('idle')
+      return
+    }
     ticks.current = 0
     setBlob(null)
     setSeconds(0)
-    rec.addEventListener('dataavailable', (e) => {
-      const data = (e as BlobEvent).data
-      if (data && data.size > 0) chunks.current.push(data)
-    })
-    rec.addEventListener('stop', () => {
-      release()
-      if (discard.current) return
-      recorder.current = null
-      setBlob(new Blob(chunks.current, { type: rec.mimeType || type || 'audio/webm' }))
-      setState('stopped')
-    })
-    rec.start()
     setState('recording')
     timer.current = setInterval(() => {
       ticks.current += 1
       setSeconds(ticks.current)
       if (ticks.current >= MAX_SECONDS) stop()
     }, 1000)
-  }, [release, stop])
+  }, [stop])
 
   // A hidden page (locked phone, app switch) ends the recording but keeps what was said.
   useEffect(() => {
@@ -102,13 +149,11 @@ export function useRecorder() {
 
   useEffect(
     () => () => {
-      discard.current = true
-      const rec = recorder.current
-      if (rec && rec.state !== 'inactive') rec.stop()
-      release()
+      generation.current += 1
+      discard()
     },
-    [release],
+    [discard],
   )
 
-  return { state, seconds, blob, start, stop, cancel }
+  return { state, message, seconds, blob, start, stop, cancel }
 }

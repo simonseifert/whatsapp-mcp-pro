@@ -131,11 +131,17 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
           Message too long ({text.length} / {MAX_TEXT})
         </p>
       )}
+      {rec.state === 'idle' && rec.message && (
+        <p className="toolong" role="alert">
+          {rec.message}
+        </p>
+      )}
       {recording ? (
         <RecordBar
           state={rec.state}
           seconds={rec.seconds}
           blob={rec.blob}
+          message={rec.message}
           onStop={rec.stop}
           onCancel={rec.cancel}
           onSend={(blob) => {
