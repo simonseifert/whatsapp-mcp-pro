@@ -196,6 +196,50 @@ def test_nothing_came_back_fails_and_two_in_a_row_pause_the_queue() -> None:
     assert [c[0] for c in bridge.calls] == [A, B]
 
 
+def test_answered_but_empty_is_done_and_never_pauses() -> None:
+    # the phone answered every request (answers > 0) but had nothing older: not offline
+    final = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05", "answers": 3}
+    bridge = Bridge(final=final)
+    queue = make(bridge)
+    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
+    done = (drain(queue))["done"]
+    assert [(d["jid"], d["result"]) for d in done] == [(A, "done"), (B, "done"), (C, "done")]
+    assert all(d["detail"] == "Nothing older on your phone" for d in done)
+    assert queue._no_answer == 0
+    assert [c[0] for c in bridge.calls] == [A, B, C]
+
+
+def test_answered_empty_resets_the_no_answer_streak() -> None:
+    bridge = Bridge()
+    silent = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05", "answers": 0}
+    bridge.finals[A] = dict(silent)
+    bridge.finals[B] = {**silent, "answers": 2}
+    bridge.finals[C] = dict(silent)
+    queue = make(bridge)
+    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
+    done = (drain(queue))["done"]
+    # A and C are each a lone no-answer, B in between resets the streak: no pause
+    assert [d["result"] for d in done] == ["failed", "done", "failed"]
+
+
+def test_zero_answers_is_still_no_answer() -> None:
+    final = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05", "answers": 0}
+    queue = make(Bridge(final=final))
+    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
+    done = (drain(queue))["done"]
+    assert [d["result"] for d in done] == ["failed", "failed", "skipped"]
+    assert done[0]["detail"] == "No older messages came back. Is your phone online?"
+
+
+def test_missing_answers_field_keeps_the_old_behaviour() -> None:
+    # an old bridge does not report answers: unknown, so same as before
+    final = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05"}
+    queue = make(Bridge(final=final))
+    queue.enqueue([(A, A, BEFORE), (B, B, BEFORE), (C, C, BEFORE)], "year")
+    done = (drain(queue))["done"]
+    assert [d["result"] for d in done] == ["failed", "failed", "skipped"]
+
+
 def test_oldest_that_moved_before_the_first_poll_is_still_progress() -> None:
     # the bridge already got a batch (oldest moved past BEFORE) before the first poll, then 3 misses ended the job
     bridge = Bridge(polls=0)
