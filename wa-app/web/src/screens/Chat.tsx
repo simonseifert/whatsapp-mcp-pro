@@ -127,10 +127,10 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     setRiseKey(key)
     setUnseen(false)
   }
-  function sendAttachment(file: File, caption: string, quote: QuoteView | null) {
+  function sendAttachment(file: File, caption: string, quote: QuoteView | null, kind: 'file' | 'voice' = 'file') {
     setAttached(null)
     setReplyTo(null)
-    void sendFile(jid, file, caption, quote)
+    void sendFile(jid, file, caption, quote, kind)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true
     atBottom.current = true
@@ -392,6 +392,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           onCancelReply={() => setReplyTo(null)}
           onSend={send}
           onAttach={setAttached}
+          onVoice={(file) => sendAttachment(file, '', replyTo ? quoteOf(replyTo) : null, 'voice')}
           onTextChange={(t) => {
             if (t.trim() !== '') return
             // The box was emptied by hand (not by a send or a dismiss): the draft's card may come back.

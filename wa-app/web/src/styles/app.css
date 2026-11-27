@@ -2286,3 +2286,51 @@ input {
 .upbar::-moz-progress-bar {
   background: var(--accent);
 }
+
+.recordbar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  min-height: var(--spacing-touch);
+}
+
+.record-fill {
+  flex: 1;
+}
+
+.record-time {
+  font-size: var(--text-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.record-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: var(--danger-ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .record-dot {
+    animation: record-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes record-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.record-stop {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+.record-denied {
+  flex: 1;
+  margin: 0;
+  font-size: var(--text-body);
+}

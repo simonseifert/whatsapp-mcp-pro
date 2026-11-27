@@ -1,6 +1,8 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 import type { MessageView } from '../api-types'
 import { Icon } from './Icon'
+import { RecordBar } from './RecordBar'
+import { canRecord, useRecorder, voiceFilename } from '../useRecorder'
 
 export const MAX_TEXT = 4096
 const MAX_ROWS_PX = 132 // about five lines, then the box scrolls
@@ -17,6 +19,8 @@ type Props = {
   onSend: (text: string) => void
   /** A file was picked with the paperclip (photos, camera and any file). */
   onAttach?: (file: File) => void
+  /** A voice note was recorded and Send was tapped. Nothing is uploaded before that. */
+  onVoice?: (file: File) => void
   ref?: Ref<ComposerHandle>
   /** Ask for a one-off draft; the button is absent without it. */
   onDraft?: () => void
@@ -52,12 +56,14 @@ function useKeyboardInset(target: React.RefObject<HTMLElement | null>) {
 }
 
 /** The message box: a pill, 16 px text, 44 px targets. The paperclip opens the system file picker (on a phone: camera, photos, files). */
-export function Composer({ replyTo, onCancelReply, onSend, onAttach, ref, onDraft, drafting, onTextChange }: Props) {
+export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, ref, onDraft, drafting, onTextChange }: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
   const picker = useRef<HTMLInputElement>(null)
   useKeyboardInset(wrap)
+  const rec = useRecorder()
+  const recording = rec.state !== 'idle'
 
   useLayoutEffect(() => {
     const el = box.current
@@ -125,6 +131,20 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, ref, onDraf
           Message too long ({text.length} / {MAX_TEXT})
         </p>
       )}
+      {recording ? (
+        <RecordBar
+          state={rec.state}
+          seconds={rec.seconds}
+          blob={rec.blob}
+          onStop={rec.stop}
+          onCancel={rec.cancel}
+          onSend={(blob) => {
+            const file = new File([blob], voiceFilename(blob), { type: blob.type })
+            rec.cancel()
+            onVoice?.(file)
+          }}
+        />
+      ) : (
       <div className="composer-row">
         <input
           ref={picker}
@@ -175,12 +195,27 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, ref, onDraf
           }}
           onKeyDown={onKeyDown}
         />
-        {canSend && (
+        {canSend ? (
           <button className="sendbtn" type="button" aria-label="Send" onClick={submit}>
             <Icon name="send" size={22} />
           </button>
+        ) : (
+          onVoice &&
+          text.length === 0 &&
+          canRecord() && (
+            <button
+              className="sendbtn"
+              type="button"
+              aria-label="Record voice message"
+              title="Record voice message"
+              onClick={() => void rec.start()}
+            >
+              <Icon name="mic" size={22} />
+            </button>
+          )
         )}
       </div>
+      )}
     </div>
   )
 }

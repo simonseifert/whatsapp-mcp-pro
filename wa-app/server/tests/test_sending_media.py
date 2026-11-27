@@ -260,3 +260,23 @@ def test_voice_kind_goes_to_audio(logged_in: TestClient, monkeypatch: pytest.Mon
     assert response.json() == {"ok": True, "message_id": "V1"}
     assert os.path.basename(got[0]["file_path"]) == "voice.ogg"
     assert got[0]["idempotency_key"] == KEY
+
+
+def test_voice_kind_uses_audio_send(logged_in: TestClient, bridge, monkeypatch: pytest.MonkeyPatch) -> None:
+    file_calls, _ = bridge
+    got: list[dict] = []
+
+    def audio(recipient, **kw):  # noqa: ANN001, ANN202
+        got.append({"to": recipient, **kw})
+        return {"success": True, "message_id": "V2"}
+
+    monkeypatch.setattr(mcp_lib, "send_audio_message", audio)
+    msgs = logged_in.get(f"/api/chats/{fx.ANA}/messages").json()["messages"]
+    reply_id = next(m["id"] for m in msgs if not m["from_me"])
+    response = upload(
+        logged_in, fx.ANA, b"webm", **{"X-Kind": "voice", "X-Filename": "voice-note.webm", "X-Reply-To": reply_id}
+    )
+    assert response.json() == {"ok": True, "message_id": "V2"}
+    assert file_calls == []  # never send_file
+    assert got[0]["quoted_message_id"] == reply_id
+    assert os.path.basename(got[0]["file_path"]) == "voice-note.webm"
