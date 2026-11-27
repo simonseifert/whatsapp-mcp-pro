@@ -93,12 +93,10 @@ def _own_replies(ro: sqlite3.Connection, chat_jid: str, limit: int) -> list[str]
     if limit <= 0:
         return []
     forms = store._forms_of(ro, chat_jid)
-    deleted = " AND deleted_at IS NULL" if "deleted_at" in store._columns(ro, "messages") else ""
+    own = store.own_text_filter(deleted_col="deleted_at" in store._columns(ro, "messages"))
     rows = ro.execute(
-        f"SELECT content FROM messages WHERE chat_jid IN ({store._marks(forms)}) AND COALESCE(is_from_me, 0) = 1"
-        " AND COALESCE(media_type, '') = '' AND TRIM(COALESCE(content, '')) <> ''"
-        " AND content NOT LIKE '[Poll: %' AND content NOT LIKE '[Contact: %'"
-        f" AND julianday(timestamp) IS NOT NULL{deleted} ORDER BY julianday(timestamp) DESC LIMIT ?",
+        f"SELECT content FROM messages WHERE chat_jid IN ({store._marks(forms)}) AND {own}"
+        " AND julianday(timestamp) IS NOT NULL ORDER BY julianday(timestamp) DESC LIMIT ?",
         [*forms, limit],
     ).fetchall()
     return [clean_line(r[0], MAX_EXAMPLE) for r in reversed(rows)]

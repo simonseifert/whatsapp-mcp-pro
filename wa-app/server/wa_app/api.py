@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, live, media, push, sending, store, transcripts
+from . import appdb, auth, history, live, media, push, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
 from .ai import context as ai_context_store
@@ -238,6 +238,18 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             return JSONResponse({"chat": asdict(chat), "members_line": store.members_line(ro, chat.jid)})
 
         return with_store(work)
+
+    async def history_coverage(request: Request) -> Response:
+        def work(ro: sqlite3.Connection) -> Response:
+            return JSONResponse(
+                {
+                    "totals": history.totals(ro),
+                    "chats": [asdict(c) for c in history.coverage(ro, conn)],
+                    "thin_threshold": history.THIN_OWN,
+                }
+            )
+
+        return await run_in_threadpool(with_store, work)
 
     async def chat_messages(request: Request) -> Response:
         jid = request.path_params["jid"]
@@ -587,6 +599,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/push/test", push_test, methods=["POST"]),
         Route("/api/about", about, methods=["GET"]),
         Route("/api/chats", chats, methods=["GET"]),
+        Route("/api/history/coverage", history_coverage, methods=["GET"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
