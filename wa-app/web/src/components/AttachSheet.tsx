@@ -6,6 +6,7 @@ import { Icon } from './Icon'
 import { useDialog } from './useDialog'
 
 export const MAX_CAPTION = 1024
+export const MAX_CAPTION_ENCODED = 4096 // the caption travels in a header
 export const TOO_BIG = 'Too big to send (max 64 MB)'
 
 type Props = {
@@ -30,6 +31,7 @@ export function AttachSheet({ file, replyTo, onSend, onClose }: Props) {
   useEffect(() => () => (preview ? URL.revokeObjectURL(preview) : undefined), [preview])
 
   const tooBig = file.size > MAX_UPLOAD
+  const captionTooLong = encodeURIComponent(caption.trim()).length > MAX_CAPTION_ENCODED
   const empty = file.size === 0
 
   return (
@@ -65,6 +67,12 @@ export function AttachSheet({ file, replyTo, onSend, onClose }: Props) {
             <span>This file is empty</span>
           </p>
         )}
+        {captionTooLong && (
+          <p className="sheet-warning" role="alert">
+            <Icon name="ban" size={18} />
+            <span>Caption is too long</span>
+          </p>
+        )}
         <label className="sheet-field">
           <span>Caption</span>
           <textarea
@@ -78,7 +86,7 @@ export function AttachSheet({ file, replyTo, onSend, onClose }: Props) {
         <button
           className="sheet-save"
           type="button"
-          disabled={tooBig || empty}
+          disabled={tooBig || empty || captionTooLong}
           onClick={() => onSend(file, caption.trim(), replyTo)}
         >
           Send

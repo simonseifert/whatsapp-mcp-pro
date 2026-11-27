@@ -38,6 +38,13 @@ describe('AttachSheet', () => {
     expect(replyTo.id).toBe('M7')
   })
 
+  it('blocks a caption that is too long once encoded', () => {
+    render(<AttachSheet file={fileOf(10)} replyTo={null} onSend={() => {}} onClose={() => {}} />)
+    fireEvent.change(screen.getByLabelText('Caption'), { target: { value: 'š'.repeat(1000) } })
+    expect(screen.getByRole('alert').textContent).toContain('Caption is too long')
+    expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('shows a file row with name and size for a non-image', () => {
     render(<AttachSheet file={fileOf(734_003, 'plan.pdf')} replyTo={null} onSend={() => {}} onClose={() => {}} />)
     expect(screen.getByText('plan.pdf')).toBeTruthy()

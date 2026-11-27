@@ -16,7 +16,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import agent_api, api, appdb, auth, config, history, live, mcp_lib, notify
+from . import agent_api, api, appdb, auth, config, history, live, mcp_lib, notify, sending
 from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
@@ -76,6 +76,7 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
         queue: history.BackfillQueue = app.state.backfill
+        sending.sweep_stale_uploads()
         draft_task = asyncio.create_task(worker.run(), name="draft worker")
         draft_task.add_done_callback(_log_worker_end)
         backfill_task = asyncio.create_task(queue.run(), name="history backfill queue")

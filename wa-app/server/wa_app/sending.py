@@ -320,22 +320,84 @@ def send_reaction(settings: Settings, appconn: sqlite3.Connection, jid: str, bod
 
 # --- photos, files and voice notes --------------------------------------------------------------------------------
 
-MAX_FILENAME = 120
-MAX_CAPTION = 1024
+MAX_FILENAME = 120  # bytes of UTF-8, extension included
+MAX_CAPTION = 1024  # characters
+MAX_CAPTION_ENCODED = 4096  # the percent-encoded header, so no proxy limit is hit
+UPLOAD_PREFIX = "wa-app-up-"
+STALE_UPLOAD_SECONDS = 3600
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_BIDI = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069]")  # can make a name or caption read backwards
+
+
+def _clip(text: str, limit: int) -> str:
+    """At most `limit` bytes of UTF-8, never cutting a character in half."""
+    return text.encode()[:limit].decode(errors="ignore")
+
+
+def clean_caption(caption: str) -> str:
+    """Line breaks kept; other control and bidi characters dropped."""
+    return _BIDI.sub("", re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", caption)).strip()
 
 
 def safe_filename(name: str) -> str:
-    """A name that is safe on disk and in WhatsApp: no path parts, no control characters, letters kept, 120 at most."""
+    """A name that is safe on disk and in WhatsApp: no path parts, control or bidi characters, letters kept, 120 bytes."""
     last = name.replace("\\", "/").split("/")[-1]
-    cleaned = _CONTROL.sub("", last).strip().strip(".")
-    if len(cleaned) > MAX_FILENAME:
+    cleaned = _BIDI.sub("", _CONTROL.sub("", last)).strip().strip(".")
+    if len(cleaned.encode()) > MAX_FILENAME:
         stem, dot, ext = cleaned.rpartition(".")
-        if dot and 0 < len(ext) <= 10:
-            cleaned = stem[: MAX_FILENAME - len(ext) - 1] + "." + ext
+        if dot and 0 < len(ext.encode()) <= 10:
+            cleaned = _clip(stem, MAX_FILENAME - len(ext.encode()) - 1) + "." + ext
         else:
-            cleaned = cleaned[:MAX_FILENAME]
+            cleaned = _clip(cleaned, MAX_FILENAME)
     return cleaned or "file"
+
+
+class StageError(Exception):
+    """The upload could not be staged on disk (/tmp full or unwritable)."""
+
+
+def new_stage(filename: str) -> tuple[str, str]:
+    """A private (0700) temp dir and the path inside it the upload is written to, named safe_filename(filename).
+
+    The bridge names a document after the file's basename, so the file must carry the name it should show.
+    """
+    try:
+        directory = tempfile.mkdtemp(prefix=UPLOAD_PREFIX, dir="/tmp")
+    except OSError as exc:
+        logger.error("no temp dir for an upload: %s", exc.strerror)
+        raise StageError from exc
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise StageError from None
+    return directory, os.path.join(directory, safe_filename(filename))
+
+
+def drop_stage(directory: str | None) -> None:
+    if directory:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def sweep_stale_uploads(now: float | None = None) -> int:
+    """Remove upload dirs a crash left behind: ours (this user), older than an hour. Returns how many went."""
+    cutoff = (time.time() if now is None else now) - STALE_UPLOAD_SECONDS
+    removed = 0
+    try:
+        entries = list(os.scandir("/tmp"))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if not entry.name.startswith(UPLOAD_PREFIX) or entry.is_symlink() or not entry.is_dir():
+                continue
+            info = entry.stat(follow_symlinks=False)
+            if info.st_uid == os.getuid() and info.st_mtime < cutoff:
+                shutil.rmtree(entry.path, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def send_media(
@@ -343,24 +405,23 @@ def send_media(
     appconn: sqlite3.Connection,
     jid: str,
     *,
-    data: bytes,
-    filename: str,
+    path: str,
     caption: str | None,
     reply_to: str | None,
     client_key: str,
     kind: Literal["file", "voice"],
 ) -> Outcome:
-    """Blocking: stage the upload in a private temp dir and send it through the bridge with the client's key.
+    """Blocking: send the already staged file at `path` through the bridge with the client's key.
 
-    The bridge names a document after the temp file's basename, so the file is written under the safe name.
+    The caller owns the staging dir and removes it afterwards, whatever this returns.
     """
     key = valid_key(client_key)
     if key is None:
         return _bad("client_key must be a UUID")
-    if not data:
-        return _bad("Empty file")
-    if caption is not None and len(caption) > MAX_CAPTION:
-        return _bad("Caption too long")
+    if caption is not None:
+        caption = clean_caption(caption)
+        if len(caption) > MAX_CAPTION:
+            return _bad("Caption too long")
     ro = store.open_ro(settings)
     try:
         with appdb.db_lock:
@@ -374,38 +435,23 @@ def send_media(
                     return _bad("That message can't be replied to")
     finally:
         ro.close()
-    name = safe_filename(filename)
-    directory = tempfile.mkdtemp(prefix="wa-app-up-", dir="/tmp")
-    try:
-        os.chmod(directory, 0o700)
-        path = os.path.join(directory, name)
-        with open(path, "wb") as handle:
-            handle.write(data)
-        recipient = _recipient_for(appconn, key, chat.jid)
-        if kind == "voice":
-            result = _call(
-                mcp_lib.send_audio_message,
-                recipient,
-                file_path=path,
-                quoted_message_id=quoted.id if quoted else None,
-                idempotency_key=key,
-            )
-        else:
-            result = _call(
-                mcp_lib.send_file,
-                recipient,
-                file_path=path,
-                filename=name,
-                caption=(caption or "").strip() or None,
-                quoted_message_id=quoted.id if quoted else None,
-                quoted_chat_jid=None,
-                idempotency_key=key,
-            )
-    except OSError:
-        logger.exception("staging an upload failed")
-        return _fail(502, "Not sent: couldn't prepare the file")
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
+    recipient = _recipient_for(appconn, key, chat.jid)
+    quoted_id = quoted.id if quoted else None
+    if kind == "voice":
+        result = _call(
+            mcp_lib.send_audio_message, recipient, file_path=path, quoted_message_id=quoted_id, idempotency_key=key
+        )
+    else:
+        result = _call(
+            mcp_lib.send_file,
+            recipient,
+            file_path=path,
+            filename=os.path.basename(path),
+            caption=caption or None,
+            quoted_message_id=quoted_id,
+            quoted_chat_jid=None,
+            idempotency_key=key,
+        )
     if not result.get("success"):
         return map_failure(result)
     return Outcome(200, {"ok": True, "message_id": result.get("message_id")})

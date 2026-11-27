@@ -1,7 +1,11 @@
 """Sending photos and files: the upload route, the private temp file and the 64 MiB cap (fake bridge, no real sends)."""
 
+import asyncio
 import os
+import shutil
 import stat
+import tempfile
+import time
 from urllib.parse import quote
 
 import pytest
@@ -73,7 +77,9 @@ def test_safe_filename() -> None:
     assert sending.safe_filename("") == "file"
     assert sending.safe_filename("..") == "file"
     long = sending.safe_filename("š" * 300 + ".pdf")
-    assert len(long) == 120 and long.endswith(".pdf")
+    assert len(long.encode()) <= 120 and long.endswith(".pdf")
+    assert sending.safe_filename("a\u202eb\u200fc.txt") == "abc.txt"
+    assert len(sending.safe_filename("x" * 300).encode()) == 120
 
 
 def test_route_sends_with_croatian_name_caption_and_quote(logged_in: TestClient, bridge) -> None:
@@ -92,6 +98,108 @@ def test_route_sends_with_croatian_name_caption_and_quote(logged_in: TestClient,
     assert call["quoted_message_id"] == reply_id
     assert call["idempotency_key"] == KEY
     assert call["content"] == b"%PDF"
+
+
+def test_caption_bidi_stripped_and_encoded_limit(logged_in: TestClient, bridge) -> None:
+    calls, _ = bridge
+    upload(logged_in, fx.ANA, **{"X-Caption": quote("a\u202eb")})
+    assert calls[0]["caption"] == "ab"
+    # 1000 characters of Croatian letters: under 1024 characters but far over 4 KB once percent-encoded
+    assert upload(logged_in, fx.ANA, **{"X-Caption": quote("š" * 1000)}).status_code == 422
+
+
+def test_chunked_body_over_cap_is_413_and_temp_is_gone(logged_in: TestClient, bridge, monkeypatch) -> None:  # noqa: ANN001
+    calls, _ = bridge
+    made: list[str] = []
+    real = tempfile.mkdtemp
+
+    def tracked(**kw):  # noqa: ANN003, ANN202
+        made.append(real(**kw))
+        return made[-1]
+
+    monkeypatch.setattr(tempfile, "mkdtemp", tracked)
+    mib = b"x" * (1024 * 1024)
+
+    def body():  # noqa: ANN202
+        for _ in range(65):
+            yield mib
+
+    response = upload(logged_in, fx.ANA, body())
+    assert response.status_code == 413
+    assert calls == []
+    assert len(made) == 1 and not os.path.exists(made[0])
+
+
+def test_lying_content_length_is_413(logged_in: TestClient, bridge) -> None:
+    calls, _ = bridge
+    cookie = "; ".join(f"{k}={v}" for k, v in logged_in.cookies.items())
+    mib = b"x" * (1024 * 1024)
+    sent: list[dict] = []
+
+    async def run() -> None:
+        messages = [{"type": "http.request", "body": mib, "more_body": True} for _ in range(65)]
+        messages.append({"type": "http.request", "body": b"", "more_body": False})
+
+        async def receive() -> dict:
+            return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        headers = [
+            (b"host", b"testserver"),
+            (b"cookie", cookie.encode()),
+            (b"content-length", b"1000"),  # says 1 KB, sends 65 MiB
+            (b"x-filename", b"a.bin"),
+            (b"x-client-key", KEY.encode()),
+        ]
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": f"/api/chats/{fx.ANA}/media",
+            "raw_path": f"/api/chats/{fx.ANA}/media".encode(),
+            "query_string": b"",
+            "headers": headers,
+            "scheme": "https",
+            "server": ("testserver", 443),
+            "client": ("1.2.3.4", 1),
+            "root_path": "",
+            "http_version": "1.1",
+        }
+        await logged_in.app(scope, receive, send)  # type: ignore[arg-type]
+
+    asyncio.run(run())
+    assert sent[0]["status"] == 413
+    assert calls == []
+
+
+def test_mkdtemp_failure_is_a_mapped_failure(logged_in: TestClient, bridge, monkeypatch) -> None:  # noqa: ANN001
+    calls, _ = bridge
+
+    def full(**kw):  # noqa: ANN003, ANN202
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", full)
+    response = upload(logged_in, fx.ANA)
+    assert response.status_code == 502
+    assert response.json() == {"ok": False, "error": "Not sent: couldn't prepare the file", "retryable": True}
+    assert calls == []
+
+
+def test_sweep_removes_only_old_own_upload_dirs() -> None:
+    old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir="/tmp")
+    fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir="/tmp")
+    other = tempfile.mkdtemp(prefix="keep-me-", dir="/tmp")
+    try:
+        past = time.time() - 2 * 3600
+        os.utime(old, (past, past))
+        sending.sweep_stale_uploads()
+        assert not os.path.exists(old)
+        assert os.path.exists(fresh)
+        assert os.path.exists(other)
+    finally:
+        for d in (old, fresh, other):
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def test_route_rejects_bad_headers(logged_in: TestClient, bridge) -> None:

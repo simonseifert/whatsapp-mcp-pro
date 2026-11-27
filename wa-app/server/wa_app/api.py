@@ -1,5 +1,6 @@
 """JSON API routes."""
 
+import asyncio
 import importlib.metadata
 import sqlite3
 import time
@@ -442,12 +443,18 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
     async def chat_send(request: Request) -> Response:
         return await outward(request, sending.send_text)
 
+    uploads = asyncio.Semaphore(2)  # at most two uploads are staged at once (/tmp is RAM here); a third waits
+
     async def chat_media(request: Request) -> Response:
-        # Not buffered past the cap: the middleware refuses a declared or streamed body over MAX_UPLOAD.
+        # The body streams straight into the temp file; the middleware refuses a declared or streamed body over
+        # MAX_UPLOAD, and the count below is the second line.
         headers = request.headers
         try:
             filename = unquote(headers.get("x-filename", ""), errors="strict")
-            caption = unquote(headers["x-caption"], errors="strict") if "x-caption" in headers else None
+            raw_caption = headers.get("x-caption")
+            if raw_caption is not None and len(raw_caption) > sending.MAX_CAPTION_ENCODED:
+                return _error(422, "Caption too long")
+            caption = unquote(raw_caption, errors="strict") if raw_caption is not None else None
         except UnicodeDecodeError:
             return _error(422, "Bad header encoding")
         kind = headers.get("x-kind", "file")
@@ -458,33 +465,43 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             return _error(422, "client_key must be a UUID")
         if caption is not None and len(caption) > sending.MAX_CAPTION:
             return _error(422, "Caption too long")
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in request.stream():
-            total += len(chunk)
-            if total > auth.MAX_UPLOAD:
-                return _error(413, "Body too large")
-            chunks.append(chunk)
-        data = b"".join(chunks)
-        if not data:
-            return _error(422, "Empty file")
-        try:
-            outcome = await run_in_threadpool(
-                lambda: sending.send_media(
-                    settings,
-                    conn,
-                    request.path_params["jid"],
-                    data=data,
-                    filename=filename,
-                    caption=caption,
-                    reply_to=headers.get("x-reply-to") or None,
-                    client_key=key,
-                    kind=kind,  # type: ignore[arg-type]
-                )
-            )
-        except sqlite3.Error:
-            return _error(503, "Message store unavailable")
-        return JSONResponse(outcome.body, status_code=outcome.status)
+        async with uploads:
+            directory: str | None = None
+            try:
+                try:
+                    directory, path = sending.new_stage(filename)
+                    total = 0
+                    with open(path, "wb") as handle:
+                        async for chunk in request.stream():
+                            total += len(chunk)
+                            if total > auth.MAX_UPLOAD:
+                                return _error(413, "Body too large")
+                            handle.write(chunk)
+                except (OSError, sending.StageError):
+                    return JSONResponse(
+                        {"ok": False, "error": "Not sent: couldn't prepare the file", "retryable": True},
+                        status_code=502,
+                    )
+                if total == 0:
+                    return _error(422, "Empty file")
+                try:
+                    outcome = await run_in_threadpool(
+                        lambda: sending.send_media(
+                            settings,
+                            conn,
+                            request.path_params["jid"],
+                            path=path,
+                            caption=caption,
+                            reply_to=headers.get("x-reply-to") or None,
+                            client_key=key,
+                            kind=kind,  # type: ignore[arg-type]
+                        )
+                    )
+                except sqlite3.Error:
+                    return _error(503, "Message store unavailable")
+                return JSONResponse(outcome.body, status_code=outcome.status)
+            finally:
+                sending.drop_stage(directory)
 
     async def chat_react(request: Request) -> Response:
         return await outward(request, sending.send_reaction)
