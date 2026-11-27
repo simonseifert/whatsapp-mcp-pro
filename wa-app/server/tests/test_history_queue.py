@@ -107,9 +107,9 @@ def test_depth_mapping(depth, until) -> None:
 @pytest.mark.parametrize(
     ("final", "result", "detail"),
     [
-        ({"stopped_by": "phone has nothing older", "oldest": "2024-01-01"}, "done", "phone has nothing older"),
-        ({"stopped_by": "reached until", "oldest": "2025-01-01"}, "done", "reached until"),
-        ({"stopped_by": "max batches", "oldest": "2025-06-01"}, "more", "max batches"),
+        ({"stopped_by": "phone has nothing older", "oldest": "2024-01-01"}, "done", ""),
+        ({"stopped_by": "reached until", "oldest": "2025-01-01"}, "done", ""),
+        ({"stopped_by": "max batches", "oldest": "2025-06-01"}, "more", ""),
         ({"stopped_by": "error", "error": "not connected"}, "failed", "not connected"),
     ],
 )
@@ -181,7 +181,7 @@ def test_slow_but_progressing_job_is_not_failed() -> None:
     queue.enqueue([(A, A)], "year")
     done = (drain(queue))["done"]
     assert clock.now > 1800
-    assert done[0]["result"] == "done" and done[0]["detail"] == "phone has nothing older"
+    assert done[0]["result"] == "done" and done[0]["detail"] == ""
 
 
 def test_nothing_came_back_fails_and_two_in_a_row_pause_the_queue() -> None:

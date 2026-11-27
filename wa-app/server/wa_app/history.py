@@ -315,9 +315,9 @@ class BackfillQueue:
                     if isinstance(answers, int) and answers > 0:
                         return "done", _EMPTY_ANSWER, oldest  # the phone answered, it just had nothing older
                     return "failed", _NO_ANSWER, oldest
-                return "done", stopped_by, oldest
+                return "done", "", oldest
             if stopped_by == "reached until":
-                return "done", stopped_by, oldest
+                return "done", "", oldest
             if stopped_by == "max batches":
-                return "more", stopped_by, oldest
+                return "more", "", oldest
             return "failed", str(job.get("error") or stopped_by or "the bridge stopped the backfill"), oldest
