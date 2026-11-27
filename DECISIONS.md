@@ -424,3 +424,18 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   since it is the only feature that sends without a tap.
 - **Left out:** catalogs and shop features, broadcast lists (ban risk for an unofficial client), ads, Meta Verified.
 - **Order:** M3a first (live since 2026-11-27); M3b after.
+
+## D27 - 2026-11-28 - M3b find and organise: build rulings
+
+- **Search lives in `app.db`** as an FTS5 table with `tokenize = "unicode61 remove_diacritics 2"`, so "cesto" finds
+  "često". It indexes text, captions and stored voice transcripts, including local-only chats, because the index never
+  leaves the server. Backfill is resumable; edits replace the row and revokes remove it.
+- **R1:** the quick reply picker does not open in edit mode, and Enter never sends while it is open.
+- **No bridge idempotency key for edit and revoke.** A retried revoke of an own message that is already deleted is
+  answered 200 on the app side (nothing is sent again). A repeated edit is harmless, so it stays as it is.
+- **Mentions only cover messages stored after deploy:** the bridge records mentions from migration 015 on; older rows
+  have none. **Starred messages** fill from star events after the bridge update; earlier stars are not imported.
+- **Forwarded voice notes go as audio files**, not as voice notes. **Contact cards are not forwardable**: the menu
+  hides Forward and the server refuses them.
+- **Sending from a jump window:** sending while the chat shows a window around an old message first returns to the
+  latest messages, so the new bubble lands at the bottom.

@@ -72,7 +72,7 @@ queries and calls the bridge's REST API for anything that acts on WhatsApp.
 Two ways to run it:
 
 - **stdio** (`main.py`): one process per MCP client session. The pro toolsets
-  (recall, audio, inbox, drafts) are opt-in here, so the default surface matches
+  (recall, audio, inbox, drafts, chats) are opt-in here, so the default surface matches
   upstream's.
 - **Shared HTTP** (`serve_http.py`, default `:8082`): one always-on process
   for any number of sessions, with every toolset enabled. Optional scoped

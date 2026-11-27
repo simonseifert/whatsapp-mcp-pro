@@ -56,11 +56,14 @@ Built 2026-11-23 (code landed; deploy and the week of real use are still open).
 - [x] **Push notifications:** spike passed on an iPhone; a notification for every incoming message (M3a).
 - [x] **Sending:** voice notes recorded in the app, and attachments (photo, file,
   document) (M3a).
-- **Search:** keyword search plus search by meaning, from the chats list and inside a
-  chat.
+- [x] **Search:** keyword search from the chats list and inside a chat (M3b). Search by
+  meaning is still to do.
 - [x] **Private reply:** reply privately to a group message, quoting it in the sender's
   own chat (idea from GOWA; Simon, 2026-11-22). Needs a bridge change to quote across
   chats (M3a).
+- [x] **Find and organise (M3b):** custom lists, a Mentions and replies filter, edit,
+  delete for everyone, star and forward, pin, mute, archive and mark unread, quick
+  replies, and the per-chat AI mode sheet.
 - **Contacts and groups:** contact and group info from the directory, a Communities
   tab, a call log tab, and a polls UI.
 - **Done when:** the maintainer goes a week without needing WhatsApp on the phone for
