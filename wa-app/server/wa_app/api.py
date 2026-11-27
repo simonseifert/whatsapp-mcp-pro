@@ -5,6 +5,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import unquote
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -441,6 +442,50 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
     async def chat_send(request: Request) -> Response:
         return await outward(request, sending.send_text)
 
+    async def chat_media(request: Request) -> Response:
+        # Not buffered past the cap: the middleware refuses a declared or streamed body over MAX_UPLOAD.
+        headers = request.headers
+        try:
+            filename = unquote(headers.get("x-filename", ""), errors="strict")
+            caption = unquote(headers["x-caption"], errors="strict") if "x-caption" in headers else None
+        except UnicodeDecodeError:
+            return _error(422, "Bad header encoding")
+        kind = headers.get("x-kind", "file")
+        if kind not in ("file", "voice"):
+            return _error(422, "Bad kind")
+        key = sending.valid_key(headers.get("x-client-key"))
+        if key is None:
+            return _error(422, "client_key must be a UUID")
+        if caption is not None and len(caption) > sending.MAX_CAPTION:
+            return _error(422, "Caption too long")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > auth.MAX_UPLOAD:
+                return _error(413, "Body too large")
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        if not data:
+            return _error(422, "Empty file")
+        try:
+            outcome = await run_in_threadpool(
+                lambda: sending.send_media(
+                    settings,
+                    conn,
+                    request.path_params["jid"],
+                    data=data,
+                    filename=filename,
+                    caption=caption,
+                    reply_to=headers.get("x-reply-to") or None,
+                    client_key=key,
+                    kind=kind,  # type: ignore[arg-type]
+                )
+            )
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
     async def chat_react(request: Request) -> Response:
         return await outward(request, sending.send_reaction)
 
@@ -655,6 +700,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
+        Route("/api/chats/{jid}/media", chat_media, methods=["POST"]),
         Route("/api/chats/{jid}/react", chat_react, methods=["POST"]),
         Route("/api/ai/backends", ai_backends, methods=["GET", "PUT"]),
         Route("/api/ai/backends/{id}", ai_backend_delete, methods=["DELETE"]),

@@ -30,8 +30,7 @@ MAX_FAILURES = 5
 FAILURE_WINDOW = 15 * 60
 
 MAX_JSON_BODY = 64 * 1024  # every JSON route, login included; a draft is at most 4096 characters
-# Routes that really take bigger bodies get their own cap here, by path prefix. None do today.
-UPLOAD_LIMITS: dict[str, int] = {}
+MAX_UPLOAD = 64 * 1024 * 1024  # one photo, file or voice note: /api/chats/{jid}/media only
 
 _hasher = PasswordHasher()
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -153,7 +152,8 @@ def _error(status: int, message: str) -> Response:
 
 
 def body_limit(path: str) -> int:
-    return next((limit for prefix, limit in UPLOAD_LIMITS.items() if path.startswith(prefix)), MAX_JSON_BODY)
+    is_media = path.startswith("/api/chats/") and path.endswith("/media") and path.count("/") == 4
+    return MAX_UPLOAD if is_media else MAX_JSON_BODY
 
 
 class _TooLarge(Exception):

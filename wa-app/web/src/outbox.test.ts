@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from './api'
 import type { MessageView } from './api-types'
-import { dismiss, getBox, react, reconcile, resetOutbox, retry, sendText, withReactions } from './outbox'
+import { dismiss, getBox, react, reconcile, resetOutbox, retry, sendFile, sendText, withReactions } from './outbox'
 
 const JID = 'a@s.whatsapp.net'
 const ok = { ok: true, message_id: 'SRV1' } as const
@@ -186,5 +186,25 @@ describe('outbox draft_id', () => {
     const send = vi.spyOn(api, 'sendMessage').mockResolvedValue(ok)
     await sendText(JID, 'Bok', null, 7)
     expect(send).toHaveBeenCalledWith(JID, 'Bok', null, expect.any(String), 7)
+  })
+
+  it('sends a file with progress, keeps it for Retry with the same key, and does not match it by text', async () => {
+    resetOutbox()
+    const text = vi.spyOn(api, 'sendMessage')
+    const media = vi.spyOn(api, 'sendMedia').mockImplementationOnce(async (_jid, up) => {
+      up.onProgress?.(0.5)
+      expect(getBox(JID).pending[0].upload?.progress).toBe(0.5)
+      return fail
+    })
+    const file = new File(['x'], 'Račun čćž.pdf', { type: 'application/pdf' })
+    await sendFile(JID, file, 'Evo', { id: 'Q1', sender_name: 'Ana', preview: 'x' })
+    const [p] = getBox(JID).pending
+    expect(p.status).toBe('failed')
+    expect(media.mock.calls[0][1]).toMatchObject({ filename: 'Račun čćž.pdf', caption: 'Evo', replyTo: 'Q1', kind: 'file' })
+    media.mockResolvedValueOnce(ok)
+    await retry(JID, p.key)
+    expect(media.mock.calls[1][1].clientKey).toBe(media.mock.calls[0][1].clientKey)
+    expect(getBox(JID).pending[0].status).toBe('sent')
+    expect(text).not.toHaveBeenCalled()
   })
 })

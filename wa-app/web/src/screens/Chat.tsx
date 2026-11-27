@@ -5,6 +5,7 @@ import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
 import { ChatMenu } from '../components/ChatMenu'
 import { ChatAiSheet } from '../components/ChatAiSheet'
+import { AttachSheet } from '../components/AttachSheet'
 import { Composer, type ComposerHandle } from '../components/Composer'
 import { DraftCard } from '../components/DraftCard'
 import { MessageMenu } from '../components/MessageMenu'
@@ -21,6 +22,7 @@ import {
   react,
   reconcile,
   retry,
+  sendFile,
   sendText,
   useOutbox,
   withReactions,
@@ -95,6 +97,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const [replacing, setReplacing] = useState<{ draft: DraftView; text: string } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
+  const [attached, setAttached] = useState<File | null>(null)
   const card = draft && draft.id !== hiddenDraft && ['pending', 'ready', 'failed'].includes(draft.status) ? draft : null
   useEffect(() => reconcile(jid, messages), [jid, messages])
   // The loaded messages with my optimistic reactions applied, then the texts still on their way out.
@@ -118,6 +121,16 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     usedNow.current = null
     setUsedDraft(null)
     void sendText(jid, text, reply ? quoteOf(reply) : null, fromDraft)
+    const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
+    stickToEnd.current = true
+    atBottom.current = true
+    setRiseKey(key)
+    setUnseen(false)
+  }
+  function sendAttachment(file: File, caption: string, quote: QuoteView | null) {
+    setAttached(null)
+    setReplyTo(null)
+    void sendFile(jid, file, caption, quote)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true
     atBottom.current = true
@@ -258,7 +271,18 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
                 groupAvatar={inGroup && !m.from_me}
                 tail={item.tail}
                 rise={key === riseKey}
-                delivery={pending && { state: pending.status, error: pending.error, retryable: pending.retryable }}
+                delivery={
+                  pending && {
+                    state: pending.status,
+                    error: pending.error,
+                    retryable: pending.retryable,
+                    upload: pending.upload && {
+                      name: pending.upload.name,
+                      size: pending.upload.size,
+                      progress: pending.upload.progress,
+                    },
+                  }
+                }
                 onRetry={pending && (() => void retry(jid, pending.key))}
                 onDismiss={pending && (() => dismiss(jid, pending.key))}
                 onReply={m.actionable ? () => setReplyTo(m) : undefined}
@@ -267,6 +291,14 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             )
           })}
         </div>
+      )}
+      {attached && (
+        <AttachSheet
+          file={attached}
+          replyTo={replyTo ? quoteOf(replyTo) : null}
+          onSend={sendAttachment}
+          onClose={() => setAttached(null)}
+        />
       )}
       {menuOpen && (
         <ChatMenu
@@ -359,6 +391,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
           onSend={send}
+          onAttach={setAttached}
           onTextChange={(t) => {
             if (t.trim() !== '') return
             // The box was emptied by hand (not by a send or a dismiss): the draft's card may come back.

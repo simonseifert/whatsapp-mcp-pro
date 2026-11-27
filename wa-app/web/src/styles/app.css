@@ -2215,3 +2215,74 @@ input {
 .history-list li .settings-about {
   flex-basis: 100%;
 }
+
+/* --- sending photos and files ---------------------------------------------------------------------------------- */
+.attach-preview {
+  align-self: center;
+  max-width: 100%;
+  max-height: 40vh;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+.attach-file,
+.uprow {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+}
+
+.attach-name,
+.upname {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-body-sm);
+}
+
+.attach-size,
+.upsize {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.uprow {
+  width: 248px;
+  max-width: 100%;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.upinfo {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  min-width: 0;
+}
+
+.upbar {
+  width: 100%;
+  height: 4px;
+  appearance: none;
+  border: 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.upbar::-webkit-progress-bar {
+  background: transparent;
+}
+
+.upbar::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.upbar::-moz-progress-bar {
+  background: var(--accent);
+}

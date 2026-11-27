@@ -225,3 +225,63 @@ export function sendReaction(jid: string, messageId: string, emoji: string, clie
     client_key: clientKey,
   })
 }
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/** The most the server takes for one file (64 MiB). */
+export const MAX_UPLOAD = 64 * 1024 * 1024
+
+export type MediaUpload = {
+  file: Blob
+  filename: string
+  caption: string | null
+  replyTo: string | null
+  clientKey: string
+  kind: 'file' | 'voice'
+  /** 0 to 1, as the bytes leave this device. */
+  onProgress?: (fraction: number) => void
+}
+
+/** Sends a photo, file or voice note as the raw body (XHR, for upload progress). `clientKey` makes a Retry safe. */
+export function sendMedia(jid: string, up: MediaUpload): Promise<SendResult> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/chats/${encodeURIComponent(jid)}/media`)
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Content-Type', up.file.type || 'application/octet-stream')
+    xhr.setRequestHeader('X-Filename', encodeURIComponent(up.filename))
+    xhr.setRequestHeader('X-Client-Key', up.clientKey)
+    xhr.setRequestHeader('X-Kind', up.kind)
+    if (up.caption) xhr.setRequestHeader('X-Caption', encodeURIComponent(up.caption))
+    if (up.replyTo) xhr.setRequestHeader('X-Reply-To', up.replyTo)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) up.onProgress?.(e.loaded / e.total)
+    }
+    xhr.onerror = () => resolve(NO_ANSWER)
+    xhr.ontimeout = () => resolve(NO_ANSWER)
+    xhr.onload = () => {
+      const body = parseJson(xhr.responseText)
+      if (xhr.status === 401 && window.location.pathname !== '/login') navigation.toLogin()
+      if (body && typeof body === 'object' && 'ok' in body) {
+        if (body.ok === true) {
+          const id = 'message_id' in body && typeof body.message_id === 'string' ? body.message_id : null
+          resolve({ ok: true, message_id: id })
+          return
+        }
+        if ('error' in body && typeof body.error === 'string') {
+          resolve({ ok: false, error: body.error, retryable: 'retryable' in body && body.retryable === true })
+          return
+        }
+      }
+      const detail = body && typeof body === 'object' && 'error' in body ? String(body.error) : xhr.statusText
+      resolve({ ok: false, error: `Not sent: ${detail}`, retryable: xhr.status >= 500 })
+    }
+    xhr.send(up.file)
+  })
+}

@@ -8,12 +8,17 @@ marker get one: incoming, not system, not deleted, never an `import-` id, at mos
 """
 
 import logging
+import os
+import re
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from . import appdb, mcp_lib, store, unread
 from .ai import learning
@@ -311,3 +316,96 @@ def send_reaction(settings: Settings, appconn: sqlite3.Connection, jid: str, bod
     if not result.get("success"):
         return map_failure(result)
     return Outcome(200, {"ok": True})
+
+
+# --- photos, files and voice notes --------------------------------------------------------------------------------
+
+MAX_FILENAME = 120
+MAX_CAPTION = 1024
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def safe_filename(name: str) -> str:
+    """A name that is safe on disk and in WhatsApp: no path parts, no control characters, letters kept, 120 at most."""
+    last = name.replace("\\", "/").split("/")[-1]
+    cleaned = _CONTROL.sub("", last).strip().strip(".")
+    if len(cleaned) > MAX_FILENAME:
+        stem, dot, ext = cleaned.rpartition(".")
+        if dot and 0 < len(ext) <= 10:
+            cleaned = stem[: MAX_FILENAME - len(ext) - 1] + "." + ext
+        else:
+            cleaned = cleaned[:MAX_FILENAME]
+    return cleaned or "file"
+
+
+def send_media(
+    settings: Settings,
+    appconn: sqlite3.Connection,
+    jid: str,
+    *,
+    data: bytes,
+    filename: str,
+    caption: str | None,
+    reply_to: str | None,
+    client_key: str,
+    kind: Literal["file", "voice"],
+) -> Outcome:
+    """Blocking: stage the upload in a private temp dir and send it through the bridge with the client's key.
+
+    The bridge names a document after the temp file's basename, so the file is written under the safe name.
+    """
+    key = valid_key(client_key)
+    if key is None:
+        return _bad("client_key must be a UUID")
+    if not data:
+        return _bad("Empty file")
+    if caption is not None and len(caption) > MAX_CAPTION:
+        return _bad("Caption too long")
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            chat = store.get_chat(ro, appconn, jid)
+            if chat is None:
+                return _bad("Chat not found", 404)
+            quoted = None
+            if reply_to:
+                quoted = store.get_message(ro, chat.jid, reply_to)
+                if quoted is None or not quoted.actionable:
+                    return _bad("That message can't be replied to")
+    finally:
+        ro.close()
+    name = safe_filename(filename)
+    directory = tempfile.mkdtemp(prefix="wa-app-up-", dir="/tmp")
+    try:
+        os.chmod(directory, 0o700)
+        path = os.path.join(directory, name)
+        with open(path, "wb") as handle:
+            handle.write(data)
+        recipient = _recipient_for(appconn, key, chat.jid)
+        if kind == "voice":
+            result = _call(
+                mcp_lib.send_audio_message,
+                recipient,
+                file_path=path,
+                quoted_message_id=quoted.id if quoted else None,
+                idempotency_key=key,
+            )
+        else:
+            result = _call(
+                mcp_lib.send_file,
+                recipient,
+                file_path=path,
+                filename=name,
+                caption=(caption or "").strip() or None,
+                quoted_message_id=quoted.id if quoted else None,
+                quoted_chat_jid=None,
+                idempotency_key=key,
+            )
+    except OSError:
+        logger.exception("staging an upload failed")
+        return _fail(502, "Not sent: couldn't prepare the file")
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+    if not result.get("success"):
+        return map_failure(result)
+    return Outcome(200, {"ok": True, "message_id": result.get("message_id")})

@@ -1,6 +1,6 @@
 import { useRef, useState, type PointerEvent } from 'react'
 import type { MessageView } from '../api-types'
-import { formatClock } from '../format'
+import { formatBytes, formatClock } from '../format'
 import { ContactCard } from './ContactCard'
 import { Avatar } from './Avatar'
 import { Icon } from './Icon'
@@ -11,7 +11,31 @@ import { RichText } from './RichText'
 import { Ticks } from './Ticks'
 
 /** An outgoing text this device is still sending, or could not send. */
-export type Delivery = { state: 'sending' | 'sent' | 'failed'; error?: string; retryable?: boolean }
+function UploadRow({ upload, state }: { upload: NonNullable<Delivery['upload']>; state: Delivery['state'] }) {
+  const percent = Math.round(upload.progress * 100)
+  return (
+    <div className="uprow">
+      <Icon name="attach" size={20} />
+      <div className="upinfo">
+        <span className="upname" dir="auto">
+          {upload.name}
+        </span>
+        <span className="upsize">{formatBytes(upload.size)}</span>
+        {state === 'sending' && (
+          <progress className="upbar" max={100} value={percent} aria-label={`Uploading, ${percent}%`} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+export type Delivery = {
+  state: 'sending' | 'sent' | 'failed'
+  error?: string
+  retryable?: boolean
+  /** A file going out: its row and how much has left this device (0 to 1). */
+  upload?: { name: string; size: number; progress: number }
+}
 
 type Props = {
   message: MessageView
@@ -147,6 +171,7 @@ export function Bubble({
               </div>
             )}
             {m.media && <Media chat={m.chat_jid} id={m.id} media={m.media} />}
+            {delivery?.upload && <UploadRow upload={delivery.upload} state={delivery.state} />}
             {m.poll && <Poll poll={m.poll} />}
             {m.contact_cards?.map((card, i) => (
               <ContactCard key={i} card={card} />

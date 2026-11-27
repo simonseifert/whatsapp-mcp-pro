@@ -15,6 +15,8 @@ type Props = {
   replyTo: MessageView | null
   onCancelReply: () => void
   onSend: (text: string) => void
+  /** A file was picked with the paperclip (photos, camera and any file). */
+  onAttach?: (file: File) => void
   ref?: Ref<ComposerHandle>
   /** Ask for a one-off draft; the button is absent without it. */
   onDraft?: () => void
@@ -49,11 +51,12 @@ function useKeyboardInset(target: React.RefObject<HTMLElement | null>) {
   }, [target])
 }
 
-/** The message box: a pill, 16 px text, 44 px targets. Attach is a placeholder until a later version; no mic in M1. */
-export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, drafting, onTextChange }: Props) {
+/** The message box: a pill, 16 px text, 44 px targets. The paperclip opens the system file picker (on a phone: camera, photos, files). */
+export function Composer({ replyTo, onCancelReply, onSend, onAttach, ref, onDraft, drafting, onTextChange }: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
+  const picker = useRef<HTMLInputElement>(null)
   useKeyboardInset(wrap)
 
   useLayoutEffect(() => {
@@ -123,12 +126,26 @@ export function Composer({ replyTo, onCancelReply, onSend, ref, onDraft, draftin
         </p>
       )}
       <div className="composer-row">
+        <input
+          ref={picker}
+          type="file"
+          hidden
+          tabIndex={-1}
+          aria-hidden="true"
+          data-testid="file-input"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            e.target.value = '' // the same file can be picked again
+            if (file) onAttach?.(file)
+          }}
+        />
         <button
           className="iconbtn attach"
           type="button"
-          disabled
-          title="In a later version"
-          aria-label="Attach, in a later version"
+          disabled={!onAttach}
+          aria-label="Attach a photo or file"
+          title="Attach a photo or file"
+          onClick={() => picker.current?.click()}
         >
           <Icon name="attach" size={22} />
         </button>
