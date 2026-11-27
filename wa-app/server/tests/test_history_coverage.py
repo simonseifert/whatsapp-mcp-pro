@@ -154,6 +154,14 @@ def test_totals_chats_match_coverage(conns, db) -> None:
     assert history.totals(ro)["chats"] == len(history.coverage(ro, app, limit=10_000))
 
 
+def test_totals_messages_leave_out_skipped_jids(conns, db) -> None:
+    before = history.totals(conns[0])["messages"]
+    _chat(db, "status@broadcast")
+    _msgs(db, "status@broadcast", 4, own=False)
+    db.commit()
+    assert history.totals(conns[0])["messages"] == before
+
+
 def test_chat_coverage_matches_the_list(conns) -> None:
     listed = {c.jid: c for c in history.coverage(*conns)}
     assert history.chat_coverage(conns[0], conns[1], ANA) == listed[ANA]

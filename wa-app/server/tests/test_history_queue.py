@@ -25,6 +25,8 @@ class Bridge:
         self.left: dict[str, int] = {}
         self.start_reply: dict | None = None
         self.status_reply: dict | None = None
+        self.grow = False  # running jobs report a rising batch count
+        self.ticks = 0
 
     def start(self, jid: str, until: str | None, max_batches: int) -> dict:
         self.events.append(f"start:{jid}")
@@ -42,7 +44,9 @@ class Bridge:
         for jid, left in self.left.items():
             if left > 0:
                 self.left[jid] = left - 1
-                jobs.append({"chat_jid": jid, "running": True, "batches": 1, "oldest": "2025-05-05"})
+                self.ticks += 1
+                batches = self.ticks if self.grow else 1
+                jobs.append({"chat_jid": jid, "running": True, "batches": batches, "oldest": "2025-05-05"})
             else:
                 jobs.append({"chat_jid": jid, "running": False, **self.finals.get(jid, self.final)})
         return {"success": True, "jobs": jobs}
@@ -87,7 +91,7 @@ def test_one_at_a_time() -> None:
     assert [events[i] for i in starts] == [f"start:{A}", f"start:{B}", f"start:{C}"]
     assert all("status" in events[a:b] for a, b in zip(starts, starts[1:], strict=False))
     # the second job starts only after the first job's status said it stopped: 2 running polls + 1 final poll
-    assert starts[1] - starts[0] == 4
+    assert starts[1] - starts[0] == 5  # the idle check before the start adds one status call
 
 
 @pytest.mark.parametrize(("depth", "until"), [("year", "2025-11-27"), ("3y", "2023-11-28"), ("all", None)])
@@ -144,24 +148,71 @@ def test_conflict_waits() -> None:
     queue = make(bridge)
     queue.enqueue([(A, A)], "year")
     done = (drain(queue))["done"]
-    assert done[0]["result"] == "done" and bridge.events.count("status") == 3
+    assert done[0]["result"] == "done" and bridge.events.count("status") == 4
 
 
-def test_watchdog() -> None:
-    bridge = Bridge(polls=10**9)  # A never stops
+def test_stalled_job_fails_only_after_the_bridge_says_it_is_over() -> None:
+    bridge = Bridge(polls=20)  # A's batch count never moves, and A ends on its own after 20 polls
+    bridge.finals[B] = {"stopped_by": "reached until", "oldest": "2025-01-01"}
     real = bridge.start
 
     def start(jid, until, max_batches):
         reply = real(jid, until, max_batches)
         if jid == B:
-            bridge.left[B] = 0
+            bridge.left[B] = 0  # B finishes at once
         return reply
 
-    queue = history.BackfillQueue(start, bridge.status, poll_s=0, today=lambda: TODAY, watchdog_s=1800, clock=Clock())
+    queue = history.BackfillQueue(start, bridge.status, poll_s=0, today=lambda: TODAY, stall_s=300, clock=Clock())
     queue.enqueue([(A, A), (B, B)], "year")
     done = (drain(queue))["done"]
     assert [(d["jid"], d["result"]) for d in done] == [(A, "failed"), (B, "done")]
-    assert done[0]["detail"] == "timed out"
+    assert done[0]["detail"] == "Stopped making progress"
+    events = bridge.events
+    # B starts only after A's job reported not running: every status before B's start is A's, and A ran out first
+    assert bridge.left[A] == 0 and events.index(f"start:{B}") > events.index(f"start:{A}") + 20
+
+
+def test_slow_but_progressing_job_is_not_failed() -> None:
+    bridge = Bridge(polls=100)  # 100 polls x 2 clock looks x 100 s = far beyond 30 minutes in total
+    bridge.grow = True
+    clock = Clock()
+    queue = make(bridge, stall_s=300, clock=clock)
+    queue.enqueue([(A, A)], "year")
+    done = (drain(queue))["done"]
+    assert clock.now > 1800
+    assert done[0]["result"] == "done" and done[0]["detail"] == "phone has nothing older"
+
+
+def test_nothing_came_back_fails_and_two_in_a_row_pause_the_queue() -> None:
+    # the job ends on the very anchor it started with: the phone did not answer
+    bridge = Bridge(final={"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05"})
+    queue = make(bridge)
+    queue.enqueue([(A, A), (B, B), (C, C)], "year")
+    done = (drain(queue))["done"]
+    assert [(d["jid"], d["result"]) for d in done] == [(A, "failed"), (B, "failed"), (C, "skipped")]
+    assert done[0]["detail"] == "No older messages came back. Is your phone online?"
+    assert done[2]["detail"] == "Paused: phone not answering"
+    assert [c[0] for c in bridge.calls] == [A, B]
+
+
+def test_one_failure_without_an_answer_does_not_pause() -> None:
+    bridge = Bridge()
+    bridge.finals[A] = {"stopped_by": "phone has nothing older", "batches": 3, "oldest": "2025-05-05"}
+    queue = make(bridge)
+    queue.enqueue([(A, A), (B, B), (C, C)], "year")
+    done = (drain(queue))["done"]
+    assert [d["result"] for d in done] == ["failed", "done", "done"]
+
+
+def test_waits_for_any_running_bridge_job_before_starting() -> None:
+    bridge = Bridge()
+    bridge.left[C] = 3  # a job the app did not start (left over from before a restart)
+    queue = make(bridge)
+    queue.enqueue([(A, A)], "year")
+    done = (drain(queue))["done"]
+    first_start = bridge.events.index(f"start:{A}")
+    assert bridge.events[:first_start] == ["status"] * 4  # 3 running polls, then idle
+    assert done[0]["result"] == "done"
 
 
 def test_bridge_down_while_waiting() -> None:

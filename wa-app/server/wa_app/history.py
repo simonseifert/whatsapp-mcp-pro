@@ -46,9 +46,12 @@ def _form_map(convs: list[store._Conversation]) -> dict[str, store._Conversation
 
 
 def totals(ro: sqlite3.Connection) -> dict:
-    """Stored messages, merged chats that have any (phone and LID forms count once; broadcast and newsletter JIDs
+    """Stored messages (broadcast and newsletter JIDs left out), merged chats that have any (phone and LID forms count once; broadcast and newsletter JIDs
     are left out, like in coverage()) and the earliest message."""
-    count, oldest = ro.execute("SELECT COUNT(*), MIN(julianday(timestamp)) FROM messages").fetchone()
+    count, oldest = ro.execute(
+        "SELECT COUNT(*), MIN(julianday(timestamp)) FROM messages"
+        " WHERE chat_jid NOT LIKE '%@broadcast' AND chat_jid NOT LIKE '%@newsletter'"
+    ).fetchone()
     forms = _form_map(store._conversations(ro))
     stored = [r[0] for r in ro.execute("SELECT DISTINCT chat_jid FROM messages")]
     chats = {forms[j].jid if j in forms else j for j in stored if j and not _skipped(j)}
@@ -145,15 +148,21 @@ _DEPTH_DAYS: dict[str, int | None] = {"year": 365, "3y": 1095, "all": None}
 BACKFILL_BATCHES = 200
 _DONE_KEPT = 100
 _STATUS_MISSES = 3  # status calls in a row that fail or do not list the job before the bridge counts as gone
-_DONE_BY = {"phone has nothing older", "reached until"}
+_NOTHING_OLDER = "phone has nothing older"
+_NO_ANSWER = "No older messages came back. Is your phone online?"
+_STALLED = "Stopped making progress"
+_PAUSED = "Paused: phone not answering"
+_NO_ANSWER_LIMIT = 2  # results in a row with no answer from the phone before the rest of the queue is paused
 logger = logging.getLogger("wa_app.history")
 
 
 class BackfillQueue:
     """Backfills chats one at a time through the bridge's own per-chat job: start it, poll its status, move on.
 
-    A failed start, a bridge that stops answering or a job that outlives the watchdog marks that chat failed and the
-    queue carries on. A 409 (a job is already running, e.g. after an app restart) is waited out, not an error."""
+    A failed start, a bridge that stops answering or a job whose batch count stops moving for `stall_s` marks that chat
+    failed (after the bridge reports the job over) and the queue carries on. A job already running when a chat is due
+    (e.g. after an app restart) is waited out, not an error. Two chats in a row that get nothing back from the phone
+    pause the rest of the queue."""
 
     def __init__(
         self,
@@ -161,14 +170,15 @@ class BackfillQueue:
         status: Callable[[], dict],
         *,
         poll_s: float = 10.0,
-        watchdog_s: float = 1800.0,
+        stall_s: float = 300.0,
         today: Callable[[], date] = date.today,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._start = start
         self._status = status
         self._poll_s = poll_s
-        self._watchdog_s = watchdog_s
+        self._stall_s = stall_s
+        self._no_answer = 0
         self._today = today
         self._clock = clock
         self._queue: deque[tuple[str, str | None, Depth]] = deque()
@@ -223,6 +233,13 @@ class BackfillQueue:
             self._running = None
             self._done.append({"jid": jid, "result": result, "detail": detail, "oldest": oldest})
             logger.info("history backfill %s: %s (%s)", log_safe(jid), result, log_safe(detail))
+            self._no_answer = self._no_answer + 1 if detail == _NO_ANSWER else 0
+            if self._no_answer >= _NO_ANSWER_LIMIT and self._queue:
+                while self._queue:
+                    self._done.append(
+                        {"jid": self._queue.popleft()[0], "result": "skipped", "detail": _PAUSED, "oldest": None}
+                    )
+                self._no_answer = 0
 
     def _until(self, depth: Depth) -> str | None:
         days = _DEPTH_DAYS[depth]
@@ -231,6 +248,7 @@ class BackfillQueue:
     async def _process(self, backfill_jid: str | None, depth: Depth) -> tuple[str, str, str | None]:
         if backfill_jid is None:
             return "skipped", "nothing to anchor on", None
+        await self._wait_idle()
         started = await asyncio.to_thread(self._start, backfill_jid, self._until(depth), BACKFILL_BATCHES)
         job = started.get("job")
         if not started.get("success") and not (isinstance(job, dict) and job.get("running")):
@@ -238,28 +256,53 @@ class BackfillQueue:
         watched = job.get("chat_jid", backfill_jid) if isinstance(job, dict) else backfill_jid
         return await self._wait(watched)
 
+    async def _wait_idle(self) -> None:
+        """Hold off while the bridge runs any backfill job (one left over from before an app restart too)."""
+        while not self._stopped:
+            reply = await asyncio.to_thread(self._status)
+            if not reply.get("success") or not any(j.get("running") for j in reply.get("jobs") or []):
+                return
+            await asyncio.sleep(self._poll_s)
+
     async def _wait(self, chat_jid: str) -> tuple[str, str, str | None]:
-        began = self._clock()
         misses = 0
+        last_batches: object = None
+        moved_at = self._clock()
+        first_oldest: str | None = None
+        seen = False
+        stalled = False
         while True:
-            if self._clock() - began > self._watchdog_s:
-                return "failed", "timed out", None
             await asyncio.sleep(self._poll_s)
             reply = await asyncio.to_thread(self._status)
             job = next((j for j in reply.get("jobs") or [] if j.get("chat_jid") == chat_jid), None)
             if not reply.get("success") or job is None:
                 misses += 1
                 if misses >= _STATUS_MISSES:
+                    if stalled:
+                        return "failed", _STALLED, None
                     return "failed", str(reply.get("error") or "the bridge lost the job"), None
                 continue
             misses = 0
             oldest = job.get("oldest") or None
+            if not seen:
+                seen, first_oldest = True, oldest
+            batches = job.get("batches", 0)
+            if batches != last_batches:
+                last_batches, moved_at = batches, self._clock()
             if self._running is not None:
-                self._running.update(batches=job.get("batches", 0), oldest=oldest)
+                self._running.update(batches=batches, oldest=oldest)
             if job.get("running"):
+                if not stalled and self._clock() - moved_at > self._stall_s:
+                    stalled = True  # keep polling: no second job starts until the bridge says this one is over
                 continue
+            if stalled:
+                return "failed", _STALLED, oldest
             stopped_by = job.get("stopped_by") or ""
-            if stopped_by in _DONE_BY:
+            if stopped_by == _NOTHING_OLDER:
+                if oldest == first_oldest:
+                    return "failed", _NO_ANSWER, oldest
+                return "done", stopped_by, oldest
+            if stopped_by == "reached until":
                 return "done", stopped_by, oldest
             if stopped_by == "max batches":
                 return "more", stopped_by, oldest
