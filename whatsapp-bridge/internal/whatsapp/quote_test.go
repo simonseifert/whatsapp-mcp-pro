@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
+	waLog "go.mau.fi/whatsmeow/util/log"
 
 	"whatsapp-bridge/internal/database"
 )
@@ -203,5 +205,30 @@ func TestQuoteChatThatIsRecipientInOtherFormIsSameChat(t *testing.T) {
 		if ci.RemoteJID != nil {
 			t.Errorf("%v/%s: RemoteJID = %q, want unset (same chat)", tc.recipient, tc.quoted, ci.GetRemoteJID())
 		}
+	}
+}
+
+func TestRefusedQuoteNeverUploads(t *testing.T) {
+	store := newQuoteStore(t)
+	mustChat(t, store, testGroup)
+	uploads := 0
+	c := &Client{logger: waLog.Noop, uploadHook: func(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error) {
+		uploads++
+		return whatsmeow.UploadResponse{}, nil
+	}}
+	res := c.sendWithOptions(context.Background(), store, SendOptions{
+		Recipient:       testPhone + "@s.whatsapp.net",
+		MediaPath:       "voice-note.ogg",
+		QuotedMessageID: "NOPE",
+		QuotedChatJID:   testGroup,
+	})
+	if res.Success || res.Err == nil {
+		t.Fatalf("result = %+v, want a refused send", res)
+	}
+	if !strings.Contains(res.Err.Error(), "cannot quote message NOPE") {
+		t.Errorf("error %q should be the quote refusal, not a later step", res.Err)
+	}
+	if uploads != 0 {
+		t.Errorf("uploaded %d times, want 0: a refused quote must leave no trace", uploads)
 	}
 }

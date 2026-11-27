@@ -377,10 +377,16 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 // send (upload, antiban wait, server ack), so a caller that gives up cancels
 // it. On failure SendResult.Err is a *SendError carrying the failure class.
 func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *database.MessageStore, opts SendOptions) bridgeTypes.SendResult {
-	recipient, message, mediaPath, quotedMessageID := opts.Recipient, opts.Message, opts.MediaPath, opts.QuotedMessageID
 	if !c.IsConnected() {
 		return failed(newSendError(SendErrNotConnected, "Not connected to WhatsApp"), "")
 	}
+	return c.sendWithOptions(ctx, messageStore, opts)
+}
+
+// sendWithOptions is SendMessageWithOptions after the connection check (split
+// out so tests can drive the order of the refusals without a live socket).
+func (c *Client) sendWithOptions(ctx context.Context, messageStore *database.MessageStore, opts SendOptions) bridgeTypes.SendResult {
+	recipient, message, mediaPath, quotedMessageID := opts.Recipient, opts.Message, opts.MediaPath, opts.QuotedMessageID
 
 	// Create JID for recipient
 	var recipientJID types.JID
@@ -422,6 +428,17 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		}
 	}
 
+	// Resolve the quote first: a quote that cannot be built (a broken participant is delivered as a reply to
+	// nothing and still reports success) refuses the send before any presence, upload or typing.
+	var quoteCtx *waE2E.ContextInfo
+	if quotedMessageID != "" && messageStore != nil {
+		var qErr error
+		quoteCtx, qErr = c.buildQuoteContext(messageStore, quotedMessageID, opts.QuotedChatJID, recipientJID)
+		if qErr != nil {
+			return failed(newSendError(SendErrInvalid, "cannot quote message %s: %w", quotedMessageID, qErr), "")
+		}
+	}
+
 	// Refused sends leave no trace: no presence, upload or typing first.
 	if err := c.antiban.Precheck(c.antibanRequest(messageStore, antiban.Text, recipientJID, len(message), recipient)); err != nil {
 		return failed(classify(err, "antiban blocked send: %w"), "")
@@ -446,7 +463,7 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		mediaType, mimeType := mediaTypeAndMimeType(mediaPath)
 
 		// Upload media to WhatsApp servers
-		resp, err := c.Upload(ctx, mediaData, mediaType)
+		resp, err := c.uploadMedia(ctx, mediaData, mediaType)
 		if err != nil {
 			return failed(classify(err, "Error uploading media: %w"), "")
 		}
@@ -522,14 +539,9 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		}
 	}
 
-	// Build quoted message context if quotedMessageID is provided
-	if quotedMessageID != "" && messageStore != nil {
-		contextInfo, qErr := c.buildQuoteContext(messageStore, quotedMessageID, opts.QuotedChatJID, recipientJID)
-		if qErr != nil {
-			// A quote with a broken participant is delivered as a reply to
-			// nothing and still reports success, so refuse instead.
-			return failed(newSendError(SendErrInvalid, "cannot quote message %s: %w", quotedMessageID, qErr), "")
-		}
+	// Attach the quote resolved above.
+	{
+		contextInfo := quoteCtx
 		if contextInfo != nil {
 			if msg.ExtendedTextMessage != nil {
 				if msg.ExtendedTextMessage.ContextInfo == nil {
@@ -615,6 +627,14 @@ func (c *Client) SendMessageWithOptions(ctx context.Context, messageStore *datab
 		MessageID: string(sendResp.ID),
 		Timestamp: sendResp.Timestamp,
 	}
+}
+
+// uploadMedia uploads to WhatsApp's media servers; tests replace it with uploadHook.
+func (c *Client) uploadMedia(ctx context.Context, data []byte, mediaType whatsmeow.MediaType) (whatsmeow.UploadResponse, error) {
+	if c.uploadHook != nil {
+		return c.uploadHook(ctx, data, mediaType)
+	}
+	return c.Upload(ctx, data, mediaType)
 }
 
 // SendReaction sends an emoji reaction to a message.
