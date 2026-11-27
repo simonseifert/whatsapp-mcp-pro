@@ -1,10 +1,17 @@
 """History coverage: how much of the user's own writing is stored per chat, so drafts have enough to learn from."""
 
+import asyncio
+import logging
 import sqlite3
+import time
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from typing import Literal
 
 from . import store
+from .logsafe import log_safe
 
 THIN_OWN = 30  # fewer own text messages than this and a chat is "thin"
 FILL_CHATS = 50  # how many of the most recently active chats coverage and backfills look at
@@ -110,3 +117,131 @@ def coverage(ro: sqlite3.Connection, appconn: sqlite3.Connection, *, limit: int 
             )
         )
     return out
+
+
+# --- backfill queue -------------------------------------------------------------------------------------------
+
+Depth = Literal["year", "3y", "all"]
+_DEPTH_DAYS: dict[str, int | None] = {"year": 365, "3y": 1095, "all": None}
+BACKFILL_BATCHES = 200
+_DONE_KEPT = 100
+_STATUS_MISSES = 3  # status calls in a row that fail or do not list the job before the bridge counts as gone
+_DONE_BY = {"phone has nothing older", "reached until"}
+logger = logging.getLogger("wa_app.history")
+
+
+class BackfillQueue:
+    """Backfills chats one at a time through the bridge's own per-chat job: start it, poll its status, move on.
+
+    A failed start, a bridge that stops answering or a job that outlives the watchdog marks that chat failed and the
+    queue carries on. A 409 (a job is already running, e.g. after an app restart) is waited out, not an error."""
+
+    def __init__(
+        self,
+        start: Callable[[str, str | None, int], dict],
+        status: Callable[[], dict],
+        *,
+        poll_s: float = 10.0,
+        watchdog_s: float = 1800.0,
+        today: Callable[[], date] = date.today,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._start = start
+        self._status = status
+        self._poll_s = poll_s
+        self._watchdog_s = watchdog_s
+        self._today = today
+        self._clock = clock
+        self._queue: deque[tuple[str, str | None, Depth]] = deque()
+        self._running: dict | None = None
+        self._done: deque[dict] = deque(maxlen=_DONE_KEPT)
+        self._wake = asyncio.Event()
+        self._stopped = False
+
+    def enqueue(self, items: list[tuple[str, str | None]], depth: Depth) -> int:
+        """Add `(jid, backfill_jid)` chats; ones already queued or running are left alone. Returns how many were added."""
+        known = {q[0] for q in self._queue}
+        if self._running:
+            known.add(self._running["jid"])
+        added = 0
+        for jid, backfill_jid in items:
+            if jid in known:
+                continue
+            known.add(jid)
+            self._queue.append((jid, backfill_jid, depth))
+            added += 1
+        if added:
+            self._wake.set()
+        return added
+
+    def cancel(self) -> None:
+        """Drop what is queued. A job the bridge is already running finishes on its own."""
+        self._queue.clear()
+
+    def stop(self) -> None:
+        self._stopped = True
+        self._wake.set()
+
+    def snapshot(self) -> dict:
+        return {
+            "running": dict(self._running) if self._running else None,
+            "queued": [q[0] for q in self._queue],
+            "done": list(self._done),
+        }
+
+    async def run(self) -> None:
+        while not self._stopped:
+            if not self._queue:
+                self._wake.clear()
+                await self._wake.wait()
+                continue
+            jid, backfill_jid, depth = self._queue.popleft()
+            self._running = {"jid": jid, "batches": 0, "oldest": None}
+            try:
+                result, detail, oldest = await self._process(backfill_jid, depth)
+            except Exception as exc:  # noqa: BLE001  # one chat never takes the queue down; the type only, no text
+                result, detail, oldest = "failed", f"unexpected error ({type(exc).__name__})", None
+            self._running = None
+            self._done.append({"jid": jid, "result": result, "detail": detail, "oldest": oldest})
+            logger.info("history backfill %s: %s (%s)", log_safe(jid), result, log_safe(detail))
+
+    def _until(self, depth: Depth) -> str | None:
+        days = _DEPTH_DAYS[depth]
+        return None if days is None else (self._today() - timedelta(days=days)).isoformat()
+
+    async def _process(self, backfill_jid: str | None, depth: Depth) -> tuple[str, str, str | None]:
+        if backfill_jid is None:
+            return "skipped", "nothing to anchor on", None
+        started = await asyncio.to_thread(self._start, backfill_jid, self._until(depth), BACKFILL_BATCHES)
+        job = started.get("job")
+        if not started.get("success") and not (isinstance(job, dict) and job.get("running")):
+            return "failed", str(started.get("error") or "the bridge refused the backfill"), None
+        watched = job.get("chat_jid", backfill_jid) if isinstance(job, dict) else backfill_jid
+        return await self._wait(watched)
+
+    async def _wait(self, chat_jid: str) -> tuple[str, str, str | None]:
+        began = self._clock()
+        misses = 0
+        while True:
+            if self._clock() - began > self._watchdog_s:
+                return "failed", "timed out", None
+            await asyncio.sleep(self._poll_s)
+            reply = await asyncio.to_thread(self._status)
+            job = next((j for j in reply.get("jobs") or [] if j.get("chat_jid") == chat_jid), None)
+            if not reply.get("success") or job is None:
+                misses += 1
+                if misses >= _STATUS_MISSES:
+                    return "failed", str(reply.get("error") or "the bridge lost the job"), None
+                continue
+            misses = 0
+            oldest = job.get("oldest") or None
+            if self._running is not None:
+                self._running.update(batches=job.get("batches", 0), oldest=oldest)
+            if job.get("running"):
+                continue
+            stopped_by = job.get("stopped_by") or ""
+            if stopped_by in _DONE_BY:
+                return "done", stopped_by, oldest
+            if stopped_by == "max batches":
+                return "more", stopped_by, oldest
+            return "failed", str(job.get("error") or stopped_by or "the bridge stopped the backfill"), oldest

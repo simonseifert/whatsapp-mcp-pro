@@ -19,6 +19,7 @@ from .ai import drafts, learning, policy
 from .config import Settings
 from .tokens import token_hash
 
+_DEPTHS = ("year", "3y", "all")
 MEDIA_RETRY_SECONDS = 6 * 3600
 
 
@@ -250,6 +251,49 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             )
 
         return await run_in_threadpool(with_store, work)
+
+    def fill_response(request: Request, items: list[tuple[str, str | None]], depth: str) -> Response:
+        queue: history.BackfillQueue = request.app.state.backfill
+        added = queue.enqueue(items, depth)  # type: ignore[arg-type]
+        return JSONResponse({"added": added, "status": queue.snapshot()})
+
+    async def history_fill(request: Request) -> Response:
+        body = await body_of(request)
+        scope = body.get("scope") if isinstance(body, dict) else None
+        depth = body.get("depth") if isinstance(body, dict) else None
+        if scope not in ("thin", "all") or depth not in _DEPTHS:
+            return _error(422, "'scope' must be thin or all and 'depth' year, 3y or all")
+
+        def work(ro: sqlite3.Connection) -> Response:
+            chosen = [c for c in history.coverage(ro, conn) if scope == "all" or c.thin]
+            return fill_response(request, [(c.jid, c.backfill_jid) for c in chosen], depth)
+
+        return await run_in_threadpool(with_store, work)
+
+    async def chat_history(request: Request) -> Response:
+        body = await body_of(request)
+        depth = body.get("depth") if isinstance(body, dict) else None
+        if depth not in _DEPTHS:
+            return _error(422, "'depth' must be year, 3y or all")
+        jid = request.path_params["jid"]
+
+        def work(ro: sqlite3.Connection) -> Response:
+            chat = store.get_chat(ro, conn, jid)
+            if chat is None:
+                return _error(404, "Chat not found")
+            found = next((c for c in history.coverage(ro, conn, limit=100_000) if c.jid == chat.jid), None)
+            if found is None:
+                return _error(404, "Chat not found")
+            return fill_response(request, [(found.jid, found.backfill_jid)], depth)
+
+        return await run_in_threadpool(with_store, work)
+
+    async def history_status(request: Request) -> Response:
+        return JSONResponse(request.app.state.backfill.snapshot())
+
+    async def history_cancel(request: Request) -> Response:
+        request.app.state.backfill.cancel()
+        return JSONResponse(request.app.state.backfill.snapshot())
 
     async def chat_messages(request: Request) -> Response:
         jid = request.path_params["jid"]
@@ -600,6 +644,10 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/about", about, methods=["GET"]),
         Route("/api/chats", chats, methods=["GET"]),
         Route("/api/history/coverage", history_coverage, methods=["GET"]),
+        Route("/api/history/fill", history_fill, methods=["POST"]),
+        Route("/api/history/status", history_status, methods=["GET"]),
+        Route("/api/history/cancel", history_cancel, methods=["POST"]),
+        Route("/api/chats/{jid}/history", chat_history, methods=["POST"]),
         Route("/api/chats/{jid}", chat_detail, methods=["GET"]),
         Route("/api/chats/{jid}/read", chat_read, methods=["POST"]),
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
