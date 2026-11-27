@@ -804,6 +804,7 @@ class MessageView:
     actionable: bool
     # Own messages only, from message_receipts when the bridge records them; None otherwise.
     ticks: Literal["sent", "delivered", "read"] | None = None
+    starred: bool = False
 
 
 _CONTACT_HEAD = re.compile(r"\[Contact: (.*)\]")
@@ -1147,6 +1148,7 @@ def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> lis
     )
     reactions = _reactions(conn, forms, [r[0] for r in live], own)
     ticks = _ticks(conn, [(r[0], r[0], forms) for r in live if r[6] and not r[15]])
+    starred = _starred_ids(conn, forms, [r[0] for r in live])
     out: list[MessageView] = []
     for r in rows:
         (mid, chat, sender, sender_name, content, stamp, from_me, media_type, filename, deleted_at) = r[:10]
@@ -1192,9 +1194,85 @@ def _build(conn: sqlite3.Connection, forms: list[str], rows: list[tuple]) -> lis
                 contact_cards=cards,
                 actionable=not mid.startswith(IMPORT_PREFIX),
                 ticks=ticks.get(mid),  # type: ignore[arg-type]
+                starred=mid in starred,
             )
         )
     return out
+
+
+def _starred_ids(conn: sqlite3.Connection, forms: list[str], ids: list[str]) -> set[str]:
+    """Ids among `ids` the bridge has starred (any form of the chat). An older store has no table: none."""
+    if not ids or "starred_at" not in _columns(conn, "starred_messages"):
+        return set()
+    found: set[str] = set()
+    for chunk in _chunks(ids):
+        found.update(
+            row[0]
+            for row in conn.execute(
+                f"SELECT message_id FROM starred_messages WHERE chat_jid IN ({_marks(forms)})"
+                f" AND message_id IN ({_marks(chunk)})",
+                [*forms, *chunk],
+            )
+        )
+    return found
+
+
+STARRED_PAGE = 30
+
+
+def parse_starred_cursor(value: str | None) -> tuple[str, int] | None:
+    """'<starred_at>|<rowid>' as the starred list hands it out; None for no cursor. Raises ValueError when bad."""
+    if not value:
+        return None
+    stamp, sep, rowid = value.rpartition("|")
+    if not sep or not stamp or not rowid.isdigit():
+        raise ValueError("bad cursor")
+    return stamp, int(rowid)
+
+
+def list_starred(
+    conn: sqlite3.Connection, appconn: sqlite3.Connection, *, before: str | None = None, limit: int = 30
+) -> tuple[list[tuple[MessageView, str, str]], str | None]:
+    """Starred messages, newest star first: (message, chat name, canonical chat jid) and the next cursor.
+
+    Reads the bridge's starred_messages (an older store has none: empty). Deleted and vanished messages are skipped.
+    """
+    cursor = parse_starred_cursor(before)
+    if "starred_at" not in _columns(conn, "starred_messages"):
+        return [], None
+    index = conversation_index(conn)
+    out: list[tuple[MessageView, str, str]] = []
+    names: dict[str, str] = {}
+    next_cursor: str | None = None
+    last: tuple[str, int] | None = cursor
+    while len(out) < limit:
+        sql = "SELECT rowid, chat_jid, message_id, COALESCE(starred_at, '') FROM starred_messages"
+        args: list[object] = []
+        if last is not None:
+            sql += " WHERE (COALESCE(starred_at, '') < ? OR (COALESCE(starred_at, '') = ? AND rowid < ?))"
+            args += [last[0], last[0], last[1]]
+        sql += " ORDER BY COALESCE(starred_at, '') DESC, rowid DESC LIMIT ?"
+        args.append(limit - len(out) + 1)
+        rows = conn.execute(sql, args).fetchall()
+        if not rows:
+            break
+        take = rows[: limit - len(out)]
+        for rowid, chat, mid, stamp in take:
+            last = (stamp, rowid)
+            message = get_message(conn, chat, mid)
+            if message is None or message.deleted:
+                continue
+            canonical = index.get(chat, chat)
+            if canonical not in names:
+                summary = get_chat(conn, appconn, canonical)
+                names[canonical] = summary.name if summary else canonical
+            out.append((message, names[canonical], canonical))
+        if len(rows) <= len(take):
+            break
+        if len(out) >= limit:
+            next_cursor = f"{last[0]}|{last[1]}" if last else None
+            break
+    return out, next_cursor
 
 
 def members_line(conn: sqlite3.Connection, chat_jid: str) -> str | None:

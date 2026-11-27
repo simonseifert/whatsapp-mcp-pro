@@ -108,7 +108,15 @@ export function Search() {
           />
         </label>
       </header>
-      {status === 'idle' && <p className="empty-state">Type at least {MIN_QUERY} letters to search your messages.</p>}
+      {status === 'idle' && (
+        <>
+          <p className="empty-state">Type at least {MIN_QUERY} letters to search your messages.</p>
+          <Link className="button-text starred-link" to="/starred">
+            <Icon name="star" size={18} />
+            Starred messages
+          </Link>
+        </>
+      )}
       {status === 'loading' && <p className="empty-state">Searching…</p>}
       {status === 'error' && (
         <div className="empty-state" role="alert">

@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { MessageView } from '../api-types'
 import { Composer, MIC_EXPLAINER } from './Composer'
 
 class FakeRecorder {
@@ -69,5 +70,84 @@ describe('Composer voice notes', () => {
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Record voice message' })))
     expect(screen.queryByText(MIC_EXPLAINER)).toBeNull()
     expect(getUserMedia).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Composer edit mode', () => {
+  const own: MessageView = {
+    id: 'M1',
+    chat_jid: 'a@s.whatsapp.net',
+    sender_jid: null,
+    sender_name: null,
+    from_me: true,
+    timestamp_iso: '2026-11-27T10:00:00+00:00',
+    text: 'Vidimo se u 7',
+    media: null,
+    reply_to: null,
+    forwarded: false,
+    edited: false,
+    deleted: false,
+    system: false,
+    reactions: [],
+    poll: null,
+    contact_cards: null,
+    actionable: true,
+    ticks: null,
+  }
+
+  function setup(extra: Record<string, unknown> = {}) {
+    const onSend = vi.fn()
+    const onSaveEdit = vi.fn()
+    const onCancelEdit = vi.fn()
+    render(
+      <Composer
+        replyTo={null}
+        onCancelReply={() => {}}
+        onSend={onSend}
+        onAttach={() => {}}
+        onVoice={() => {}}
+        editing={own}
+        onSaveEdit={onSaveEdit}
+        onCancelEdit={onCancelEdit}
+        {...extra}
+      />,
+    )
+    return { onSend, onSaveEdit, onCancelEdit }
+  }
+
+  it('fills the box with the message, says it is an edit and flags the composer as editing', () => {
+    setup()
+    expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('Vidimo se u 7')
+    expect(screen.getByText('Editing message')).toBeTruthy()
+    expect(document.querySelector('.composer')?.getAttribute('data-editing')).toBe('true')
+  })
+
+  it('saves the changed text with the edit handler, never as a new message', () => {
+    const { onSend, onSaveEdit } = setup()
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Vidimo se u 8' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save edit' }))
+    expect(onSaveEdit).toHaveBeenCalledWith('Vidimo se u 8')
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('does not save an unchanged or emptied text', () => {
+    const { onSaveEdit } = setup()
+    expect((screen.getByRole('button', { name: 'Save edit' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: '  ' } })
+    expect((screen.getByRole('button', { name: 'Save edit' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(onSaveEdit).not.toHaveBeenCalled()
+  })
+
+  it('cancel and Escape leave edit mode and empty the box; attach and mic are hidden meanwhile', () => {
+    const { onCancelEdit } = setup()
+    expect(screen.queryByRole('button', { name: 'Attach a photo or file' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel edit' }))
+    fireEvent.keyDown(screen.getByLabelText('Message'), { key: 'Escape' })
+    expect(onCancelEdit).toHaveBeenCalledTimes(2)
+  })
+
+  it('a normal composer is not flagged as editing', () => {
+    render(<Composer replyTo={null} onCancelReply={() => {}} onSend={() => {}} />)
+    expect(document.querySelector('.composer')?.getAttribute('data-editing')).toBe('false')
   })
 })

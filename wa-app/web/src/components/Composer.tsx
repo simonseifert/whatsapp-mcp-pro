@@ -29,6 +29,10 @@ type Props = {
   /** The box's text changed (typing, clearing, a draft filled in, or a send emptied it). */
   onTextChange?: (text: string) => void
   drafting?: boolean
+  /** Edit mode: the box holds this message's text and Send saves it instead of sending a new message. */
+  editing?: MessageView | null
+  onSaveEdit?: (text: string) => void
+  onCancelEdit?: () => void
 }
 
 const quoteLabel = (m: MessageView) => m.text?.trim() || (m.media ? `[${m.media.type}]` : m.poll ? m.poll.question : '')
@@ -58,7 +62,20 @@ function useKeyboardInset(target: React.RefObject<HTMLElement | null>) {
 }
 
 /** The message box: a pill, 16 px text, 44 px targets. The paperclip opens the system file picker (on a phone: camera, photos, files). */
-export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, ref, onDraft, drafting, onTextChange }: Props) {
+export function Composer({
+  replyTo,
+  onCancelReply,
+  onSend,
+  onAttach,
+  onVoice,
+  ref,
+  onDraft,
+  drafting,
+  onTextChange,
+  editing = null,
+  onSaveEdit,
+  onCancelEdit,
+}: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
@@ -93,6 +110,22 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
     if (replyTo) box.current?.focus()
   }, [replyTo])
 
+  // Entering edit mode loads the message's text; leaving it (saved or cancelled) empties the box again.
+  const editId = editing?.id ?? null
+  const editText = editing?.text ?? ''
+  const wasEditing = useRef(false)
+  useEffect(() => {
+    if (editId !== null) {
+      wasEditing.current = true
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the box takes the edited message's text once
+      setText(editText)
+      box.current?.focus()
+    } else if (wasEditing.current) {
+      wasEditing.current = false
+      setText('')
+    }
+  }, [editId, editText])
+
   const current = useRef(text)
   useEffect(() => {
     current.current = text
@@ -113,8 +146,14 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
 
   const tooLong = text.length > MAX_TEXT
   const canSend = text.trim().length > 0 && !tooLong
+  const isEditing = editing !== null
+  const canSave = canSend && text.trim() !== (editing?.text ?? '').trim()
 
   function submit() {
+    if (isEditing) {
+      if (canSave) onSaveEdit?.(text.trim())
+      return
+    }
     if (!canSend) return
     onSend(text)
     onTextChange?.('')
@@ -123,6 +162,11 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Escape' && isEditing) {
+      event.preventDefault()
+      onCancelEdit?.()
+      return
+    }
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
     if (!enterSends()) return
     event.preventDefault()
@@ -130,8 +174,19 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
   }
 
   return (
-    <div className="composer" ref={wrap}>
-      {replyTo && (
+    <div className="composer" ref={wrap} data-editing={isEditing ? 'true' : 'false'}>
+      {isEditing && (
+        <div className="replybar">
+          <div className="replytxt">
+            <b>Editing message</b>
+            <span dir="auto">{editing.text}</span>
+          </div>
+          <button className="iconbtn" type="button" aria-label="Cancel edit" onClick={onCancelEdit}>
+            <Icon name="close" size={20} />
+          </button>
+        </div>
+      )}
+      {replyTo && !isEditing && (
         <div className="replybar">
           <div className="replytxt">
             <b dir="auto">{replyTo.from_me ? 'You' : (replyTo.sender_name ?? 'Reply')}</b>
@@ -167,7 +222,7 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
           {rec.message}
         </p>
       )}
-      {recording ? (
+      {recording && !isEditing ? (
         <RecordBar
           state={rec.state}
           seconds={rec.seconds}
@@ -196,6 +251,7 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
             if (file) onAttach?.(file)
           }}
         />
+        {!isEditing && (
         <button
           className="iconbtn attach"
           type="button"
@@ -206,7 +262,8 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
         >
           <Icon name="attach" size={22} />
         </button>
-        {onDraft && (
+        )}
+        {onDraft && !isEditing && (
           <button
             className="iconbtn draftbtn"
             type="button"
@@ -232,7 +289,11 @@ export function Composer({ replyTo, onCancelReply, onSend, onAttach, onVoice, re
           }}
           onKeyDown={onKeyDown}
         />
-        {canSend ? (
+        {isEditing ? (
+          <button className="sendbtn" type="button" aria-label="Save edit" disabled={!canSave} onClick={submit}>
+            <Icon name="check" size={22} />
+          </button>
+        ) : canSend ? (
           <button className="sendbtn" type="button" aria-label="Send" onClick={submit}>
             <Icon name="send" size={22} />
           </button>

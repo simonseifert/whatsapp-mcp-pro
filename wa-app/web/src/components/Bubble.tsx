@@ -124,6 +124,7 @@ export function Bubble({
   const classes = ['bubble', m.deleted ? 'deleted' : '', hasMedia ? 'media' : '', inline ? 'inl' : ''].filter(Boolean).join(' ')
   const metaContent = (
     <>
+      {m.starred && !m.deleted && <Icon name="star" size={12} label="Starred" />}
       {m.edited && <span>Edited</span>}
       {delivery?.state === 'sending' ? (
         <span>Sending…</span>
@@ -157,7 +158,7 @@ export function Bubble({
         {m.deleted ? (
           <div className="del">
             <Icon name="ban" size={15} />
-            Message deleted
+            {m.from_me ? 'You deleted this message' : 'Message deleted'}
           </div>
         ) : (
           <>

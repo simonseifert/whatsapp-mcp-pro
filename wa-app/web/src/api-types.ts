@@ -66,7 +66,16 @@ export type MessageView = {
   /** False for rows imported from a chat export: they have no WhatsApp message key. */
   actionable: boolean
   ticks: 'sent' | 'delivered' | 'read' | null
+  /** Starred on the phone or here. Absent on an older server. */
+  starred?: boolean
 }
+
+/** One row of the starred list: the message and the chat it is in. */
+export type StarredItem = { message: MessageView; chat_name: string; chat_jid: string }
+export type StarredResponse = { items: StarredItem[]; next: string | null }
+/** The answer to a forward: one entry per target chat, never a single yes or no. */
+export type ForwardResult = { to: string; ok: boolean; error?: string }
+
 
 export type ChatDetail = { chat: ChatSummary; members_line: string | null }
 /** `has_newer` is only sent for an `around` window: true when messages after it exist that it does not hold. */

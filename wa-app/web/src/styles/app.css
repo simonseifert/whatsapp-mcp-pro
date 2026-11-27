@@ -2467,3 +2467,48 @@ input {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* Message actions: the destructive menu item, the forward sheet's chat list and results, the starred link. */
+.menu-item.danger {
+  color: var(--danger-ink);
+}
+
+.fwd-chats,
+.fwd-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fwd-chats {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.fwd-chats .sheet-row {
+  justify-content: flex-start;
+}
+
+.fwd-chats .sheet-row span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fwd-results li {
+  padding: var(--spacing-xs) 0;
+}
+
+.starred-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  min-height: var(--spacing-touch);
+}
+
+.meta svg {
+  vertical-align: -2px;
+}

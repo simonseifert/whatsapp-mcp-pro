@@ -616,6 +616,53 @@ def routes(
     async def chat_react(request: Request) -> Response:
         return await outward(request, sending.send_reaction)
 
+    async def message_action(request: Request, work) -> Response:  # noqa: ANN001
+        body = await body_of(request)
+        jid, mid = request.path_params["jid"], request.path_params["id"]
+        try:
+            outcome = await run_in_threadpool(work, settings, conn, jid, mid, body)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
+    async def message_edit(request: Request) -> Response:
+        return await message_action(request, sending.edit_message)
+
+    async def message_revoke(request: Request) -> Response:
+        return await message_action(request, sending.revoke_message)
+
+    async def message_star(request: Request) -> Response:
+        return await message_action(request, sending.star_message)
+
+    async def forward(request: Request) -> Response:
+        body = await body_of(request)
+        try:
+            outcome = await run_in_threadpool(sending.forward_messages, settings, conn, body)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
+    async def starred(request: Request) -> Response:
+        before = request.query_params.get("before")
+        try:
+            store.parse_starred_cursor(before)
+            limit = int(request.query_params.get("limit", store.STARRED_PAGE))
+        except ValueError:
+            return _error(400, "Bad 'before' cursor")
+        limit = max(1, min(limit, store.STARRED_PAGE))
+
+        def work(ro: sqlite3.Connection) -> Response:
+            with appdb.db_lock:
+                items, nxt = store.list_starred(ro, conn, before=before, limit=limit)
+            return JSONResponse(
+                {
+                    "items": [{"message": asdict(m), "chat_name": name, "chat_jid": chat} for m, name, chat in items],
+                    "next": nxt,
+                }
+            )
+
+        return await run_in_threadpool(with_store, work)
+
     def ai_failure(exc: Exception) -> Response:
         return _error(404 if isinstance(exc, ai_config.NotFound) else 422, str(exc))
 
@@ -833,6 +880,11 @@ def routes(
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
         Route("/api/chats/{jid}/media", chat_media, methods=["POST"]),
         Route("/api/chats/{jid}/react", chat_react, methods=["POST"]),
+        Route("/api/chats/{jid}/messages/{id}/edit", message_edit, methods=["POST"]),
+        Route("/api/chats/{jid}/messages/{id}/revoke", message_revoke, methods=["POST"]),
+        Route("/api/chats/{jid}/messages/{id}/star", message_star, methods=["POST"]),
+        Route("/api/forward", forward, methods=["POST"]),
+        Route("/api/starred", starred, methods=["GET"]),
         Route("/api/ai/backends", ai_backends, methods=["GET", "PUT"]),
         Route("/api/ai/backends/{id}", ai_backend_delete, methods=["DELETE"]),
         Route("/api/ai/backends/{id}/test", ai_backend_test, methods=["POST"]),
