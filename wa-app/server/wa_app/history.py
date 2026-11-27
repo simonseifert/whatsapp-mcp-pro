@@ -152,6 +152,7 @@ _DONE_KEPT = 100
 _STATUS_MISSES = 3  # status calls in a row that fail or do not list the job before the bridge counts as gone
 _NOTHING_OLDER = "phone has nothing older"
 _NO_ANSWER = "No older messages came back. Is your phone online?"
+_EMPTY_ANSWER = "Nothing older on your phone"
 _STALLED = "Stopped making progress"
 _PAUSED = "Paused: phone not answering"
 _NO_ANSWER_LIMIT = 2  # results in a row with no answer from the phone before the rest of the queue is paused
@@ -310,10 +311,13 @@ class BackfillQueue:
             stopped_by = job.get("stopped_by") or ""
             if stopped_by == _NOTHING_OLDER:
                 if not _moved(before, oldest):
+                    answers = job.get("answers")  # missing on an old bridge: unknown, treated as no answer
+                    if isinstance(answers, int) and answers > 0:
+                        return "done", _EMPTY_ANSWER, oldest  # the phone answered, it just had nothing older
                     return "failed", _NO_ANSWER, oldest
-                return "done", stopped_by, oldest
+                return "done", "", oldest
             if stopped_by == "reached until":
-                return "done", stopped_by, oldest
+                return "done", "", oldest
             if stopped_by == "max batches":
-                return "more", stopped_by, oldest
+                return "more", "", oldest
             return "failed", str(job.get("error") or stopped_by or "the bridge stopped the backfill"), oldest

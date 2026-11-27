@@ -79,10 +79,14 @@ func (c *Client) historySenderJID(chatJID, sender string) string {
 
 // BackfillStatus reports a background history backfill for one chat.
 type BackfillStatus struct {
-	ChatJID    string    `json:"chat_jid"`
-	Until      string    `json:"until,omitempty"`
-	Running    bool      `json:"running"`
-	Batches    int       `json:"batches"`
+	ChatJID string `json:"chat_jid"`
+	Until   string `json:"until,omitempty"`
+	Running bool   `json:"running"`
+	Batches int    `json:"batches"`
+	// Answers counts ON_DEMAND history syncs that arrived for this chat while
+	// the job ran, even empty ones: it tells "the phone has nothing older"
+	// apart from "the phone is not answering".
+	Answers    int       `json:"answers"`
 	MaxBatches int       `json:"max_batches"`
 	Oldest     string    `json:"oldest,omitempty"`
 	StoppedBy  string    `json:"stopped_by,omitempty"`
@@ -124,6 +128,31 @@ func (c *Client) StartBackfill(store *database.MessageStore, chatJID string, unt
 
 	go c.runBackfill(store, job, until)
 	return snapshot, nil
+}
+
+// noteBackfillAnswer records that an ON_DEMAND history sync arrived for a chat,
+// given in any of its JID forms. It counts on the running job for that chat; if
+// none matches and exactly one job is running, that one is credited (on-demand
+// syncs only answer our own requests).
+func noteBackfillAnswer(chatJIDs ...string) {
+	backfillMu.Lock()
+	defer backfillMu.Unlock()
+	var running []*BackfillStatus
+	for _, job := range backfillJobs {
+		if !job.Running {
+			continue
+		}
+		running = append(running, job)
+		for _, jid := range chatJIDs {
+			if jid != "" && job.ChatJID == jid {
+				job.Answers++
+				return
+			}
+		}
+	}
+	if len(running) == 1 {
+		running[0].Answers++
+	}
 }
 
 // BackfillStatuses returns every backfill started since the bridge came up.

@@ -5,7 +5,7 @@ import type { HistoryDone, HistoryStatus } from '../api-types'
 const POLL_MS = 5000
 
 export const RESULT: Record<HistoryDone['result'], (detail: string) => string> = {
-  done: () => 'Done',
+  done: (detail) => (detail ? `Done: ${detail}` : 'Done'),
   more: () => 'More available, run again',
   failed: (detail) => (detail ? `Failed: ${detail}` : 'Failed'),
   skipped: (detail) => (detail.startsWith('Paused') ? detail : 'Skipped: nothing to anchor on'),

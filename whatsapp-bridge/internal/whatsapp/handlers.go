@@ -330,6 +330,12 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 		// Get appropriate chat name by passing the history sync conversation directly
 		name := c.GetChatName(messageStore, jid, chatJID, conversation, "")
 
+		// An on-demand sync is the phone answering one of our history requests,
+		// even when the conversation holds no messages.
+		if historySync.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND {
+			noteBackfillAnswer(chatJID, c.NormalizeChatJID(jid).String())
+		}
+
 		messages := conversation.Messages
 		if len(messages) > 0 {
 			timestamp, ok := latestHistoryMessageTime(messages)
