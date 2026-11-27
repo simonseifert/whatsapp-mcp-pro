@@ -34,11 +34,18 @@ def _iso(julian: float | None) -> str | None:
     return datetime.fromtimestamp(round((julian - _UNIX_EPOCH_JULIAN) * 86400), UTC).isoformat()
 
 
+def _form_map(convs: list[store._Conversation]) -> dict[str, store._Conversation]:
+    return {form: conv for conv in convs for form in (conv.jid, *conv.forms)}
+
+
 def totals(ro: sqlite3.Connection) -> dict:
-    count, chats, oldest = ro.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT chat_jid), MIN(julianday(timestamp)) FROM messages"
-    ).fetchone()
-    return {"messages": count, "chats": chats, "oldest": _iso(oldest)}
+    """Stored messages, merged chats that have any (phone and LID forms count once; broadcast and newsletter JIDs
+    are left out, like in coverage()) and the earliest message."""
+    count, oldest = ro.execute("SELECT COUNT(*), MIN(julianday(timestamp)) FROM messages").fetchone()
+    forms = _form_map(store._conversations(ro))
+    stored = [r[0] for r in ro.execute("SELECT DISTINCT chat_jid FROM messages")]
+    chats = {forms[j].jid if j in forms else j for j in stored if j and not _skipped(j)}
+    return {"messages": count, "chats": len(chats), "oldest": _iso(oldest)}
 
 
 def _stats(ro: sqlite3.Connection, forms: list[str], own: str) -> list[tuple[str, int, int, float | None]]:
@@ -50,10 +57,12 @@ def _stats(ro: sqlite3.Connection, forms: list[str], own: str) -> list[tuple[str
     ).fetchall()
 
 
-def _empty_chats(ro: sqlite3.Connection, known: set[str]) -> list[tuple[str, str, str, str]]:
+def _empty_chats(
+    ro: sqlite3.Connection, convs: list[store._Conversation], known: set[str]
+) -> list[tuple[str, str, str, str]]:
     """Real chats the list leaves out because nothing is stored yet: (jid, name, kind, last_active)."""
     out = []
-    for conv in store._conversations(ro):
+    for conv in convs:
         if conv.jid in known or _skipped(conv.jid):
             continue
         last = ro.execute(
@@ -68,19 +77,21 @@ def _empty_chats(ro: sqlite3.Connection, known: set[str]) -> list[tuple[str, str
 
 
 def coverage(ro: sqlite3.Connection, appconn: sqlite3.Connection, *, limit: int = FILL_CHATS) -> list[ChatCoverage]:
-    """The `limit` most recently active chats (not archived), most recent first, with their own-text coverage."""
+    """The `limit` most recently active chats (archived ones too), most recent first, with their own-text coverage."""
     listed, _ = store.list_chats_with_count(ro, appconn, archived=None, limit=100_000)
     entries: list[tuple[str, str, str, str]] = [
         (c.jid, c.name, c.kind, c.last_message.timestamp_iso)
         for c in listed
-        if not c.archived and c.kind != "newsletter" and not _skipped(c.jid)
+        if c.kind != "newsletter" and not _skipped(c.jid)
     ]
-    entries += _empty_chats(ro, {c.jid for c in listed})
+    convs = store._conversations(ro)  # once: _forms_of would rebuild it for every chat
+    by_form = _form_map(convs)
+    entries += _empty_chats(ro, convs, {c.jid for c in listed})
     entries.sort(key=lambda e: store._sort_key(e[3]), reverse=True)
     own = store.own_text_filter(deleted_col="deleted_at" in store._columns(ro, "messages"))
     out = []
     for jid, name, kind, last_active in entries[:limit]:
-        forms = store._forms_of(ro, jid)
+        forms = by_form[jid].forms if jid in by_form else [jid]
         per_form = _stats(ro, forms, own)
         own_texts = sum(r[2] or 0 for r in per_form)
         earliest = [r[3] for r in per_form if r[3] is not None]

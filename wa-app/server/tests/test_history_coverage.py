@@ -135,3 +135,20 @@ def test_route(logged_in: TestClient) -> None:
 def test_route_needs_login(settings) -> None:
     with TestClient(create_app(settings), base_url="https://testserver") as anon:
         assert anon.get("/api/history/coverage").status_code == 401
+
+
+def test_archived_chat_is_included(conns, db) -> None:
+    _chat(db, NEW_CHAT)
+    _msgs(db, NEW_CHAT, 3, own=True)
+    db.execute("INSERT INTO chat_state (chat_jid, archived) VALUES (?, 1)", (NEW_CHAT,))
+    db.commit()
+    row = _row(history.coverage(*conns), NEW_CHAT)
+    assert row.own_texts == 3
+
+
+def test_totals_chats_match_coverage(conns, db) -> None:
+    _chat(db, "status@broadcast")
+    _msgs(db, "status@broadcast", 1, own=False)
+    db.commit()
+    ro, app = conns
+    assert history.totals(ro)["chats"] == len(history.coverage(ro, app, limit=10_000))
