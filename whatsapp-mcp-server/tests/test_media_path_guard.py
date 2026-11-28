@@ -7,11 +7,18 @@ source path is now validated in Python first, and send_file repeats the check.
 """
 
 import os
-import sys
 
 import pytest
 
 import whatsapp
+
+
+def make_symlink(link, target):
+    """Create a symlink, or skip: Windows needs admin rights or developer mode for this."""
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot create symlinks here: {exc}")
 
 
 @pytest.fixture
@@ -75,13 +82,12 @@ def test_rejects_a_sibling_dir_sharing_the_prefix(media_dirs):
         whatsapp.validate_outgoing_media_path(str(f))
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs admin or developer mode on Windows")
 def test_rejects_a_symlink_escaping_the_allowlist(media_dirs):
     allowed, outside = media_dirs
     target = outside / "secret.txt"
     target.write_text("s")
     link = allowed / "innocent.png"
-    link.symlink_to(target)
+    make_symlink(link, target)
     with pytest.raises(ValueError):
         whatsapp.validate_outgoing_media_path(str(link))
 
@@ -199,13 +205,12 @@ def test_store_rule_holds_even_with_path_check_disabled(media_dirs, monkeypatch)
         whatsapp.validate_outgoing_media_path(str(f))
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs admin or developer mode on Windows")
 def test_refuses_a_link_whose_target_looks_like_a_secret(media_dirs):
     allowed, _ = media_dirs
     target = allowed / "id_rsa"
     target.write_text("k")
     link = allowed / "cat.jpg"
-    link.symlink_to(target)
+    make_symlink(link, target)
     with pytest.raises(ValueError, match="id_rsa"):
         whatsapp.validate_outgoing_media_path(str(link))
 
@@ -318,7 +323,6 @@ def test_transcribe_audio_file_refuses_outside_the_allowlist(media_dirs, transcr
     assert transcribed == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs admin or developer mode on Windows")
 def test_transcribe_audio_file_refuses_a_symlink_escape(media_dirs, transcribed):
     import main
 
@@ -326,7 +330,7 @@ def test_transcribe_audio_file_refuses_a_symlink_escape(media_dirs, transcribed)
     target = outside / "key.ogg"
     target.write_bytes(b"OggS")
     link = allowed / "innocent.ogg"
-    link.symlink_to(target)
+    make_symlink(link, target)
 
     assert main.transcribe_audio_file(str(link))["success"] is False
     assert transcribed == []
