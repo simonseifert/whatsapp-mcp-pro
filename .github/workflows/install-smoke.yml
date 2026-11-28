@@ -85,10 +85,9 @@ jobs:
           "$RUNNER_TEMP/wactl-run.sh" setup --minimal --yes --data "$RUNNER_TEMP/wa"
           ls whatsapp-bridge/whatsapp-bridge*
 
-      # Proves the pnpm path (corepack, or the npm fallback) that setup used.
-      - name: Check pnpm
+      # Setup picks a working pnpm itself (a runner's own shim may be broken), so check its output.
+      - name: Check the web build
         run: |
-          pnpm --version || corepack pnpm --version
           ls wa-app/web/dist/index.html
 
       - name: wactl doctor (after setup)
