@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from . import appdb
+
 if TYPE_CHECKING:
     from .store import _Conversation, _State
 
@@ -39,7 +41,10 @@ class UnreadCounter:
         self.app_read: dict[str, int] = {}
         self.app_opened: dict[str, int] = {}
         try:
-            for jid, at, opened in appconn.execute("SELECT chat_jid, read_at, opened_at FROM read_state"):
+            # The shared app.db connection hands a thread another thread's rows when used unlocked.
+            with appdb.db_lock:
+                marks = appconn.execute("SELECT chat_jid, read_at, opened_at FROM read_state").fetchall()
+            for jid, at, opened in marks:
                 if at is not None:
                     self.app_read[jid] = at
                 if opened is not None:

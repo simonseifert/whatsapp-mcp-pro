@@ -160,6 +160,12 @@ def test_burst_of_8_one_call_for_last(settings) -> None:
             _insert(settings, ANA, f"B{i}", f"msg {i}")
             rig.worker.on_events([_event(ANA, f"B{i}")])
             await asyncio.sleep(0.02)
+        # The worker takes triggers one at a time: open the gate only once it has reached the last, or an earlier
+        # job could slip past its debounce and draft for a message that was already replaced.
+        await until(
+            lambda: getattr(rig.worker._jobs.get(ANA), "trigger_id", None) == "B7",
+            describe=lambda: f"jobs={ {k: v.trigger_id for k, v in rig.worker._jobs.items()} }",
+        )
         rig.sleep_gate.set()
         await rig.worker.idle()
         assert len(rig.fake.calls) == 1

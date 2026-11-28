@@ -443,8 +443,7 @@ class DraftWorker:
                 return False  # polls, contact cards, stickers, caption-less media: nothing to reply to
             if prompts._body(message, self._appconn, chat_jid) is None:  # takes db_lock itself
                 return False
-            with appdb.db_lock:  # app.db is one shared connection: never read it from a thread unlocked
-                chat = store.get_chat(ro, self._appconn, chat_jid)
+            chat = store.get_chat(ro, self._appconn, chat_jid)
             if chat is not None and chat.kind == "announcement":
                 return _i_am_admin(ro, chat_jid)
             return True

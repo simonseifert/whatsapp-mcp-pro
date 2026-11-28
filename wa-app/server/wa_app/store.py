@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from . import appdb
 from .config import Settings
 from .mcp_lib import resolve_display_names
 from .unread import NOT_POLL_VOTE, UnreadCounter
@@ -597,7 +598,8 @@ def _list_members(appconn: sqlite3.Connection, list_id: int) -> set[str]:
     """The chat JIDs stored for a list; matched against every form of a conversation, so a chat that changed form
     (phone JID to LID, a merge) stays in its lists."""
     try:
-        return {r[0] for r in appconn.execute("SELECT chat_jid FROM list_chats WHERE list_id = ?", (list_id,))}
+        with appdb.db_lock:  # the shared app.db connection: never read it unlocked from a thread
+            return {r[0] for r in appconn.execute("SELECT chat_jid FROM list_chats WHERE list_id = ?", (list_id,))}
     except sqlite3.OperationalError:  # an app db from before lists
         return set()
 
