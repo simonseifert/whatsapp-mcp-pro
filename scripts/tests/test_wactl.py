@@ -989,7 +989,8 @@ def test_run_logs_spawn_failure_without_traceback(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(wactl.signal, "signal", lambda *a: None)
     ns = argparse_ns(component="app", log=None, service=False)
     assert wactl.cmd_run(ctx, ns) == wactl.EXIT_SPAWN_FAILED
-    assert "cannot start app" in capsys.readouterr().out
+    out = capsys.readouterr()
+    assert "cannot start app" in out.out + out.err
 
 
 def test_port_conflict_for_app_and_mcp(tmp_path):
@@ -1205,3 +1206,61 @@ def test_install_stops_running_detached_process_first(tmp_path, monkeypatch, cap
     ns = argparse_ns(action="install", dry_run=True, with_mcp=False)
     wactl.cmd_service(ctx, ns)
     assert "already running (pid 55)" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ round after the fix wave
+
+
+def test_pidfile_with_spaced_marker_roundtrips():
+    marker = "Sat Nov 28 10:06:12 2026"
+    text = f"123\n{marker}\nwactl\n"
+    pid, rec = wactl.parse_pidfile(text)
+    assert pid == 123 and rec == wactl.normalize_marker(marker) == "SatNov2810:06:122026"
+    assert wactl.pid_identity_ok(rec, (marker, "python /r/scripts/wactl.py run app"))
+    assert wactl.pid_identity_ok(marker, (marker, "python /r/scripts/wactl.py run app"))
+    assert not wactl.pid_identity_ok(rec, ("Sat Nov 28 10:06:13 2026", "python wactl.py"))
+
+
+def test_write_pidfile_normalises_spaced_marker(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    (ctx.data / "run").mkdir()
+    monkeypatch.setattr(
+        wactl, "proc_info", lambda pid: (wactl.normalize_marker("Sat Nov 28 10:06:12 2026"), "x")
+    )
+    wactl.write_pidfile(ctx, "app")
+    assert len(ctx.pidfile("app").read_text().splitlines()) == 3
+    monkeypatch.setattr(wactl, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        wactl, "proc_info", lambda pid: ("Sat Nov 28 10:06:12 2026", "python /r/scripts/wactl.py run app")
+    )
+    assert wactl.read_pid(ctx, "app") == os.getpid()
+
+
+def test_old_pid_only_file_still_parses():
+    assert wactl.parse_pidfile("123") == (123, "-")
+
+
+def test_uv_exe_keeps_the_unresolved_path(tmp_path, monkeypatch):
+    real = tmp_path / "Cellar" / "uv"
+    real.parent.mkdir()
+    real.write_text("")
+    link_dir = tmp_path / "bin"
+    link_dir.mkdir()
+    link = link_dir / "uv"
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+    monkeypatch.delenv("UV", raising=False)
+    monkeypatch.setattr(wactl.shutil, "which", lambda n: str(link))
+    assert wactl.uv_exe() == str(link)
+    monkeypatch.setenv("UV", str(link))
+    assert wactl.uv_exe() == str(link)
+
+
+def test_prune_backups_ignores_folders_it_did_not_make(tmp_path):
+    root = tmp_path / "backups"
+    for n in ["20260101-000000", "20260102-000000", "notes", "keep-me"]:
+        (root / n).mkdir(parents=True)
+    assert wactl.prune_backups(root, keep=1) == [root / "20260101-000000"]
+    assert (root / "notes").is_dir() and (root / "keep-me").is_dir()

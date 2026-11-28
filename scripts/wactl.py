@@ -20,6 +20,7 @@ import json
 import os
 import platform
 import plistlib
+import posixpath
 import re
 import secrets
 import shlex
@@ -54,6 +55,7 @@ KEEP_BACKUPS = 5
 WIN_NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 WIN_DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0)
+SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)  # POSIX-only code paths use it
 WIN_CTRL_BREAK = getattr(signal, "CTRL_BREAK_EVENT", signal.SIGINT)
 BACKOFF_START, BACKOFF_MAX, BACKOFF_RESET_AFTER = 2, 60, 600
 PLACEHOLDER_KEYS = ("", "CHANGEME")
@@ -654,17 +656,21 @@ def supervise(
 def uv_exe() -> str:
     """Absolute path of uv: $UV, else PATH. systemd and launchd start us with a short PATH."""
     found = os.environ.get("UV") or shutil.which("uv")
-    return str(Path(found).resolve()) if found and os.path.exists(found) else (found or "uv")
+    # Not resolved: a Homebrew or mise shim path survives upgrades, its Cellar target does not.
+    return os.path.abspath(found) if found else "uv"
 
 
 def service_path(extra: tuple[str, ...] = ()) -> str:
     """PATH for generated services: where uv, node and claude live, plus the system bins."""
     dirs: list[str] = []
     for exe in (uv_exe(), shutil.which("node"), shutil.which("claude")):
-        if exe and os.path.isabs(exe):
+        if exe and exe.startswith("/"):
+            dirs.append(posixpath.dirname(exe))  # rendered for a POSIX target whatever the host is
+        elif exe and os.path.isabs(exe):
             dirs.append(str(Path(exe).parent))
     dirs += [*extra, "/usr/local/bin", "/usr/bin", "/bin"]
-    return os.pathsep.join(dict.fromkeys(dirs))
+    sep = ":" if dirs[0].startswith("/") else os.pathsep
+    return sep.join(dict.fromkeys(dirs))
 
 
 def component_command(ctx: Context, component: str) -> list[str]:
@@ -842,10 +848,13 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
             try:
                 self.p = popen_component(ctx, component, log_file, new_session=True)
             except OSError as exc:
-                log(
+                problem = (
                     f"wactl: cannot start {component}: {exc}. Check that the program exists and is "
                     "executable (for uv, set UV=/full/path or fix PATH), then start it again."
                 )
+                log(problem)
+                if log_file:
+                    print(problem, file=sys.stderr, flush=True)  # visible on the console too
                 return
             current["p"] = self.p
             ensure_private_dir(childfile(ctx, component).parent)
@@ -956,7 +965,7 @@ def proc_info(pid: int) -> tuple[str, str] | None:
             stat = Path(f"/proc/{pid}/stat").read_text()
             start = stat.rsplit(")", 1)[1].split()[19]  # field 22: start time in clock ticks
             cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-            return start, cmd
+            return normalize_marker(start), cmd
         if IS_WINDOWS:
             script = (
                 f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; "
@@ -964,22 +973,27 @@ def proc_info(pid: int) -> tuple[str, str] | None:
             )
             out = tool_output(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], 30)
             lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-            return (lines[0], " ".join(lines[1:])) if len(lines) >= 2 else None
+            return (normalize_marker(lines[0]), " ".join(lines[1:])) if len(lines) >= 2 else None
         start = tool_output(["ps", "-o", "lstart=", "-p", str(pid)])
         cmd = tool_output(["ps", "-o", "command=", "-p", str(pid)])
-        return (start, cmd) if start and cmd else None
+        return (normalize_marker(start), cmd) if start and cmd else None
     except (OSError, IndexError):
         return None
 
 
+def normalize_marker(marker: str) -> str:
+    """Start markers can contain spaces (macOS `ps lstart` is a date); compare them without any."""
+    return "".join(marker.split()) or "-"
+
+
 def parse_pidfile(text: str) -> tuple[int, str] | None:
     """(pid, recorded start marker or "-") from a pid file; accepts the old pid-only format."""
-    lines = text.split()
+    lines = [ln.strip() for ln in text.splitlines()]
     try:
         pid = int(lines[0])
     except (IndexError, ValueError):
         return None
-    return pid, (lines[1] if len(lines) > 2 else "-")
+    return pid, (normalize_marker(lines[1]) if len(lines) > 2 and lines[1] else "-")
 
 
 def pid_identity_ok(recorded_start: str, info: tuple[str, str]) -> bool:
@@ -987,7 +1001,7 @@ def pid_identity_ok(recorded_start: str, info: tuple[str, str]) -> bool:
     start, cmd = info
     if "wactl.py" not in cmd.lower():
         return False
-    return recorded_start == "-" or recorded_start == start
+    return recorded_start == "-" or normalize_marker(recorded_start) == normalize_marker(start)
 
 
 def write_pidfile(ctx: Context, c: str) -> None:
@@ -1083,7 +1097,7 @@ def stop_run(ctx: Context, c: str, pid: int) -> None:
     # Only a SIGKILLed supervisor can leave its child behind (a clean exit stops the child first),
     # and only a pid that still looks like our child (own session and group) may be signalled.
     if killed and child and not IS_WINDOWS and pid_alive(child) and is_own_child_group(child):
-        for sig in (signal.SIGTERM, signal.SIGKILL):
+        for sig in (signal.SIGTERM, SIGKILL):
             with contextlib.suppress(OSError):
                 os.killpg(child, sig)
             for _ in range(20):
@@ -1623,7 +1637,8 @@ def prune_backups(root: Path, keep: int = KEEP_BACKUPS) -> list[Path]:
     """Delete all but the newest `keep` backup folders (names are timestamps). Returns what was removed."""
     if not root.is_dir():
         return []
-    dirs = sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.name)
+    stamp = re.compile(r"\d{8}-\d{6}(-\d+)?")  # only folders wactl made
+    dirs = sorted((d for d in root.iterdir() if d.is_dir() and stamp.fullmatch(d.name)), key=lambda d: d.name)
     doomed = dirs[:-keep] if keep > 0 else dirs
     for d in doomed:
         shutil.rmtree(d, ignore_errors=True)
