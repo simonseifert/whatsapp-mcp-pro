@@ -490,7 +490,7 @@ def send_file(
                  digits is refused with a 400 rather than sent to whoever owns that phone number.
         media_path: The absolute path to the media file to send (image, video, document).
                  This is a path on the *server*, so it only works for files already there,
-                 inside /tmp or a MEDIA_ALLOWED_DIRS directory. Hidden paths and
+                 inside the system temp dir or a MEDIA_ALLOWED_DIRS directory. Hidden paths and
                  secret-looking files (.env, keys, *.db) are refused.
         file_content_base64: The file's bytes, base64-encoded. Use this for a local file —
                  the server cannot read your filesystem. Requires filename.
@@ -544,7 +544,7 @@ def send_audio_message(
                  no + or spaces) is treated as a phone number; a bare number that is really a LID's
                  digits is refused with a 400 rather than sent to whoever owns that phone number.
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file).
-                 Same path rules as send_file: /tmp or a MEDIA_ALLOWED_DIRS directory only.
+                 Same path rules as send_file: the system temp dir or a MEDIA_ALLOWED_DIRS directory only.
         idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
         quoted_message_id: Optional ID of a message to quote or reply to
         quoted_chat_jid: Optional chat the quoted message lives in, when it is not the recipient's chat

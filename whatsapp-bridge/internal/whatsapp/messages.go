@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -120,13 +121,30 @@ func extractMentionsFromText(text string) []string {
 }
 
 // defaultMediaDirs are the directories media may be read from when
-// MEDIA_ALLOWED_DIRS is unset: the Docker layout, /tmp (where the MCP server
-// stages base64 uploads), and the native data dir.
+// MEDIA_ALLOWED_DIRS is unset: the Docker layout, the native data dir, and the
+// temp dir (where the MCP server and wa-app stage uploads and converted audio):
+// /tmp on POSIX plus os.TempDir(), which is the per-user temp dir on macOS and
+// Windows.
 var defaultMediaDirs = []string{
 	"/app/media",
 	"/app/store",
 	"/app/whatsapp-bridge/store",
-	"/tmp",
+}
+
+// platformTempDirs returns the temp roots staged files may be read from. /tmp is
+// kept on every non-Windows OS (on Linux the live install stages there whatever
+// TMPDIR says); os.TempDir() is added so macOS (/var/folders/...) and Windows
+// (%TEMP%) uploads are accepted. allowedMediaRoots also adds the
+// symlink-resolved form of each (e.g. /private/tmp).
+func platformTempDirs() []string {
+	var dirs []string
+	if runtime.GOOS != "windows" {
+		dirs = append(dirs, "/tmp")
+	}
+	if t := os.TempDir(); t != "" && (len(dirs) == 0 || filepath.Clean(t) != dirs[0]) {
+		dirs = append(dirs, t)
+	}
+	return dirs
 }
 
 // allowedMediaDirs resolves the media allowlist. MEDIA_ALLOWED_DIRS is a
@@ -137,6 +155,7 @@ var defaultMediaDirs = []string{
 // and env changes honest.
 func allowedMediaDirs() []string {
 	dirs := append([]string{}, defaultMediaDirs...)
+	dirs = append(dirs, platformTempDirs()...)
 	for _, extra := range strings.Split(os.Getenv("MEDIA_ALLOWED_DIRS"), ",") {
 		if trimmed := strings.TrimSpace(extra); trimmed != "" {
 			dirs = append(dirs, trimmed)

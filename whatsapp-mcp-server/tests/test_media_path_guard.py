@@ -49,7 +49,7 @@ def bridge_calls(monkeypatch):
 def conversions(monkeypatch, tmp_path):
     converted: list[str] = []
 
-    def fake_convert(path):
+    def fake_convert(path, **_kw):
         converted.append(path)
         out = tmp_path / "converted.ogg"
         out.write_bytes(b"OggS")

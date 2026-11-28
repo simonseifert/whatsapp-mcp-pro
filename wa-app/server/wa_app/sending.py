@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -405,7 +406,15 @@ def safe_filename(name: str) -> str:
 
 
 class StageError(Exception):
-    """The upload could not be staged on disk (/tmp full or unwritable)."""
+    """The upload could not be staged on disk (the temp dir is full or unwritable)."""
+
+
+def temp_root() -> str:
+    """Where uploads are staged: /tmp on Linux (the bridge always allows it), else the platform temp dir.
+
+    The bridge allowlists /tmp on POSIX plus its own os.TempDir(), so this root is accepted on every OS.
+    """
+    return "/tmp" if sys.platform.startswith("linux") else tempfile.gettempdir()
 
 
 def new_stage(filename: str) -> tuple[str, str]:
@@ -414,7 +423,7 @@ def new_stage(filename: str) -> tuple[str, str]:
     The bridge names a document after the file's basename, so the file must carry the name it should show.
     """
     try:
-        directory = tempfile.mkdtemp(prefix=UPLOAD_PREFIX, dir="/tmp")
+        directory = tempfile.mkdtemp(prefix=UPLOAD_PREFIX, dir=temp_root())
     except OSError as exc:
         logger.error("no temp dir for an upload: %s", exc.strerror)
         raise StageError from exc
@@ -435,8 +444,9 @@ def sweep_stale_uploads(now: float | None = None) -> int:
     """Remove upload dirs a crash left behind: ours (this user), older than an hour. Returns how many went."""
     cutoff = (time.time() if now is None else now) - STALE_UPLOAD_SECONDS
     removed = 0
+    getuid = getattr(os, "getuid", None)  # absent on Windows, where the temp dir is already per user
     try:
-        entries = list(os.scandir("/tmp"))
+        entries = list(os.scandir(temp_root()))
     except OSError:
         return 0
     for entry in entries:
@@ -444,7 +454,7 @@ def sweep_stale_uploads(now: float | None = None) -> int:
             if not entry.name.startswith(UPLOAD_PREFIX) or entry.is_symlink() or not entry.is_dir():
                 continue
             info = entry.stat(follow_symlinks=False)
-            if info.st_uid == os.getuid() and info.st_mtime < cutoff:
+            if (getuid is None or info.st_uid == getuid()) and info.st_mtime < cutoff:
                 shutil.rmtree(entry.path, ignore_errors=True)
                 removed += 1
         except OSError:

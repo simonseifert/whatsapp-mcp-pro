@@ -582,7 +582,9 @@ def routes(
     async def chat_send(request: Request) -> Response:
         return await outward(request, sending.send_text)
 
-    uploads = asyncio.Semaphore(2)  # at most two uploads are staged at once (/tmp is RAM here); a third waits
+    uploads = asyncio.Semaphore(
+        2
+    )  # at most two uploads are staged at once (the temp dir may be RAM-backed); a third waits
 
     async def chat_media(request: Request) -> Response:
         # The body streams straight into the temp file; the middleware refuses a declared or streamed body over

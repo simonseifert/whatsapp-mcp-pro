@@ -202,6 +202,30 @@ def test_sweep_removes_only_old_own_upload_dirs() -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_stage_uses_the_platform_temp_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(sending.sys, "platform", "darwin")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    directory, path = sending.new_stage("a.pdf")
+    try:
+        assert os.path.dirname(directory) == str(tmp_path)
+        assert os.path.dirname(path) == directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_sweep_works_without_getuid(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(sending.sys, "platform", "win32")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.delattr(os, "getuid", raising=False)
+    old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=tmp_path)
+    fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=tmp_path)
+    past = time.time() - 2 * 3600
+    os.utime(old, (past, past))
+    assert sending.sweep_stale_uploads() == 1
+    assert not os.path.exists(old)
+    assert os.path.exists(fresh)
+
+
 def test_route_rejects_bad_headers(logged_in: TestClient, bridge) -> None:
     assert upload(logged_in, fx.ANA, **{"X-Client-Key": "nope"}).status_code == 422
     assert upload(logged_in, fx.ANA, **{"X-Kind": "video"}).status_code == 422
