@@ -8,6 +8,7 @@ marker get one: incoming, not system, not deleted, never an `import-` id, at mos
 """
 
 import logging
+import ntpath
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -409,12 +411,23 @@ class StageError(Exception):
     """The upload could not be staged on disk (the temp dir is full or unwritable)."""
 
 
-def temp_root() -> str:
+def temp_root(platform: str | None = None, env: Mapping[str, str] | None = None) -> str:
     """Where uploads are staged: /tmp on Linux (the bridge always allows it), else the platform temp dir.
 
-    The bridge allowlists /tmp on POSIX plus its own os.TempDir(), so this root is accepted on every OS.
+    On Windows this follows Go's GetTempPath order (TMP, TEMP, USERPROFILE) rather than Python's
+    (TEMP before TMP), so it names the directory the bridge allows. MEDIA_ALLOWED_DIRS is the override
+    for any other layout. Platform and env are parameters so every OS's logic is testable anywhere.
     """
-    return "/tmp" if sys.platform.startswith("linux") else tempfile.gettempdir()
+    platform = sys.platform if platform is None else platform
+    env = os.environ if env is None else env
+    if platform.startswith("linux"):
+        return "/tmp"
+    if platform == "win32":
+        for key in ("TMP", "TEMP", "USERPROFILE"):
+            value = env.get(key, "")
+            if ntpath.isabs(value):
+                return value
+    return tempfile.gettempdir()
 
 
 def new_stage(filename: str) -> tuple[str, str]:

@@ -8,27 +8,54 @@ import pytest
 import audio
 import whatsapp
 
+WIN_ENV = {"TMP": r"C:\Users\Me\AppData\Local\Temp", "TEMP": r"D:\scratch", "USERPROFILE": r"C:\Users\Me"}
+
 
 def test_linux_keeps_tmp(monkeypatch, tmp_path):
-    monkeypatch.setattr(whatsapp.sys, "platform", "linux")
     monkeypatch.setattr(whatsapp.tempfile, "tempdir", str(tmp_path))
-    assert whatsapp.platform_temp_dir() == "/tmp"
+    assert whatsapp.platform_temp_dir("linux", {"TMPDIR": str(tmp_path)}) == "/tmp"
 
 
-@pytest.mark.parametrize("platform", ["darwin", "win32"])
-def test_other_platforms_use_the_platform_temp_dir(monkeypatch, tmp_path, platform):
-    monkeypatch.setattr(whatsapp.sys, "platform", platform)
+def test_darwin_uses_the_platform_temp_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(whatsapp.tempfile, "tempdir", str(tmp_path))
-    assert whatsapp.platform_temp_dir() == str(tmp_path)
+    assert whatsapp.platform_temp_dir("darwin", {}) == str(tmp_path)
+
+
+def test_windows_follows_go_order_tmp_then_temp_then_userprofile():
+    assert whatsapp.platform_temp_dir("win32", WIN_ENV) == WIN_ENV["TMP"]
+    assert whatsapp.platform_temp_dir("win32", {"TEMP": WIN_ENV["TEMP"], "USERPROFILE": "C:\\u"}) == WIN_ENV["TEMP"]
+    assert whatsapp.platform_temp_dir("win32", {"USERPROFILE": r"C:\Users\Me"}) == r"C:\Users\Me"
+    assert whatsapp.platform_temp_dir("win32", {"TMP": "relative"}) == whatsapp.tempfile.gettempdir()
 
 
 def test_default_dirs_per_platform():
-    assert "/tmp" in whatsapp.default_media_dirs("/var/folders/x/T", "darwin")
-    assert "/var/folders/x/T" in whatsapp.default_media_dirs("/var/folders/x/T", "darwin")
-    win = whatsapp.default_media_dirs(r"C:\Temp", "win32")
+    linux = whatsapp.default_media_dirs("/var/tmp/x", "linux", {})
+    assert "/tmp" in linux
+    assert "/var/tmp/x" not in linux  # a stray TMPDIR never widens the Linux list
+    darwin = whatsapp.default_media_dirs("/var/folders/x/T", "darwin", {})
+    assert "/tmp" in darwin
+    assert "/var/folders/x/T" in darwin
+    win = whatsapp.default_media_dirs(WIN_ENV["TMP"], "win32", WIN_ENV)
     assert "/tmp" not in win
-    assert r"C:\Temp" in win
-    assert whatsapp.default_media_dirs("/tmp", "linux").count("/tmp") == 1
+    assert WIN_ENV["TMP"] in win
+    assert WIN_ENV["TEMP"] in win
+    assert len([d for d in win if d.lower() == WIN_ENV["TMP"].lower()]) == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "root", "platform", "expected"),
+    [
+        (r"C:\Users\ME\AppData\Local\TEMP\a.ogg", r"c:\users\me\appdata\local\temp", "win32", True),
+        ("c:/users/me/appdata/local/temp/a.ogg", r"C:\Users\Me\AppData\Local\Temp\\", "win32", True),
+        (r"C:\Users\Me\AppData\Local\Temp-evil\a.ogg", r"C:\Users\Me\AppData\Local\Temp", "win32", False),
+        (r"D:\Users\Me\AppData\Local\Temp\a.ogg", r"C:\Users\Me\AppData\Local\Temp", "win32", False),
+        ("/tmp/a.ogg", "/tmp", "linux", True),
+        ("/TMP/a.ogg", "/tmp", "linux", False),
+        ("/tmproot/a.ogg", "/tmp", "linux", False),
+    ],
+)
+def test_path_inside(path, root, platform, expected):
+    assert whatsapp.path_inside(path, root, platform) is expected
 
 
 def test_allowlist_accepts_platform_temp_and_refuses_sibling(monkeypatch, tmp_path):
@@ -36,7 +63,9 @@ def test_allowlist_accepts_platform_temp_and_refuses_sibling(monkeypatch, tmp_pa
     sibling = tmp_path / "T-evil"
     temp.mkdir()
     sibling.mkdir()
-    monkeypatch.setattr(whatsapp, "BRIDGE_DEFAULT_MEDIA_DIRS", whatsapp.default_media_dirs(str(temp), "win32"))
+    monkeypatch.setattr(
+        whatsapp, "BRIDGE_DEFAULT_MEDIA_DIRS", whatsapp.default_media_dirs(str(temp), "linux", {})[:3] + (str(temp),)
+    )
     monkeypatch.delenv("MEDIA_ALLOWED_DIRS", raising=False)
     monkeypatch.delenv("DISABLE_PATH_CHECK", raising=False)
     inside = temp / "voice.ogg"
@@ -74,7 +103,7 @@ def test_missing_ffmpeg_names_the_install_command(monkeypatch, tmp_path, platfor
         raise FileNotFoundError("ffmpeg")
 
     monkeypatch.setattr(audio.subprocess, "run", boom)
-    monkeypatch.setattr(audio.sys, "platform", platform)
+    monkeypatch.setattr(audio, "_platform", lambda: platform)
     with pytest.raises(RuntimeError, match="ffmpeg is not installed") as err:
         audio.convert_to_opus_ogg(str(src), str(tmp_path / "o.ogg"))
     assert command in str(err.value)

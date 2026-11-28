@@ -131,20 +131,85 @@ var defaultMediaDirs = []string{
 	"/app/whatsapp-bridge/store",
 }
 
-// platformTempDirs returns the temp roots staged files may be read from. /tmp is
-// kept on every non-Windows OS (on Linux the live install stages there whatever
-// TMPDIR says); os.TempDir() is added so macOS (/var/folders/...) and Windows
-// (%TEMP%) uploads are accepted. allowedMediaRoots also adds the
-// symlink-resolved form of each (e.g. /private/tmp).
-func platformTempDirs() []string {
+// platformTempDirs returns the temp roots staged files may be read from, for
+// one OS. MEDIA_ALLOWED_DIRS remains the override for anything else.
+//
+//   - linux: exactly /tmp, as before. os.TempDir() (TMPDIR) is deliberately not
+//     added, so a stray TMPDIR cannot widen the allowlist.
+//   - darwin and other non-windows: /tmp plus os.TempDir() when absolute
+//     (/var/folders/..., resolved later to /private/var/...).
+//   - windows: os.TempDir() plus the TMP and TEMP values (Go uses TMP, TEMP,
+//     USERPROFILE; Python tries TEMP before TMP, so both are allowed), when
+//     absolute. /tmp is not a Windows path.
+func platformTempDirs(goos, osTemp string, getenv func(string) string) []string {
 	var dirs []string
-	if runtime.GOOS != "windows" {
-		dirs = append(dirs, "/tmp")
+	add := func(d string) {
+		if !isAbsFor(goos, d) {
+			return
+		}
+		for _, have := range dirs {
+			if samePathFor(goos, have, d) {
+				return
+			}
+		}
+		dirs = append(dirs, d)
 	}
-	if t := os.TempDir(); t != "" && (len(dirs) == 0 || filepath.Clean(t) != dirs[0]) {
-		dirs = append(dirs, t)
+	switch goos {
+	case "linux":
+		add("/tmp")
+	case "windows":
+		add(osTemp)
+		add(getenv("TMP"))
+		add(getenv("TEMP"))
+	default:
+		add("/tmp")
+		add(osTemp)
 	}
 	return dirs
+}
+
+// isAbsFor reports whether p is absolute under goos's rules, whatever OS this
+// runs on, so the Windows logic is testable everywhere.
+func isAbsFor(goos, p string) bool {
+	if goos == "windows" {
+		if strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, "//") {
+			return true
+		}
+		return len(p) >= 3 && ((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')) &&
+			p[1] == ':' && (p[2] == '\\' || p[2] == '/')
+	}
+	return strings.HasPrefix(p, "/")
+}
+
+// normPathFor normalises p for comparison: on Windows separators are unified
+// and case is folded (NTFS is case-insensitive); elsewhere only cleaned.
+func normPathFor(goos, p string) string {
+	if goos != "windows" {
+		return filepath.Clean(p)
+	}
+	p = strings.ReplaceAll(p, "/", `\`)
+	for strings.Contains(p[1:], `\\`) { // keep a leading UNC prefix
+		p = p[:1] + strings.ReplaceAll(p[1:], `\\`, `\`)
+	}
+	if len(p) > 3 {
+		p = strings.TrimSuffix(p, `\`)
+	}
+	return strings.ToLower(p)
+}
+
+func samePathFor(goos, a, b string) bool {
+	return normPathFor(goos, a) == normPathFor(goos, b)
+}
+
+// pathInsideFor reports whether p is root or lies below it, on path-segment
+// boundaries (so /tmpfoo is not inside /tmp), with Windows folding applied.
+func pathInsideFor(goos, p, root string) bool {
+	sep := "/"
+	if goos == "windows" {
+		sep = `\`
+	}
+	np, nr := normPathFor(goos, p), normPathFor(goos, root)
+	return np == nr || strings.HasPrefix(np, strings.TrimSuffix(nr, sep)+sep)
 }
 
 // allowedMediaDirs resolves the media allowlist. MEDIA_ALLOWED_DIRS is a
@@ -155,7 +220,7 @@ func platformTempDirs() []string {
 // and env changes honest.
 func allowedMediaDirs() []string {
 	dirs := append([]string{}, defaultMediaDirs...)
-	dirs = append(dirs, platformTempDirs()...)
+	dirs = append(dirs, platformTempDirs(runtime.GOOS, os.TempDir(), os.Getenv)...)
 	for _, extra := range strings.Split(os.Getenv("MEDIA_ALLOWED_DIRS"), ",") {
 		if trimmed := strings.TrimSpace(extra); trimmed != "" {
 			dirs = append(dirs, trimmed)
@@ -242,11 +307,9 @@ func allowedMediaRoots() []string {
 // /tmpfoo is not inside /tmp. Most specific wins so that a data dir listed
 // below a broad home dir decides which segments count as "inside" it.
 func longestContainingRoot(p string, roots []string) string {
-	sep := string(os.PathSeparator)
 	best := ""
 	for _, root := range roots {
-		inside := p == root || strings.HasPrefix(p, strings.TrimSuffix(root, sep)+sep)
-		if inside && len(root) > len(best) {
+		if pathInsideFor(runtime.GOOS, p, root) && len(root) > len(best) {
 			best = root
 		}
 	}

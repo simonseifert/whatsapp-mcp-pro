@@ -203,8 +203,7 @@ def test_sweep_removes_only_old_own_upload_dirs() -> None:
 
 
 def test_stage_uses_the_platform_temp_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setattr(sending.sys, "platform", "darwin")
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(sending, "temp_root", lambda: str(tmp_path))
     directory, path = sending.new_stage("a.pdf")
     try:
         assert os.path.dirname(directory) == str(tmp_path)
@@ -213,9 +212,24 @@ def test_stage_uses_the_platform_temp_dir(monkeypatch: pytest.MonkeyPatch, tmp_p
         shutil.rmtree(directory, ignore_errors=True)
 
 
-def test_sweep_works_without_getuid(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setattr(sending.sys, "platform", "win32")
+WIN_ENV = {"TMP": r"C:\Users\Me\AppData\Local\Temp", "TEMP": r"D:\scratch", "USERPROFILE": r"C:\Users\Me"}
+
+
+def test_temp_root_per_platform(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    assert sending.temp_root("linux", {"TMPDIR": str(tmp_path)}) == "/tmp"
+    assert sending.temp_root("darwin", {}) == str(tmp_path)
+    # Go's order on Windows: TMP, TEMP, USERPROFILE (Python alone would try TEMP first).
+    assert sending.temp_root("win32", WIN_ENV) == WIN_ENV["TMP"]
+    assert (
+        sending.temp_root("win32", {"TEMP": WIN_ENV["TEMP"], "USERPROFILE": WIN_ENV["USERPROFILE"]}) == WIN_ENV["TEMP"]
+    )
+    assert sending.temp_root("win32", {"USERPROFILE": WIN_ENV["USERPROFILE"]}) == WIN_ENV["USERPROFILE"]
+    assert sending.temp_root("win32", {"TMP": "relative"}) == str(tmp_path)
+
+
+def test_sweep_works_without_getuid(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(sending, "temp_root", lambda: str(tmp_path))
     monkeypatch.delattr(os, "getuid", raising=False)
     old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=tmp_path)
     fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=tmp_path)

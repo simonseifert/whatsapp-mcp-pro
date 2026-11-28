@@ -19,6 +19,9 @@ func setTempDir(t *testing.T, dir string) {
 }
 
 func TestValidateMediaPath_PlatformTempDir(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("linux allows exactly /tmp, not os.TempDir(); see TestValidateMediaPath_LinuxIgnoresTMPDIR")
+	}
 	_ = os.Unsetenv("DISABLE_PATH_CHECK")
 	t.Setenv("MEDIA_ALLOWED_DIRS", "")
 
@@ -57,6 +60,9 @@ func TestValidateMediaPath_PlatformTempDir(t *testing.T) {
 }
 
 func TestValidateMediaPath_TempDirViaSymlink(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("linux allows exactly /tmp, not os.TempDir(); see TestValidateMediaPath_LinuxIgnoresTMPDIR")
+	}
 	_ = os.Unsetenv("DISABLE_PATH_CHECK")
 	t.Setenv("MEDIA_ALLOWED_DIRS", "")
 
@@ -88,24 +94,83 @@ func TestValidateMediaPath_TempDirViaSymlink(t *testing.T) {
 	}
 }
 
-func TestPlatformTempDirs_KeepsTmpOnPosix(t *testing.T) {
-	setTempDir(t, t.TempDir())
-	dirs := platformTempDirs()
-	has := func(want string) bool {
-		for _, d := range dirs {
-			if d == want {
-				return true
-			}
+func envOf(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+func TestPlatformTempDirs_LinuxIsExactlyTmp(t *testing.T) {
+	got := platformTempDirs("linux", "/var/tmp/x", envOf(map[string]string{"TMP": "/elsewhere"}))
+	if len(got) != 1 || got[0] != "/tmp" {
+		t.Errorf("linux must allow exactly /tmp even when TMPDIR differs, got %v", got)
+	}
+}
+
+func TestPlatformTempDirs_Darwin(t *testing.T) {
+	got := platformTempDirs("darwin", "/var/folders/ab/T/", envOf(nil))
+	want := []string{"/tmp", "/var/folders/ab/T/"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("got %v want %v", got, want)
+	}
+	if got := platformTempDirs("darwin", "relative/T", envOf(nil)); len(got) != 1 || got[0] != "/tmp" {
+		t.Errorf("a relative os.TempDir() must be ignored, got %v", got)
+	}
+}
+
+func TestPlatformTempDirs_Windows(t *testing.T) {
+	env := envOf(map[string]string{"TMP": `C:\Users\Me\AppData\Local\Temp`, "TEMP": `D:\scratch`})
+	got := platformTempDirs("windows", `c:\users\me\appdata\local\temp`, env)
+	if len(got) != 2 {
+		t.Fatalf("want os.TempDir (deduped with TMP) plus TEMP, got %v", got)
+	}
+	for _, d := range got {
+		if d == "/tmp" {
+			t.Errorf("/tmp is not a Windows path: %v", got)
 		}
-		return false
 	}
-	if runtime.GOOS != "windows" && !has("/tmp") {
-		t.Errorf("/tmp must stay allowed on POSIX even when TMPDIR differs, got %v", dirs)
+	if got := platformTempDirs("windows", "", envOf(map[string]string{"TMP": "rel"})); len(got) != 0 {
+		t.Errorf("non-absolute values must be ignored, got %v", got)
 	}
-	if runtime.GOOS == "windows" && has("/tmp") {
-		t.Errorf("/tmp is not a Windows path, got %v", dirs)
+}
+
+func TestPathInsideFor(t *testing.T) {
+	tests := []struct {
+		goos, p, root string
+		want          bool
+	}{
+		{"windows", `C:\Users\ME\AppData\Local\Temp\a.ogg`, `c:\users\me\appdata\local\temp`, true},
+		{"windows", `c:/users/me/appdata/local/temp/a.ogg`, `C:\Users\Me\AppData\Local\Temp\`, true},
+		{"windows", `C:\Users\Me\AppData\Local\Temp`, `C:\Users\Me\AppData\Local\Temp`, true},
+		{"windows", `C:\Users\Me\AppData\Local\Temp-evil\a.ogg`, `C:\Users\Me\AppData\Local\Temp`, false},
+		{"windows", `D:\Users\Me\AppData\Local\Temp\a.ogg`, `C:\Users\Me\AppData\Local\Temp`, false},
+		{"linux", "/tmp/a.ogg", "/tmp", true},
+		{"linux", "/TMP/a.ogg", "/tmp", false}, // case matters off Windows
+		{"linux", "/tmpfoo/a.ogg", "/tmp", false},
 	}
-	if !has(os.TempDir()) {
-		t.Errorf("os.TempDir() %q missing from %v", os.TempDir(), dirs)
+	for _, tt := range tests {
+		if got := pathInsideFor(tt.goos, tt.p, tt.root); got != tt.want {
+			t.Errorf("pathInsideFor(%s, %q, %q) = %v, want %v", tt.goos, tt.p, tt.root, got, tt.want)
+		}
+	}
+}
+
+func TestValidateMediaPath_LinuxIgnoresTMPDIR(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux only")
+	}
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
+	t.Setenv("MEDIA_ALLOWED_DIRS", "")
+	base, err := os.MkdirTemp(".", "tmpdir_")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	base, _ = filepath.Abs(base)
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	f := filepath.Join(base, "a.ogg")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	setTempDir(t, base)
+	if err := validateMediaPath(f); err == nil {
+		t.Errorf("TMPDIR must not widen the linux allowlist, but %s was allowed", f)
 	}
 }

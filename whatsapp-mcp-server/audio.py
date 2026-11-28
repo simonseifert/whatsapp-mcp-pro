@@ -10,9 +10,13 @@ FFMPEG_INSTALL_HINTS = {
 }
 
 
+def _platform():
+    return sys.platform
+
+
 def ffmpeg_install_hint(platform=None):
     """The install command for ffmpeg on this OS (Debian/Ubuntu is assumed for other Unixes)."""
-    platform = sys.platform if platform is None else platform
+    platform = _platform() if platform is None else platform
     if platform.startswith("linux"):
         return FFMPEG_INSTALL_HINTS["linux"]
     return FFMPEG_INSTALL_HINTS.get(platform, FFMPEG_INSTALL_HINTS["linux"])

@@ -2,14 +2,17 @@ import base64
 import binascii
 import fnmatch
 import json
+import ntpath
 import os
 import os.path
+import posixpath
 import re
 import shutil
 import sqlite3
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,24 +63,63 @@ BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
 
 
-def platform_temp_dir() -> str:
+def platform_temp_dir(platform: str | None = None, env: Mapping[str, str] | None = None) -> str:
     """The temp root shared with the bridge: /tmp on Linux, else the platform temp dir.
 
     Base64 uploads and converted audio are staged here for the bridge to read.
-    The bridge allows /tmp on POSIX plus its own os.TempDir() (resolved for
-    symlinks such as macOS /private/tmp), so this root is accepted on every OS.
+    On Windows this follows Go's GetTempPath order (TMP, TEMP, USERPROFILE), not
+    Python's (TEMP before TMP), so both sides name the same directory; the bridge
+    also allows both TMP and TEMP. MEDIA_ALLOWED_DIRS is the override for any other
+    layout. Platform and env are parameters so every OS's logic is testable anywhere.
     """
-    return "/tmp" if sys.platform.startswith("linux") else tempfile.gettempdir()
+    platform = sys.platform if platform is None else platform
+    env = os.environ if env is None else env
+    if platform.startswith("linux"):
+        return "/tmp"
+    if platform == "win32":
+        for key in ("TMP", "TEMP", "USERPROFILE"):
+            value = env.get(key, "")
+            if ntpath.isabs(value):
+                return value
+    return tempfile.gettempdir()
 
 
-def default_media_dirs(temp_dir: str, platform: str = sys.platform) -> tuple[str, ...]:
-    """Mirrors defaultMediaDirs in whatsapp-bridge/internal/whatsapp/messages.go for one OS."""
+def default_media_dirs(
+    temp_dir: str, platform: str | None = None, env: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
+    """Mirrors defaultMediaDirs + platformTempDirs in whatsapp-bridge/internal/whatsapp/messages.go.
+
+    Linux allows exactly /tmp. Other POSIX adds the temp dir; Windows has no /tmp
+    and allows the temp dir plus TMP and TEMP.
+    """
+    platform = sys.platform if platform is None else platform
+    env = os.environ if env is None else env
     dirs = ["/app/media", "/app/store", "/app/whatsapp-bridge/store"]
-    if platform != "win32":
-        dirs.append("/tmp")
-    if temp_dir not in dirs:
-        dirs.append(temp_dir)
+    extra: list[str] = []
+    if platform.startswith("linux"):
+        extra = ["/tmp"]
+    elif platform == "win32":
+        extra = [temp_dir, env.get("TMP", ""), env.get("TEMP", "")]
+    else:
+        extra = ["/tmp", temp_dir]
+    isabs = ntpath.isabs if platform == "win32" else posixpath.isabs
+    for d in extra:
+        if isabs(d) and all(_norm_path(d, platform) != _norm_path(have, platform) for have in dirs):
+            dirs.append(d)
     return tuple(dirs)
+
+
+def _norm_path(path: str, platform: str) -> str:
+    mod = ntpath if platform == "win32" else posixpath
+    return mod.normcase(mod.normpath(path))
+
+
+def path_inside(path: str, root: str, platform: str | None = None) -> bool:
+    """Whether path is root or below it on path-segment boundaries; Windows folds case and separators."""
+    platform = sys.platform if platform is None else platform
+    sep = "\\" if platform == "win32" else "/"
+    p, r = _norm_path(path, platform), _norm_path(root, platform)
+    return p == r or p.startswith(r.rstrip(sep) + sep)
 
 
 # Where base64 uploads are staged for the bridge to read. Must stay inside the
@@ -191,8 +233,8 @@ def validate_outgoing_media_path(media_path: str) -> str:
 
     for allowed in _allowed_media_dirs():
         root = os.path.realpath(os.path.abspath(allowed))
-        # Path-segment match, so /tmproot is not inside /tmp.
-        if resolved != root and not resolved.startswith(root.rstrip(os.sep) + os.sep):
+        # Path-segment match, so /tmproot is not inside /tmp; case-folded on Windows.
+        if not path_inside(resolved, root):
             continue
         # Hidden segments are judged below the allowed root only: an operator
         # who allowlists a dotted directory meant it, but ~/Code being allowed
