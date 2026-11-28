@@ -2,3 +2,7 @@
 # migration files byte for byte against the Go mirrors.
 *.sql text eol=lf
 *.go text eol=lf
+# Launchers must keep their line endings or they stop running: sh needs LF, cmd needs CRLF.
+wactl text eol=lf
+*.cmd text eol=crlf
+*.sh text eol=lf
