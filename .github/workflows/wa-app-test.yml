@@ -33,7 +33,7 @@ jobs:
         run: |
           uv sync
           # A hang fails fast with a traceback of every thread instead of eating the job's whole time.
-          uv run pytest -q --timeout=120 --timeout-method=thread -o faulthandler_timeout=150
+          uv run pytest -q --timeout=120 --timeout-method=thread -o faulthandler_timeout=150 --durations=10
 
   web:
     runs-on: ${{ matrix.os }}

@@ -320,6 +320,7 @@ def test_kill_tree_posix_uses_process_group(monkeypatch: pytest.MonkeyPatch) -> 
     seen: list[tuple[int, int]] = []
     sigkill = getattr(backends.signal, "SIGKILL", 9)
     monkeypatch.setattr(backends.os, "killpg", lambda pid, sig: seen.append((pid, sig)), raising=False)
+    monkeypatch.setattr(backends.signal, "SIGKILL", sigkill, raising=False)  # absent on Windows
     plain: list[str] = []
     _run(backends._kill_tree(4242, lambda: plain.append("kill"), "linux"))
     assert seen == [(4242, sigkill)]

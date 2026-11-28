@@ -42,6 +42,7 @@ def test_wa_app_data_expands_a_tilde(monkeypatch, tmp_path):
     from wa_app import config
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser reads this on Windows
     monkeypatch.setenv("WA_APP_DATA", "~/wa-data")
     monkeypatch.setenv("WA_STORE_PATH", str(tmp_path / "store"))
     assert config.load().data_dir == tmp_path / "wa-data"
