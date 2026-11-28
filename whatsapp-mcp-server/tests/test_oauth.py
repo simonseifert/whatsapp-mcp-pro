@@ -12,6 +12,7 @@ import os
 import secrets
 import sqlite3
 import stat
+import sys
 import time
 from collections import deque
 from dataclasses import replace
@@ -246,6 +247,9 @@ def test_oauth_routes_enforce_host_allowlist(cfg):
         assert c.get("/.well-known/oauth-authorization-server").status_code == 421
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no POSIX mode bits; the file relies on the user profile ACL"
+)
 def test_store_file_is_private(cfg):
     with _client(cfg):
         pass
@@ -1016,3 +1020,11 @@ def test_a_full_pending_table_evicts_the_oldest_instead_of_refusing(cfg):
     assert len(rows) == oauth.MAX_PENDING
     assert "live0" not in {x[0] for x in rows}  # the oldest went
     assert client_id in {x[1] for x in rows}
+
+
+def test_request_ids_never_start_with_a_dash(monkeypatch):
+    from lib import oauth as oauth_mod
+
+    tokens = iter(["-starts-with-dash", "fine-token"])
+    monkeypatch.setattr(oauth_mod.secrets, "token_urlsafe", lambda n: next(tokens))
+    assert oauth_mod._cli_safe_token(24) == "fine-token"

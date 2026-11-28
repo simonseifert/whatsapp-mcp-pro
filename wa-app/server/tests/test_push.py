@@ -1,5 +1,6 @@
 import sqlite3
 import stat
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
@@ -130,6 +131,9 @@ def test_key_with_subject(push_settings: Settings) -> None:
         assert len(key) == 87 and "=" not in key  # 65-byte uncompressed point, URL-safe base64 unpadded
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no POSIX mode bits; the file relies on the user profile ACL"
+)
 def test_vapid_file_is_0600(push_settings: Settings) -> None:
     path, public = push.vapid_keys(push_settings)
     assert path.endswith("vapid.pem")

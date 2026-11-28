@@ -6,7 +6,9 @@ import threading
 from .config import Settings
 
 # app.db is one shared connection used from the event loop and from worker threads: take this around its use there.
-db_lock = threading.Lock()
+# Reentrant, so a function that locks for itself (the readers in store and unread do) can be called by one that
+# already holds it.
+db_lock = threading.RLock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

@@ -157,6 +157,14 @@ def default_db_path() -> str:
     return os.path.join(os.path.dirname(store_dir), "oauth.db")
 
 
+def _cli_safe_token(nbytes: int) -> str:
+    """A url-safe token that never starts with "-", so `python -m lib.oauth approve <id>` can't read it as an option."""
+    while True:
+        token = secrets.token_urlsafe(nbytes)
+        if not token.startswith("-"):
+            return token
+
+
 @dataclass(frozen=True)
 class OAuthConfig:
     """Validated OAuth settings. Build with `OAuthConfig.from_env`."""
@@ -717,7 +725,7 @@ class WAOAuthProvider:
         if not offered:
             raise AuthorizeError("invalid_scope", f"client is registered for none of {ALL_SCOPES}")
         self._sweep()
-        req_id = secrets.token_urlsafe(24)
+        req_id = _cli_safe_token(24)
         nonce = secrets.token_urlsafe(32)
         self.store.add_pending(
             req_id,

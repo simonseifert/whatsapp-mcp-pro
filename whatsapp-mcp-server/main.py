@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -490,7 +491,7 @@ def send_file(
                  digits is refused with a 400 rather than sent to whoever owns that phone number.
         media_path: The absolute path to the media file to send (image, video, document).
                  This is a path on the *server*, so it only works for files already there,
-                 inside /tmp or a MEDIA_ALLOWED_DIRS directory. Hidden paths and
+                 inside the system temp dir or a MEDIA_ALLOWED_DIRS directory. Hidden paths and
                  secret-looking files (.env, keys, *.db) are refused.
         file_content_base64: The file's bytes, base64-encoded. Use this for a local file —
                  the server cannot read your filesystem. Requires filename.
@@ -544,7 +545,7 @@ def send_audio_message(
                  no + or spaces) is treated as a phone number; a bare number that is really a LID's
                  digits is refused with a 400 rather than sent to whoever owns that phone number.
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file).
-                 Same path rules as send_file: /tmp or a MEDIA_ALLOWED_DIRS directory only.
+                 Same path rules as send_file: the system temp dir or a MEDIA_ALLOWED_DIRS directory only.
         idempotency_key: Optional dedupe key; a fresh random key per call when omitted (see above)
         quoted_message_id: Optional ID of a message to quote or reply to
         quoted_chat_jid: Optional chat the quoted message lives in, when it is not the recipient's chat
@@ -1314,6 +1315,25 @@ from lib.recall import recall as _recall  # noqa: E402
 _INBOX_LOCK = threading.Lock()
 
 
+def _replace_with_retry(src: str, dst: str, *, platform: str | None = None, attempts: int = 10) -> None:
+    """os.replace, retried on Windows.
+
+    There a replace fails with PermissionError (a sharing violation) while any
+    other thread or process has the destination open, even just to read it.
+    The window is a few milliseconds, so a short backoff gets through. POSIX
+    replaces atomically regardless and never retries.
+    """
+    retry = (platform or sys.platform) == "win32"
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not retry or attempt == attempts - 1:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def _load_inbox_state(cursor_file: str) -> dict[str, int]:
     """Read the cursor file. Missing -> {}; corrupt -> moved aside, warned, {}.
 
@@ -1332,7 +1352,7 @@ def _load_inbox_state(cursor_file: str) -> dict[str, int]:
     except (ValueError, TypeError) as exc:
         aside = f"{cursor_file}.corrupt-{int(time.time())}"
         try:
-            os.replace(cursor_file, aside)
+            _replace_with_retry(cursor_file, aside)
         except OSError:
             aside = "(could not move it aside)"
         logger.warning(f"Inbox cursor file {cursor_file} is unreadable ({exc}); saved as {aside}, starting fresh")
@@ -1351,7 +1371,7 @@ def _save_inbox_state(cursor_file: str, state: dict[str, int]) -> None:
             json.dump(state, fh)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, cursor_file)
+        _replace_with_retry(tmp, cursor_file)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

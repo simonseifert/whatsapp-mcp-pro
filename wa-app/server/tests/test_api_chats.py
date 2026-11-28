@@ -1,6 +1,8 @@
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 
+import pytest
 from starlette.testclient import TestClient
 
 from tests import conftest as fx
@@ -37,6 +39,9 @@ def test_bad_filter_is_400(logged_in: TestClient) -> None:
     assert logged_in.get("/api/chats", params={"filter": "nope"}).status_code == 400
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows cannot delete the store database while the app holds it open"
+)
 def test_missing_store_is_503(logged_in: TestClient, settings) -> None:
     (settings.store_path / "messages.db").unlink()
     assert logged_in.get("/api/chats").status_code == 503

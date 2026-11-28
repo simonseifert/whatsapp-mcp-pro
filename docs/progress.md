@@ -37,3 +37,15 @@ Plan: docs/superpowers/plans/2026-11-25-wa-app-m3a-notify-and-send.md. Branch fe
 for every incoming message, captions and quotes across chats in the bridge and MCP layer, sending photos and files,
 recording and sending voice notes, and private reply. Live checks are pending: a photo, a file, a voice note, a private
 reply and a day of real notifications. Results go in docs/reviews/milestone-3a.md.
+
+# Cross-platform install progress
+
+Plan: docs/superpowers/plans/2026-11-28-cross-platform-install.md. Branch feat/xplat.
+
+2026-11-28: install and update on Linux, macOS and Windows. One temp folder rule per OS and POSIX-only calls removed;
+CI matrix on three systems plus an install smoke test; `wactl` (doctor, setup, pair, run, service install, update,
+logs) with reviewed fix rounds; Getting started card in wa-app Settings; README Quickstart, SETUP.md (Windows notes,
+Updating), wa-app README and DECISIONS D28. wa-app is past M1: M2 drafts, M3a notifications, media, voice and private
+reply, and M3b search, lists, actions and quick replies are in the code. Open: real launchd and Task Scheduler runs
+(CI only renders them), and a first install by someone on macOS and one on Windows.
+

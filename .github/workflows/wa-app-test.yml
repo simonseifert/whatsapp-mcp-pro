@@ -1,0 +1,60 @@
+name: wa-app Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wa-app/**'
+      - '.github/workflows/wa-app-test.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'wa-app/**'
+      - '.github/workflows/wa-app-test.yml'
+
+jobs:
+  server:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Server tests
+        working-directory: wa-app/server
+        shell: bash
+        run: |
+          uv sync
+          # A hang fails fast with a traceback of every thread instead of eating the job's whole time.
+          uv run pytest -q --timeout=120 --timeout-method=thread -o faulthandler_timeout=150 --durations=10
+
+  web:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Web tests and build
+        working-directory: wa-app/web
+        shell: bash
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm build

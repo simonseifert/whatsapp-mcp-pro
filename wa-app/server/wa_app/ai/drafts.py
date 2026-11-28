@@ -17,8 +17,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sqlite3
 import time
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -285,7 +287,10 @@ class DraftWorker:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.error("draft trigger failed (%s)", type(exc).__name__)
+                    # Type and code location only: the message text must not reach the log.
+                    tb = traceback.extract_tb(exc.__traceback__)
+                    where = f"{os.path.basename(tb[-1].filename)}:{tb[-1].lineno}" if tb else "?"
+                    logger.error("draft trigger failed (%s at %s)", type(exc).__name__, where)
                 finally:
                     self._consuming = False
         finally:
@@ -436,7 +441,7 @@ class DraftWorker:
                 return False
             if not _triggers_draft(message):
                 return False  # polls, contact cards, stickers, caption-less media: nothing to reply to
-            if prompts._body(message, self._appconn, chat_jid) is None:
+            if prompts._body(message, self._appconn, chat_jid) is None:  # takes db_lock itself
                 return False
             chat = store.get_chat(ro, self._appconn, chat_jid)
             if chat is not None and chat.kind == "announcement":

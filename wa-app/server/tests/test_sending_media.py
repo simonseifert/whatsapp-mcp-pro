@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from urllib.parse import quote
@@ -187,9 +188,10 @@ def test_mkdtemp_failure_is_a_mapped_failure(logged_in: TestClient, bridge, monk
 
 
 def test_sweep_removes_only_old_own_upload_dirs() -> None:
-    old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir="/tmp")
-    fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir="/tmp")
-    other = tempfile.mkdtemp(prefix="keep-me-", dir="/tmp")
+    root = sending.temp_root()
+    old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=root)
+    fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=root)
+    other = tempfile.mkdtemp(prefix="keep-me-", dir=root)
     try:
         past = time.time() - 2 * 3600
         os.utime(old, (past, past))
@@ -200,6 +202,44 @@ def test_sweep_removes_only_old_own_upload_dirs() -> None:
     finally:
         for d in (old, fresh, other):
             shutil.rmtree(d, ignore_errors=True)
+
+
+def test_stage_uses_the_platform_temp_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(sending, "temp_root", lambda: str(tmp_path))
+    directory, path = sending.new_stage("a.pdf")
+    try:
+        assert os.path.dirname(directory) == str(tmp_path)
+        assert os.path.dirname(path) == directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+WIN_ENV = {"TMP": r"C:\Users\Me\AppData\Local\Temp", "TEMP": r"D:\scratch", "USERPROFILE": r"C:\Users\Me"}
+
+
+def test_temp_root_per_platform(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    assert sending.temp_root("linux", {"TMPDIR": str(tmp_path)}) == "/tmp"
+    assert sending.temp_root("darwin", {}) == str(tmp_path)
+    # Go's order on Windows: TMP, TEMP, USERPROFILE (Python alone would try TEMP first).
+    assert sending.temp_root("win32", WIN_ENV) == WIN_ENV["TMP"]
+    assert (
+        sending.temp_root("win32", {"TEMP": WIN_ENV["TEMP"], "USERPROFILE": WIN_ENV["USERPROFILE"]}) == WIN_ENV["TEMP"]
+    )
+    assert sending.temp_root("win32", {"USERPROFILE": WIN_ENV["USERPROFILE"]}) == WIN_ENV["USERPROFILE"]
+    assert sending.temp_root("win32", {"TMP": "relative"}) == str(tmp_path)
+
+
+def test_sweep_works_without_getuid(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(sending, "temp_root", lambda: str(tmp_path))
+    monkeypatch.delattr(os, "getuid", raising=False)
+    old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=tmp_path)
+    fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=tmp_path)
+    past = time.time() - 2 * 3600
+    os.utime(old, (past, past))
+    assert sending.sweep_stale_uploads() == 1
+    assert not os.path.exists(old)
+    assert os.path.exists(fresh)
 
 
 def test_route_rejects_bad_headers(logged_in: TestClient, bridge) -> None:
@@ -230,8 +270,9 @@ def test_send_media_writes_private_temp_and_removes_it(
         answer.update({"success": False, "retryable": True})
     upload(logged_in, fx.ANA)
     (call,) = calls
-    assert call["dir"].startswith("/tmp/wa-app-up-")
-    assert call["mode"] == 0o700
+    assert call["dir"].startswith(os.path.join(sending.temp_root(), "wa-app-up-"))
+    if sys.platform != "win32":  # Windows has no POSIX mode bits; the dir relies on the temp dir's ACL
+        assert call["mode"] == 0o700
     assert not os.path.exists(call["dir"])
 
 

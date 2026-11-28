@@ -82,3 +82,9 @@ wa-assistant/speech-transcribe
 # Maintainer-local notes that name hosts, paths and people
 docs/reviews/
 docs/handoff-*.md
+
+# wactl data directory contents when the data dir is the default whatsapp-bridge/
+whatsapp-bridge/run/
+whatsapp-bridge/logs/
+whatsapp-bridge/backups/
+whatsapp-bridge/wa-app/

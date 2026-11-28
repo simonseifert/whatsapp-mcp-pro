@@ -13,6 +13,14 @@ import pytest
 import whatsapp
 
 
+def make_symlink(link, target):
+    """Create a symlink, or skip: Windows needs admin rights or developer mode for this."""
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot create symlinks here: {exc}")
+
+
 @pytest.fixture
 def media_dirs(monkeypatch, tmp_path):
     """An allowlist of exactly one directory, with a decoy sibling outside it."""
@@ -49,7 +57,7 @@ def bridge_calls(monkeypatch):
 def conversions(monkeypatch, tmp_path):
     converted: list[str] = []
 
-    def fake_convert(path):
+    def fake_convert(path, **_kw):
         converted.append(path)
         out = tmp_path / "converted.ogg"
         out.write_bytes(b"OggS")
@@ -79,7 +87,7 @@ def test_rejects_a_symlink_escaping_the_allowlist(media_dirs):
     target = outside / "secret.txt"
     target.write_text("s")
     link = allowed / "innocent.png"
-    link.symlink_to(target)
+    make_symlink(link, target)
     with pytest.raises(ValueError):
         whatsapp.validate_outgoing_media_path(str(link))
 
@@ -202,7 +210,7 @@ def test_refuses_a_link_whose_target_looks_like_a_secret(media_dirs):
     target = allowed / "id_rsa"
     target.write_text("k")
     link = allowed / "cat.jpg"
-    link.symlink_to(target)
+    make_symlink(link, target)
     with pytest.raises(ValueError, match="id_rsa"):
         whatsapp.validate_outgoing_media_path(str(link))
 
@@ -222,7 +230,7 @@ def test_disable_path_check_still_refuses_secrets(media_dirs, monkeypatch):
 def test_bridge_defaults_are_always_allowed(monkeypatch):
     monkeypatch.delenv("MEDIA_ALLOWED_DIRS", raising=False)
     assert whatsapp._allowed_media_dirs() == list(whatsapp.BRIDGE_DEFAULT_MEDIA_DIRS)
-    assert "/tmp" in whatsapp.BRIDGE_DEFAULT_MEDIA_DIRS
+    assert whatsapp.MEDIA_TEMP_DIR in whatsapp.BRIDGE_DEFAULT_MEDIA_DIRS
 
 
 def test_send_audio_refuses_before_converting(media_dirs, bridge_calls, conversions):
@@ -322,7 +330,7 @@ def test_transcribe_audio_file_refuses_a_symlink_escape(media_dirs, transcribed)
     target = outside / "key.ogg"
     target.write_bytes(b"OggS")
     link = allowed / "innocent.ogg"
-    link.symlink_to(target)
+    make_symlink(link, target)
 
     assert main.transcribe_audio_file(str(link))["success"] is False
     assert transcribed == []

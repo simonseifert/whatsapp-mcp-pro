@@ -1,0 +1,171 @@
+name: Install smoke test
+
+# Exercises wactl the way a new user would: doctor, setup, start the app, check it,
+# stop it, and render the login-service files. WhatsApp is never paired and the
+# bridge is only built, never started.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'wactl'
+      - 'wactl.cmd'
+      - 'whatsapp-bridge/**'
+      - 'wa-app/**'
+      - 'whatsapp-mcp-server/**'
+      - '.github/workflows/install-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # mattn/go-sqlite3 needs cgo; windows-latest ships mingw gcc.
+      CGO_ENABLED: '1'
+      # A port the runner is unlikely to use, so the check is about wactl, not port luck.
+      WA_APP_PORT: '18185'
+      MSYS_NO_PATHCONV: '1'
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+          cache-dependency-path: whatsapp-bridge/go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # On Windows this runs the .cmd launcher through cmd, which is what users run.
+      - name: Define wactl helper
+        run: |
+          {
+            echo '#!/usr/bin/env bash'
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              # Single slash: MSYS path conversion is off, so "//c" would reach cmd.exe literally.
+              echo 'exec cmd.exe /c .\\wactl.cmd "$@"'
+            else
+              echo 'exec ./wactl "$@"'
+            fi
+          } > "$RUNNER_TEMP/wactl-run.sh"
+          chmod +x "$RUNNER_TEMP/wactl-run.sh"
+
+      # Before setup: a missing .env is expected, so this is informational only.
+      - name: wactl doctor (before setup)
+        run: |
+          "$RUNNER_TEMP/wactl-run.sh" doctor || echo "doctor reported problems before setup (expected: no .env yet)"
+
+      - name: wactl setup --minimal
+        run: |
+          "$RUNNER_TEMP/wactl-run.sh" setup --minimal --yes --data "$RUNNER_TEMP/wa"
+          ls whatsapp-bridge/whatsapp-bridge*
+
+      # Setup picks a working pnpm itself (a runner's own shim may be broken), so check its output.
+      - name: Check the web build
+        run: |
+          ls wa-app/web/dist/index.html
+
+      - name: wactl doctor (after setup)
+        run: |
+          "$RUNNER_TEMP/wactl-run.sh" doctor
+
+      # wa-app tolerates a missing bridge store, so no store fixture is needed.
+      - name: Start the app and check health
+        run: |
+          W="$RUNNER_TEMP/wactl-run.sh"
+          "$W" start app --data "$RUNNER_TEMP/wa"
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${WA_APP_PORT}/api/health"; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          echo
+          [ "$ok" = 1 ] || { echo "app did not become healthy within 60 s"; exit 1; }
+
+      - name: wactl status and logs
+        run: |
+          W="$RUNNER_TEMP/wactl-run.sh"
+          "$W" status --data "$RUNNER_TEMP/wa" | tee "$RUNNER_TEMP/status.txt"
+          grep -Eq '^app +pid .*healthy' "$RUNNER_TEMP/status.txt"
+          "$W" logs app -n 20 --data "$RUNNER_TEMP/wa"
+          # The bridge was never started, and status must not leak the key.
+          if grep -Eq '[0-9a-f]{64}' "$RUNNER_TEMP/status.txt"; then
+            echo "status printed something that looks like a secret"; exit 1
+          fi
+
+      - name: Stop the app and check it is gone
+        run: |
+          W="$RUNNER_TEMP/wactl-run.sh"
+          pids=""
+          for f in "$RUNNER_TEMP"/wa/run/app.pid "$RUNNER_TEMP"/wa/run/app.child; do
+            [ -f "$f" ] && pids="$pids $(head -n 1 "$f" | tr -dc '0-9')"
+          done
+          echo "pids before stop:$pids"
+          "$W" stop app --data "$RUNNER_TEMP/wa"
+          sleep 2
+          if curl -fsS --max-time 3 "http://127.0.0.1:${WA_APP_PORT}/api/health"; then
+            echo "app still answers after stop"; exit 1
+          fi
+          for f in "$RUNNER_TEMP"/wa/run/app.pid "$RUNNER_TEMP"/wa/run/app.child; do
+            if [ -f "$f" ]; then echo "stale file after stop: $f"; exit 1; fi
+          done
+          for p in $pids; do
+            [ -n "$p" ] || continue
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              if tasklist /FI "PID eq $p" /NH | grep -qw "$p"; then
+                echo "process $p still running"; exit 1
+              fi
+            elif kill -0 "$p" 2>/dev/null; then
+              echo "process $p still running"; exit 1
+            fi
+          done
+
+      - name: Render service files (dry run)
+        run: |
+          W="$RUNNER_TEMP/wactl-run.sh"
+          case "$RUNNER_OS" in
+            Linux)   expect='systemctl' ;;
+            macOS)   expect='launchctl' ;;
+            Windows) expect='Register-ScheduledTask' ;;
+          esac
+          # Keep generated paths inside the runner temp dir; nothing is installed.
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/xdg"
+          "$W" service install --dry-run --data "$RUNNER_TEMP/wa" | tee "$RUNNER_TEMP/svc.txt"
+          grep -q "$expect" "$RUNNER_TEMP/svc.txt" || { echo "dry-run output does not mention $expect"; exit 1; }
+          grep -q 'nothing was changed' "$RUNNER_TEMP/svc.txt"
+
+      - name: Show app log on failure
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/wa/logs/*.log; do
+            [ -f "$f" ] && { echo "== $f"; tail -n 80 "$f"; }
+          done
+          true

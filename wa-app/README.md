@@ -4,6 +4,36 @@ A self-hosted, login-protected chat PWA that rides the whatsapp-mcp-pro bridge. 
 
 Status: M3b, read, reply, AI drafts, notifications, sending photos, files and voice notes, private reply, search, lists, message and chat actions, quick replies (chat list, chat view, media, live updates, read state, drafts you can use or ignore). Install and screenshots: see the repo [README](../README.md#app).
 
+## Install and update
+
+From the repo root, on Linux, macOS or Windows (`.\wactl.cmd` there):
+
+```sh
+./wactl doctor            # tools, .env, ports
+./wactl setup             # builds the bridge, MCP server and this app (web/dist)
+./wactl pair              # once: scan the QR code, then Ctrl-C
+./wactl service install   # bridge and app at login (systemd user units, LaunchAgents or Task Scheduler)
+tailscale serve --bg --https=8445 http://127.0.0.1:8085
+./wactl update            # later: back up, pull, rebuild, restart bridge then app
+```
+
+The full walk-through, with prerequisites per OS, is the repo [Quickstart](../README.md#quickstart). `wactl` starts the
+app as `wactl run app`, sets `WA_STORE_PATH` to `<data>/store` and, when the data directory is not the default
+`whatsapp-bridge/`, `WA_APP_DATA` to `<data>/wa-app`. Without `wactl`, use `deploy/wa-app.service` as a template
+(Linux) and see [SETUP.md](../SETUP.md#7-keep-it-running).
+
+### WA_APP_PUSH_SUBJECT
+
+Web Push needs the server to tell push services (Apple, Google, Mozilla) who runs it, in case they need to reach you
+about misbehaviour. That is the subject: a contact address in your own words, such as `mailto:you@example.com` or an
+`https://` URL you control. The push services see it with each push; the app never sends mail to it. Without it,
+notifications stay off (`/api/push/key` answers 503, and the Getting started card says so).
+
+- With wactl: `./wactl setup` asks for it once, or add `WA_APP_PUSH_SUBJECT=mailto:you@example.com` to the repo `.env`.
+- Then restart the app so it reads it: `./wactl restart app`. With your own unit, put it in the unit's environment and
+  restart that.
+- It is personal contact data: keep it in `.env`, never commit it.
+
 ## Layout
 
 - `server/` Starlette app (`wa-app` console script): JSON API, session auth, serves `web/dist`.
@@ -57,7 +87,7 @@ faster-whisper). If none works the request fails with "Local transcription unava
 
 The app notifies on every incoming message (the title is the chat name, the body the text, and in a group "Sender: text"), except muted chats and the chat open in a visible app window.
 
-1. Set `WA_APP_PUSH_SUBJECT` (a `mailto:` address or `https:` URL you control) in wa-app's environment and restart. Never commit it.
+1. Set `WA_APP_PUSH_SUBJECT` (a `mailto:` address or `https:` URL you control; see [above](#wa_app_push_subject)) and restart (`./wactl restart app`). Never commit it.
 2. The VAPID key pair is created on first use as `vapid.pem` in `WA_APP_DATA` (mode 600). **Back it up with `app.db`**: a new key makes every existing subscription invalid, and each device must switch notifications on again.
 3. **On iPhone, install the app to the Home Screen** (Share, Add to Home Screen) and open it from there; iOS only delivers push to the installed app. Then Settings, Notifications on, and "Send a test".
 4. Turn off the phone WhatsApp's own notifications to avoid doubles.
@@ -156,7 +186,7 @@ claude -p --output-format json --model <model> --system-prompt <fixed text> \
   --strict-mcp-config --setting-sources ""
 ```
 
-Only the fixed instructions go in `--system-prompt`; everything derived from the chat (note, rules, examples, messages) goes in on stdin, so it never shows in the process list. It runs from an empty working directory, with a 120 s timeout. `--strict-mcp-config --setting-sources ""` matters for speed: without them the CLI starts every MCP server, hook and plugin you have configured. A draft took about 2.6 s with the flags and 26 to 29 s without. Set `WA_APP_CLAUDE_BIN` if `claude` is not on the server's `PATH`.
+Only the fixed instructions go in `--system-prompt`; everything derived from the chat (note, rules, examples, messages) goes in on stdin, so it never shows in the process list. It runs from an empty working directory, with a 120 s timeout. `--strict-mcp-config --setting-sources ""` matters for speed: without them the CLI starts every MCP server, hook and plugin you have configured. A draft took about 2.6 s with the flags and 26 to 29 s without. Set `WA_APP_CLAUDE_BIN` if `claude` is not on the server's `PATH`. Services made by `wactl service install` get a `PATH` that includes the folder of the `claude` found at install time; if you install Claude Code later, set `WA_APP_CLAUDE_BIN` to its full path.
 
 ### Costs
 

@@ -22,7 +22,7 @@ func TestEditsCallsSQLMatchesMigration(t *testing.T) {
 		t.Fatalf("read migration: %v", err)
 	}
 	var body []string
-	for _, line := range strings.Split(string(raw), "\n") {
+	for _, line := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "--") {
 			continue
 		}

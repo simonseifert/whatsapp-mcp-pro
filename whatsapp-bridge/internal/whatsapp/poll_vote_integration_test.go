@@ -32,12 +32,14 @@ func TestHandleMessagePollVoteEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMessageStore: %v", err)
 	}
+	t.Cleanup(func() { _ = messageStore.Close() }) // Windows cannot delete an open database
 
 	ctx := context.Background()
 	container, err := sqlstore.New(ctx, "sqlite3", "file:"+t.TempDir()+"/test.db?_foreign_keys=on", waLog.Noop)
 	if err != nil {
 		t.Fatalf("sqlstore.New: %v", err)
 	}
+	t.Cleanup(func() { _ = container.Close() })
 	device := container.NewDevice()
 	ownJID := types.JID{User: "111111", Server: types.DefaultUserServer}
 	device.ID = &ownJID

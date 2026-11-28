@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tests.conftest import ANA, EKIPA, NEIGHBOURHOOD
+from tests.conftest import ANA, EKIPA, NEIGHBOURHOOD, until
 from wa_app import appdb, live, store
 from wa_app.ai import config as ai_config
 from wa_app.ai import context, drafts
@@ -143,8 +143,7 @@ def test_closed_app_waits_20s_quiet(settings) -> None:
         rig.sleep_gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.05)
-        assert rig.sleeps == [20.0]
+        await until(lambda: rig.sleeps == [20.0])
         assert rig.fake.calls == [] and rig.rows() == []
         rig.sleep_gate.set()
         await rig.worker.idle()
@@ -161,6 +160,12 @@ def test_burst_of_8_one_call_for_last(settings) -> None:
             _insert(settings, ANA, f"B{i}", f"msg {i}")
             rig.worker.on_events([_event(ANA, f"B{i}")])
             await asyncio.sleep(0.02)
+        # The worker takes triggers one at a time: open the gate only once it has reached the last, or an earlier
+        # job could slip past its debounce and draft for a message that was already replaced.
+        await until(
+            lambda: getattr(rig.worker._jobs.get(ANA), "trigger_id", None) == "B7",
+            describe=lambda: f"jobs={ {k: v.trigger_id for k, v in rig.worker._jobs.items()} }",
+        )
         rig.sleep_gate.set()
         await rig.worker.idle()
         assert len(rig.fake.calls) == 1
@@ -176,11 +181,11 @@ def test_new_message_cancels_running_draft(settings) -> None:
         rig.fake.gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
-        assert rig.fake.active == 1
+        await until(lambda: rig.fake.active == 1)
         _insert(settings, ANA, "N2", "Još sam tu")
         rig.worker.on_events([_event(ANA, "N2")])
-        await asyncio.sleep(0.1)
+        await until(lambda: len(rig.fake.calls) == 2)
+        await until(lambda: rig.fake.active == 1)
         assert rig.fake.active == 1  # the first call was cancelled, the second runs
         rig.fake.gate.set()
         await rig.worker.idle()
@@ -250,9 +255,10 @@ def test_chat_switched_to_local_only_while_waiting_for_a_slot(settings) -> None:
         for _ in range(drafts.CLOUD_SLOTS):
             await rig.worker._cloud.acquire()  # the cloud is busy
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
+        await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
-        ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
         for _ in range(drafts.CLOUD_SLOTS):
             rig.worker._cloud.release()
         await rig.worker.idle()
@@ -269,9 +275,10 @@ def test_chat_switched_off_while_waiting_for_a_slot_makes_no_call(settings) -> N
         for _ in range(drafts.CLOUD_SLOTS):
             await rig.worker._cloud.acquire()  # the cloud is busy
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
+        await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
-        ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
         for _ in range(drafts.CLOUD_SLOTS):
             rig.worker._cloud.release()
         await rig.worker.idle()
@@ -288,8 +295,9 @@ def test_switched_off_during_the_quiet_wait_makes_no_draft(settings) -> None:
         _insert(settings, ANA, "N1")
         rig.sleep_gate = asyncio.Event()
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
-        ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
+        await until(lambda: rig.sleeps != [])
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
         rig.sleep_gate.set()
         await rig.worker.idle()
         assert rig.fake.calls == [] and rig.rows() == []
@@ -325,7 +333,14 @@ def test_local_cap_1_cloud_cap_3(settings, backend, cap) -> None:
         rig.fake.gate = asyncio.Event()
         for chat in chats:
             rig.worker.on_events([_event(chat, f"X-{chat[:6]}")])
-        await asyncio.sleep(0.2)
+        # every chat has a job (the extra ones queue for a slot) and the free slots are all in use
+        await until(
+            lambda: len(rig.worker._jobs) == len(chats) and rig.fake.active == cap,
+            describe=lambda: (
+                f"jobs={sorted(rig.worker._jobs)} active={rig.fake.active} peak={rig.fake.peak} "
+                f"calls={len(rig.fake.calls)} rows={[rig.rows(c) for c in chats]}"
+            ),
+        )
         assert rig.fake.active == cap
         rig.fake.gate.set()
         await rig.worker.idle()

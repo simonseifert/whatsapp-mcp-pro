@@ -2,13 +2,17 @@ import base64
 import binascii
 import fnmatch
 import json
+import ntpath
 import os
 import os.path
+import posixpath
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -58,17 +62,73 @@ if ":" not in _bridge_host:
 BRIDGE_HOST = _bridge_host
 WHATSAPP_API_BASE_URL = f"http://{BRIDGE_HOST}/api"
 
-# Where base64 uploads are staged for the bridge to read. Must stay one of the
-# directories allowed by validateMediaPath in the Go bridge
-# (whatsapp-bridge/internal/whatsapp/messages.go); /tmp is the only one of those
-# not tied to a particular deployment layout. Literal rather than
-# tempfile.gettempdir(), since the allowlist names that exact path.
-MEDIA_TEMP_DIR = "/tmp"
 
-# Mirrors defaultMediaDirs in whatsapp-bridge/internal/whatsapp/messages.go.
-# MEDIA_ALLOWED_DIRS extends these, exactly as allowedMediaDirs does there; the
+def platform_temp_dir(platform: str | None = None, env: Mapping[str, str] | None = None) -> str:
+    """The temp root shared with the bridge: /tmp on Linux, else the platform temp dir.
+
+    Base64 uploads and converted audio are staged here for the bridge to read.
+    On Windows this follows Go's GetTempPath order (TMP, TEMP, USERPROFILE), not
+    Python's (TEMP before TMP), so both sides name the same directory; the bridge
+    also allows both TMP and TEMP. MEDIA_ALLOWED_DIRS is the override for any other
+    layout. Platform and env are parameters so every OS's logic is testable anywhere.
+    """
+    platform = sys.platform if platform is None else platform
+    env = os.environ if env is None else env
+    if platform.startswith("linux"):
+        return "/tmp"
+    if platform == "win32":
+        for key in ("TMP", "TEMP", "USERPROFILE"):
+            value = env.get(key, "")
+            if ntpath.isabs(value):
+                return value
+    return tempfile.gettempdir()
+
+
+def default_media_dirs(
+    temp_dir: str, platform: str | None = None, env: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
+    """Mirrors defaultMediaDirs + platformTempDirs in whatsapp-bridge/internal/whatsapp/messages.go.
+
+    Linux allows exactly /tmp. Other POSIX adds the temp dir; Windows has no /tmp
+    and allows the temp dir plus TMP and TEMP.
+    """
+    platform = sys.platform if platform is None else platform
+    env = os.environ if env is None else env
+    dirs = ["/app/media", "/app/store", "/app/whatsapp-bridge/store"]
+    extra: list[str] = []
+    if platform.startswith("linux"):
+        extra = ["/tmp"]
+    elif platform == "win32":
+        extra = [temp_dir, env.get("TMP", ""), env.get("TEMP", "")]
+    else:
+        extra = ["/tmp", temp_dir]
+    isabs = ntpath.isabs if platform == "win32" else posixpath.isabs
+    for d in extra:
+        if isabs(d) and all(_norm_path(d, platform) != _norm_path(have, platform) for have in dirs):
+            dirs.append(d)
+    return tuple(dirs)
+
+
+def _norm_path(path: str, platform: str) -> str:
+    mod = ntpath if platform == "win32" else posixpath
+    return mod.normcase(mod.normpath(path))
+
+
+def path_inside(path: str, root: str, platform: str | None = None) -> bool:
+    """Whether path is root or below it on path-segment boundaries; Windows folds case and separators."""
+    platform = sys.platform if platform is None else platform
+    sep = "\\" if platform == "win32" else "/"
+    p, r = _norm_path(path, platform), _norm_path(root, platform)
+    return p == r or p.startswith(r.rstrip(sep) + sep)
+
+
+# Where base64 uploads are staged for the bridge to read. Must stay inside the
+# bridge's allowlist (validateMediaPath in whatsapp-bridge/internal/whatsapp/messages.go).
+MEDIA_TEMP_DIR = platform_temp_dir()
+
+# MEDIA_ALLOWED_DIRS extends these, exactly as allowedMediaDirs does in the bridge; the
 # MCP service reads the same .env as the bridge, so both sides agree.
-BRIDGE_DEFAULT_MEDIA_DIRS = ("/app/media", "/app/store", "/app/whatsapp-bridge/store", "/tmp")
+BRIDGE_DEFAULT_MEDIA_DIRS = default_media_dirs(MEDIA_TEMP_DIR)
 
 # Basenames never sent from disk, even from inside an allowed directory. An
 # allowed dir like ~/Code holds repos, and a repo holds .env files, keys and
@@ -144,8 +204,8 @@ def validate_outgoing_media_path(media_path: str) -> str:
     """Check a caller-supplied path may be sent, and return it with symlinks resolved.
 
     The bridge enforces its own allowlist, but only on the path it is handed.
-    send_audio_message converts to a fresh file under /tmp first, so the bridge
-    only ever saw the /tmp output and any readable file on the box could be
+    send_audio_message converts to a fresh file under the temp dir first, so the bridge
+    only ever saw the temp-dir output and any readable file on the box could be
     sent as a voice note. Validating the source here closes that, and repeating
     it in send_file is defence in depth for the bridge's check.
 
@@ -173,8 +233,8 @@ def validate_outgoing_media_path(media_path: str) -> str:
 
     for allowed in _allowed_media_dirs():
         root = os.path.realpath(os.path.abspath(allowed))
-        # Path-segment match, so /tmproot is not inside /tmp.
-        if resolved != root and not resolved.startswith(root.rstrip(os.sep) + os.sep):
+        # Path-segment match, so /tmproot is not inside /tmp; case-folded on Windows.
+        if not path_inside(resolved, root):
             continue
         # Hidden segments are judged below the allowed root only: an operator
         # who allowlists a dotted directory meant it, but ~/Code being allowed
@@ -1399,7 +1459,8 @@ def send_file(
             temp_dir = tempfile.mkdtemp(dir=media_dir)
             temp_path = os.path.join(temp_dir, safe_name)
             with open(temp_path, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as f:
-                os.fchmod(f.fileno(), 0o600)
+                if hasattr(os, "fchmod"):  # POSIX only; the file is already per user on Windows
+                    os.fchmod(f.fileno(), 0o600)
                 f.write(content)
 
             media_path = temp_path
@@ -1411,7 +1472,7 @@ def send_file(
             }
 
         # A staged base64 upload is bytes the caller already holds, written by
-        # us under /tmp; only a caller-chosen path can reach someone else's file.
+        # us under the temp dir; only a caller-chosen path can reach someone else's file.
         # Validate before checking existence, and answer both failures alike, so
         # the reply says nothing about files outside the allowed directories.
         if temp_path is None:
@@ -1492,7 +1553,7 @@ def send_audio_message(
             return {"success": False, "error": "Media path must be provided"}
 
         # Must run on the source, before conversion: the bridge only ever sees
-        # the converted file under /tmp, which its allowlist always accepts, so
+        # the converted file under the temp dir, which its allowlist always accepts, so
         # its own check cannot stop an arbitrary file going out as a voice note.
         # It also runs before the existence check, with one shared error, so the
         # reply is no oracle for files outside the allowed directories.
@@ -1515,11 +1576,11 @@ def send_audio_message(
 
         if not media_path.endswith(".ogg"):
             try:
-                media_path = audio.convert_to_opus_ogg_temp(media_path)
+                media_path = audio.convert_to_opus_ogg_temp(media_path, temp_dir=MEDIA_TEMP_DIR)
             except Exception as e:
                 return {
                     "success": False,
-                    "error": f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}",
+                    "error": f"Error converting file to opus ogg: {str(e)}",
                 }
 
         url = f"{WHATSAPP_API_BASE_URL}/send"

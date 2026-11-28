@@ -20,6 +20,7 @@ func newQuoteStore(t *testing.T) *database.MessageStore {
 	if err != nil {
 		t.Fatalf("NewMessageStore: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() }) // Windows cannot delete an open database
 	return store
 }
 

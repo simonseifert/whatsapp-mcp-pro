@@ -75,7 +75,7 @@ Read this before you pair a number you care about.
 |---|---|---|
 | [`whatsapp-bridge/`](whatsapp-bridge) | Stable, in daily use | Go daemon on whatsmeow. Linked device, SQLite store, REST API, HMAC-signed webhooks. |
 | [`whatsapp-mcp-server/`](whatsapp-mcp-server) | Stable, in daily use | Python MCP server (mcp 2.x). stdio per session, or one shared HTTP server. |
-| [`wa-app/`](wa-app) | M1, in daily use by the maintainer | wa-app (working name): a login-protected chat PWA that rides the bridge. Read and reply from your phone; see [App](#app). |
+| [`wa-app/`](wa-app) | M3b, in daily use by the maintainer | wa-app (working name): a login-protected chat PWA that rides the bridge. Read, reply, AI drafts, notifications, media and voice notes, search, lists and quick replies from your phone; see [App](#app). |
 | [`wa-assistant/`](wa-assistant) | Experimental, dormant | Text your own chat, a persistent Claude Code session replies. |
 | [`wa-dispatch/`](wa-dispatch) | Experimental, dormant | An incoming message opens a Claude Code session in that client's project and drafts a reply. macOS + tmux. |
 | [`whatsapp-web-ui/`](whatsapp-web-ui) | Upstream | Upstream's Next.js admin panel (pairing, webhooks). Not a chat client. |
@@ -86,33 +86,22 @@ wa-app (working name) is a self-hosted chat app for your own number, in [`wa-app
 hobby project, not an official WhatsApp product. It rides the bridge's session, so it uses no extra
 linked-device slot, and it is a PWA you add to your phone's home screen.
 
-Status: M1, read and reply. You can read every chat, see media, voice notes, replies, reactions and polls, and
-answer with text, replies, reactions and read receipts. AI drafts come in M2.
+Status: M3b. You can read every chat, see media, voice notes, replies, reactions and polls, and answer with text,
+replies, reactions and read receipts (M1). AI drafts that you use, edit or ignore (M2). Notifications for new messages,
+sending photos, files and voice notes, and private reply from a group (M3a). Message search, custom lists, message and
+chat actions and quick replies (M3b). A Getting started card in Settings walks you through notifications, history and AI
+drafts.
 
 <p>
   <img src="docs/assets/wa-app-chats.png" alt="The chat list in the dark theme (fictional sample data)" width="300">
   <img src="docs/assets/wa-app-chat.png" alt="A chat in the dark theme (fictional sample data)" width="300">
 </p>
 
-Requirements: a running bridge and MCP server from this repo, Python 3.11+ with [uv](https://docs.astral.sh/uv/),
-Node with pnpm (for the build), and, to reach it from your phone, [Tailscale](https://tailscale.com/).
-
-Install:
-
-```bash
-cd wa-app/web && pnpm install && pnpm build        # builds web/dist
-cd ../server && uv sync
-# systemd user unit: copy the template, fix the paths, start it
-mkdir -p ~/.config/systemd/user
-cp ../deploy/wa-app.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now wa-app
-# private-network access over https (never Funnel by default)
-tailscale serve --bg --https=8445 http://127.0.0.1:8085
-```
-
-It listens on `127.0.0.1:8085` (`WA_APP_HOST`, `WA_APP_PORT`; more in [wa-app/README.md](wa-app/README.md)) and
-keeps its own state in `WA_APP_DATA` (default `~/.local/share/wa-app/`). Open
-`https://<host>.ts.net:8445`; the first visit asks you to set a passphrase, later visits ask for it.
+It installs with the bridge: the [Quickstart](#quickstart) below ends with the app on your phone, on Linux, macOS or
+Windows. `wactl setup` builds it, `wactl service install` keeps it running, and `tailscale serve` gives your phone an
+https address. The app listens on `127.0.0.1:8085` (`WA_APP_HOST`, `WA_APP_PORT`; more in
+[wa-app/README.md](wa-app/README.md)) and keeps its own state in `WA_APP_DATA`. The first visit asks you to set a
+passphrase, later visits ask for it.
 
 Security notes:
 
@@ -299,48 +288,139 @@ WhatsApp. More in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quickstart
 
-You need Go 1.26+ (a newer toolchain is downloaded automatically from `go.mod`),
-Python 3.11+, [uv](https://docs.astral.sh/uv/), and your phone.
-[SETUP.md](SETUP.md) has every step with checks and failure modes.
+One command line tool, `wactl`, does the install on Linux, macOS and Windows: it checks your machine, builds
+everything, pairs your phone, keeps the services running and updates them later. It needs only Python 3.11+ and
+[uv](https://docs.astral.sh/uv/), and uses nothing outside the standard library. [SETUP.md](SETUP.md) has every manual
+step with checks and failure modes.
+
+You need your phone with WhatsApp installed and logged in, and [Tailscale](https://tailscale.com/) on the machine and
+the phone if you want the app on your phone.
+
+### 1. Install the tools
+
+Linux (Debian or Ubuntu):
+
+```bash
+sudo apt install build-essential ffmpeg git
+# Go: apt's golang-go is too old on Debian 12 and Ubuntu 22.04 (go.mod asks for a newer toolchain).
+# Install the current Go from https://go.dev/dl/. Go 1.21 or newer can then fetch the exact toolchain itself.
+# Node 22 or newer (pnpm 11 needs it). apt's nodejs is usually too old: use NodeSource, nvm or https://nodejs.org
+curl -LsSf https://astral.sh/uv/install.sh | sh                    # uv
+curl -fsSL https://tailscale.com/install.sh | sh                   # for the phone
+```
+
+macOS ([Homebrew](https://brew.sh)):
+
+```bash
+xcode-select --install                                             # the C compiler (cgo)
+brew install go uv node ffmpeg git             # node: 22 or newer
+brew install --cask tailscale                  # the Tailscale app (for the phone)
+```
+
+Windows (PowerShell):
+
+```powershell
+winget install --id GoLang.Go
+winget install --id astral-sh.uv
+winget install --id OpenJS.NodeJS.LTS                              # Node 22 or newer
+winget install --id Git.Git
+winget install --id Gyan.FFmpeg
+winget install --id Tailscale.Tailscale
+winget install --id BrechtSanders.WinLibs.POSIX.UCRT               # gcc, the bridge's SQLite needs a C compiler
+```
+
+Open a new terminal afterwards so the new tools are on `PATH`. If you prefer another MinGW-w64 gcc, any build works
+as long as `gcc` is on `PATH` ([WinLibs](https://winlibs.com) is one). ffmpeg and Tailscale are optional: ffmpeg is for
+voice notes, Tailscale for the phone.
+
+### 2. Install and pair
+
+On Windows use `.\wactl.cmd` where this says `./wactl`.
 
 ```bash
 git clone https://github.com/simonseifert/whatsapp-mcp-pro && cd whatsapp-mcp-pro
 
-# 1. Config. The bridge refuses to start without API_KEY.
-grep -v '^API_KEY=' .env.example > .env
-echo "API_KEY=$(openssl rand -hex 32)" >> .env
-
-# 2. Bridge: build, then pair by scanning the QR code with your phone
-#    (WhatsApp > Settings > Linked Devices > Link a Device).
-#    The bridge doesn't read .env itself, so export it first.
-cd whatsapp-bridge && go build -o whatsapp-bridge .
-set -a; . ../.env; set +a; ./whatsapp-bridge
-
-# 3. MCP server, in a second terminal
-cd whatsapp-mcp-server
-uv sync --extra pro-cpu     # Linux / Intel / CPU: recall + faster-whisper
-# uv sync --extra pro       # Apple Silicon: recall + mlx-whisper
-# uv sync                   # no recall or transcription, small install
-
-# 4a. Claude Code, one stdio server per session
-claude mcp add whatsapp -e WHATSAPP_MCP_TOOLSETS=all -- \
-  uv --directory "$PWD" run main.py
-
-# 4b. Or one shared HTTP server for many sessions
-export WA_MCP_FULL_TOKEN=$(openssl rand -hex 24)
-MCP_HOST=127.0.0.1 MCP_PORT=8082 .venv/bin/python serve_http.py &
-claude mcp add -t http whatsapp http://127.0.0.1:8082/mcp \
-  --header "Authorization: Bearer $WA_MCP_FULL_TOKEN"
+./wactl doctor            # checks the tools, .env and ports, and prints the install command for anything missing
+./wactl setup             # creates .env with a random API_KEY, builds the bridge, the MCP server and the app
+./wactl pair              # runs the bridge so the QR code shows; scan it, then press Ctrl-C
+./wactl service install   # starts the bridge and the app at login and keeps them running
+./wactl status
 ```
 
-Keep `MCP_HOST` on `127.0.0.1`. To reach it from another machine, bind it to a
-VPN or tailnet address and set both tokens; never bind it to `0.0.0.0` or a
-public interface. Clients must use the exact host you bound, since the server
-rejects other `Host` headers.
+Scan the QR code with WhatsApp on your phone: Settings, Linked devices, Link a device. Wait until the terminal says it
+is connected, then stop `pair` with Ctrl-C before `service install`: two bridges on one session fight each other.
 
-To keep it running, see [SETUP.md step 7](SETUP.md#7-keep-it-running): a systemd
-unit pair for Linux and a launchd example for macOS
-([`scripts/com.example.whatsapp-bridge.plist`](scripts/com.example.whatsapp-bridge.plist)).
+`setup` asks once for `WA_APP_PUSH_SUBJECT` (see [wa-app/README.md](wa-app/README.md#notifications)); press Enter to
+skip it and notifications stay off. `setup --minimal` skips the recall and transcription extras for a small install.
+
+`service install` creates, per OS:
+
+| OS | What it creates |
+|---|---|
+| Linux | systemd user units `wa-bridge` and `wa-app` (add `--with-mcp` for `wa-mcp`). Run `loginctl enable-linger $USER` once so they also run when you are logged out. |
+| macOS | LaunchAgents `com.wactl.bridge` and `com.wactl.app` (and `com.wactl.mcp`), mode 600. |
+| Windows | Per-user Task Scheduler tasks `wactl-bridge` and `wactl-app` (and `wactl-mcp`), started at logon, registered with PowerShell at the limited run level. No administrator rights needed. |
+
+All of them run `wactl run <component>`, which restarts a crashed process with a short wait and stops for good when
+the bridge says another device took the session (exit code 3) or the phone is not paired (exit code 4).
+`./wactl service install --dry-run` prints what it would write and changes nothing.
+
+### 3. Open the app on your phone
+
+Expose the app to your tailnet over https. Never use Funnel for this: it would put your chats on the public internet.
+
+```bash
+tailscale serve --bg --https=8445 http://127.0.0.1:8085
+```
+
+The command is the same on Linux, macOS and Windows (PowerShell).
+
+Newer Tailscale clients may ask you to enable HTTPS certificates for your tailnet once, in the admin console. Then on
+your phone, with Tailscale connected, open `https://<machine>.<tailnet>.ts.net:8445`, choose Share, Add to Home Screen
+(iPhone: Safari, and open the app from the home screen icon from now on), and set the passphrase on the first visit.
+Open Settings and follow the Getting started card to turn on notifications, load older messages and set up AI drafts.
+
+### 4. Connect Claude (MCP)
+
+Claude Code starting the MCP server itself, one stdio server per session. Run it from the repo folder
+(`$PWD` is the current folder in bash and PowerShell):
+
+```bash
+claude mcp add whatsapp -e WHATSAPP_MCP_TOOLSETS=all -- \
+  uv --directory "$PWD/whatsapp-mcp-server" run main.py
+```
+
+Or one shared HTTP server for many sessions. Put `WA_MCP_FULL_TOKEN=<random>` (for example from
+`openssl rand -hex 24`, or `python -c "import secrets; print(secrets.token_hex(24))"` on Windows) in `.env`, then:
+
+```bash
+./wactl service install --with-mcp        # adds the wa-mcp service
+claude mcp add -t http whatsapp http://127.0.0.1:8082/mcp \
+  --header "Authorization: Bearer <the token from .env>"
+```
+
+Keep `MCP_HOST` on `127.0.0.1`. To reach it from another machine, bind it to a VPN or tailnet address and set both
+tokens; never bind it to `0.0.0.0` or a public interface. Clients must use the exact host you bound, since the server
+rejects other `Host` headers. For Claude Desktop and the remote connector, see [SETUP.md step 5](SETUP.md#5-connect-a-claude-client).
+
+### Updating
+
+```bash
+./wactl update
+```
+
+It refuses if you have local changes or the branch cannot fast-forward, backs up the store, pulls, rebuilds, then
+restarts the bridge first and the app second, checking each answers its health URL. If the new bridge does not come up
+it puts the previous bridge binary back and tells you where the backup is. It never restores your databases by
+itself. The last 5 backups in `<data>/backups/` are kept; older ones are deleted. If your bridge or app is run by
+something else (your own systemd units, for example), `update` refuses; use `./wactl update --build-only` to pull,
+back up and build, then restart them yourself. Manual equivalent: [SETUP.md, Updating](SETUP.md#updating).
+
+Other commands: `./wactl status`, `./wactl logs bridge -f`, `./wactl restart app`, `./wactl stop`,
+`./wactl service uninstall`.
+
+Windows: the tasks start at logon and need an unlocked user session; Windows does not keep them running while you are
+logged out. Secrets files rely on your user profile's permissions there ([SETUP.md](SETUP.md#windows-notes)).
 
 ### Docker
 

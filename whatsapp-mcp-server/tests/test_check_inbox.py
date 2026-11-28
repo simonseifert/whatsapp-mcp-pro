@@ -104,7 +104,10 @@ def test_concurrent_checks_keep_every_chats_cursor(inbox):
     def reader() -> None:
         # The file must always parse: a truncate-then-write exposes "" here.
         while not stop.is_set():
-            text = cursor_file.read_text()
+            try:
+                text = cursor_file.read_text()
+            except PermissionError:
+                continue  # Windows: the file is mid-replace; the writer retries, so must this reader
             try:
                 json.loads(text)
             except ValueError:
@@ -130,3 +133,37 @@ def test_concurrent_checks_keep_every_chats_cursor(inbox):
     # Every chat consumed all three of its new messages, one per call.
     for chat in chats:
         assert main.check_inbox(chat_jid=chat)["messages"] == []
+
+
+def test_replace_retries_a_windows_sharing_violation(inbox, monkeypatch):
+    main, _, _ = inbox
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(src)
+        if len(calls) < 3:
+            raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(main.os, "replace", flaky)
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)
+    main._replace_with_retry("a", "b", platform="win32")
+    assert len(calls) == 3
+
+
+def test_replace_does_not_retry_off_windows_and_gives_up_on_windows(inbox, monkeypatch):
+    main, _, _ = inbox
+    calls = []
+
+    def locked(src, dst):
+        calls.append(src)
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(main.os, "replace", locked)
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError):
+        main._replace_with_retry("a", "b", platform="linux")
+    assert len(calls) == 1
+    calls.clear()
+    with pytest.raises(PermissionError):
+        main._replace_with_retry("a", "b", platform="win32", attempts=4)
+    assert len(calls) == 4

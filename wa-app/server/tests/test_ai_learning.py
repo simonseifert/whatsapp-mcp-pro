@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pytest
 
-from tests.conftest import ANA, EKIPA
+from tests.conftest import ANA, EKIPA, until
 from tests.test_ai_drafts import CLOUD, LOCAL, Fake, Rig, _event, _insert, _ts, feed
 from wa_app import appdb, live, mcp_lib
 from wa_app.ai import config as ai_config
@@ -95,7 +95,7 @@ def test_reply_while_pending_cancels_the_job(settings) -> None:
         rig.fake.gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.05)
+        await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
         rig.events()
         own = live.Event("message", {"chat_jid": ANA, "message": {
@@ -278,7 +278,7 @@ def test_nightly_sweep_distills_chats_with_new_outcomes(settings) -> None:
         rig.setup(chat=EKIPA)
         seed_outcomes(rig.appconn, 3, ANA)
         task = asyncio.create_task(rig.worker.run())
-        await asyncio.sleep(0.05)
+        await until(lambda: len(delays) >= 2)
         await rig.worker.idle()
         assert delays[0] == pytest.approx(60.0) and delays[1] == pytest.approx(24 * 3600 - 1)
         assert len(rig.fake.calls) == 1
@@ -449,7 +449,7 @@ def test_old_own_row_does_not_cancel_a_newer_draft(settings) -> None:
         rig.sleep_gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.05)
+        await until(lambda: rig.sleeps == [20.0])
         assert rig.sleeps == [20.0] and rig.rows() == []
         rig.events()
         old = live.Event("message", {"chat_jid": ANA, "message": {
@@ -492,8 +492,9 @@ def test_distill_rechecks_local_only_after_the_slot(settings) -> None:
         for _ in range(3):
             await rig.worker._cloud.acquire()
         rig.worker._schedule_distill(ANA)
-        await asyncio.sleep(0.1)
-        ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
+        await until(lambda: ANA in rig.worker._distills)
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
         for _ in range(3):
             rig.worker._cloud.release()
         await rig.worker.idle()

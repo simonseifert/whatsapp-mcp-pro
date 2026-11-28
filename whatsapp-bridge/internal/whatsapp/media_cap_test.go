@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -212,8 +213,13 @@ func TestDownloadToTempEnforcesCapWhateverIsDeclared(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if info, err := os.Stat(path); err != nil || info.Size() != int64(wrote) || info.Mode().Perm() != 0o600 {
+			info, err := os.Stat(path)
+			if err != nil || info.Size() != int64(wrote) {
 				t.Fatalf("temp file: %v %v", info, err)
+			}
+			// Windows has no POSIX mode bits; the file relies on the temp dir's ACL.
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+				t.Fatalf("temp file mode = %o, want 600", info.Mode().Perm())
 			}
 		})
 	}

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -120,13 +122,95 @@ func extractMentionsFromText(text string) []string {
 }
 
 // defaultMediaDirs are the directories media may be read from when
-// MEDIA_ALLOWED_DIRS is unset: the Docker layout, /tmp (where the MCP server
-// stages base64 uploads), and the native data dir.
+// MEDIA_ALLOWED_DIRS is unset: the Docker layout, the native data dir, and the
+// temp dir (where the MCP server and wa-app stage uploads and converted audio):
+// /tmp on POSIX plus os.TempDir(), which is the per-user temp dir on macOS and
+// Windows.
 var defaultMediaDirs = []string{
 	"/app/media",
 	"/app/store",
 	"/app/whatsapp-bridge/store",
-	"/tmp",
+}
+
+// platformTempDirs returns the temp roots staged files may be read from, for
+// one OS. MEDIA_ALLOWED_DIRS remains the override for anything else.
+//
+//   - linux: exactly /tmp, as before. os.TempDir() (TMPDIR) is deliberately not
+//     added, so a stray TMPDIR cannot widen the allowlist.
+//   - darwin and other non-windows: /tmp plus os.TempDir() when absolute
+//     (/var/folders/..., resolved later to /private/var/...).
+//   - windows: os.TempDir() plus the TMP and TEMP values (Go uses TMP, TEMP,
+//     USERPROFILE; Python tries TEMP before TMP, so both are allowed), when
+//     absolute. /tmp is not a Windows path.
+func platformTempDirs(goos, osTemp string, getenv func(string) string) []string {
+	var dirs []string
+	add := func(d string) {
+		if !isAbsFor(goos, d) {
+			return
+		}
+		for _, have := range dirs {
+			if samePathFor(goos, have, d) {
+				return
+			}
+		}
+		dirs = append(dirs, d)
+	}
+	switch goos {
+	case "linux":
+		add("/tmp")
+	case "windows":
+		add(osTemp)
+		add(getenv("TMP"))
+		add(getenv("TEMP"))
+	default:
+		add("/tmp")
+		add(osTemp)
+	}
+	return dirs
+}
+
+// isAbsFor reports whether p is absolute under goos's rules, whatever OS this
+// runs on, so the Windows logic is testable everywhere.
+func isAbsFor(goos, p string) bool {
+	if goos == "windows" {
+		if strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, "//") {
+			return true
+		}
+		return len(p) >= 3 && ((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')) &&
+			p[1] == ':' && (p[2] == '\\' || p[2] == '/')
+	}
+	return strings.HasPrefix(p, "/")
+}
+
+// normPathFor normalises p for comparison: on Windows separators are unified
+// and case is folded (NTFS is case-insensitive); elsewhere only cleaned.
+func normPathFor(goos, p string) string {
+	if goos != "windows" {
+		return pathpkg.Clean(p) // slash semantics, whatever OS the tests run on
+	}
+	p = strings.ReplaceAll(p, "/", `\`)
+	for strings.Contains(p[1:], `\\`) { // keep a leading UNC prefix
+		p = p[:1] + strings.ReplaceAll(p[1:], `\\`, `\`)
+	}
+	if len(p) > 3 {
+		p = strings.TrimSuffix(p, `\`)
+	}
+	return strings.ToLower(p)
+}
+
+func samePathFor(goos, a, b string) bool {
+	return normPathFor(goos, a) == normPathFor(goos, b)
+}
+
+// pathInsideFor reports whether p is root or lies below it, on path-segment
+// boundaries (so /tmpfoo is not inside /tmp), with Windows folding applied.
+func pathInsideFor(goos, p, root string) bool {
+	sep := "/"
+	if goos == "windows" {
+		sep = `\`
+	}
+	np, nr := normPathFor(goos, p), normPathFor(goos, root)
+	return np == nr || strings.HasPrefix(np, strings.TrimSuffix(nr, sep)+sep)
 }
 
 // allowedMediaDirs resolves the media allowlist. MEDIA_ALLOWED_DIRS is a
@@ -137,6 +221,7 @@ var defaultMediaDirs = []string{
 // and env changes honest.
 func allowedMediaDirs() []string {
 	dirs := append([]string{}, defaultMediaDirs...)
+	dirs = append(dirs, platformTempDirs(runtime.GOOS, os.TempDir(), os.Getenv)...)
 	for _, extra := range strings.Split(os.Getenv("MEDIA_ALLOWED_DIRS"), ",") {
 		if trimmed := strings.TrimSpace(extra); trimmed != "" {
 			dirs = append(dirs, trimmed)
@@ -171,6 +256,11 @@ func validateMediaPath(mediaPath string) error {
 	// Resolve symlinks on the longest existing prefix of the path: this defeats
 	// a symlink planted anywhere along the path while still permitting a leaf
 	// file that has not been created yet.
+	if hasUnresolvableLink(absPath) {
+		// A dangling or otherwise unresolvable link: its literal path would sit
+		// inside an allowed root while the real destination is unknown.
+		return fmt.Errorf("media path cannot be resolved")
+	}
 	resolvedPath := resolveExistingPrefix(absPath)
 	roots := allowedMediaRoots()
 
@@ -223,11 +313,9 @@ func allowedMediaRoots() []string {
 // /tmpfoo is not inside /tmp. Most specific wins so that a data dir listed
 // below a broad home dir decides which segments count as "inside" it.
 func longestContainingRoot(p string, roots []string) string {
-	sep := string(os.PathSeparator)
 	best := ""
 	for _, root := range roots {
-		inside := p == root || strings.HasPrefix(p, strings.TrimSuffix(root, sep)+sep)
-		if inside && len(root) > len(best) {
+		if pathInsideFor(runtime.GOOS, p, root) && len(root) > len(best) {
 			best = root
 		}
 	}
@@ -321,6 +409,24 @@ func resolveExistingPrefix(absPath string) string {
 			return absPath
 		}
 		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
+}
+
+// hasUnresolvableLink reports whether some component of absPath exists (Lstat
+// succeeds) but cannot be resolved by EvalSymlinks, e.g. a symlink or reparse
+// point whose target is missing or unreadable. resolveExistingPrefix would
+// skip such a component and judge the link by its own literal path.
+func hasUnresolvableLink(absPath string) bool {
+	for current := absPath; ; {
+		if _, err := os.Lstat(current); err == nil {
+			_, evalErr := filepath.EvalSymlinks(current)
+			return evalErr != nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
 		current = parent
 	}
 }

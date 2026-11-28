@@ -1,0 +1,8 @@
+# Config for everything under scripts/ (wactl.py, its tests, and the other helper scripts).
+line-length = 110
+target-version = "py311"
+extend-exclude = ["merge-lid-chats.py"]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
