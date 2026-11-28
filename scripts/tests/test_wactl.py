@@ -149,6 +149,7 @@ def test_service_argv_shape():
         "bridge",
         "--data",
         str(Path("/d")),
+        "--service",
     ]
 
 
@@ -197,7 +198,7 @@ def test_schtasks_args_quote_path_with_spaces():
     tr = args[args.index("/TR") + 1]
     assert "-WindowStyle Hidden" in tr
     assert f"'{launcher}' run bridge --data '{data}'" in tr
-    assert "--log" in tr
+    assert "--log" not in tr and tr.endswith('--service"')
     # the full command line, as Windows would see it, keeps /TR as one argument
     line = subprocess.list2cmdline(args)
     assert tr.replace('"', '\\"') in line
@@ -392,3 +393,334 @@ def argparse_ns(**kw):
     import argparse
 
     return argparse.Namespace(**kw)
+
+
+# ------------------------------------------------------------ fix round 1
+
+import os  # noqa: E402
+import sqlite3  # noqa: E402
+
+
+def make_ctx(tmp_path, env=None):
+    repo = tmp_path / "repo"
+    (repo / "whatsapp-bridge").mkdir(parents=True, exist_ok=True)
+    data = tmp_path / "data"
+    data.mkdir(exist_ok=True)
+    return wactl.Context(repo=repo, data=data, env=env or {"API_PORT": "59123"})
+
+
+def make_store(ctx, paired):
+    store = ctx.data / "store"
+    store.mkdir(exist_ok=True)
+    con = sqlite3.connect(store / "whatsapp.db")
+    con.execute("CREATE TABLE whatsmeow_device (jid TEXT)")
+    if paired:
+        con.execute("INSERT INTO whatsmeow_device VALUES ('x')")
+    con.commit()
+    con.close()
+    con = sqlite3.connect(store / "messages.db")
+    con.execute("CREATE TABLE IF NOT EXISTS messages (id TEXT)")
+    con.commit()
+    con.close()
+
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+
+
+def test_untracked_data_dir_files_do_not_block_update(clone):
+    _, _, work = clone
+    (work / "logs").mkdir()
+    (work / "logs" / "bridge.log").write_text("x")
+    (work / "backups").mkdir()
+    (work / "backups" / "f").write_text("x")
+    assert wactl.check_update_ready(work) is None
+
+
+def test_gitignore_covers_default_data_dir_contents():
+    text = (SCRIPT.parents[1] / ".gitignore").read_text()
+    for d in ("run", "logs", "backups"):
+        assert f"whatsapp-bridge/{d}/" in text
+
+
+def test_is_paired(tmp_path):
+    ctx = make_ctx(tmp_path)
+    assert wactl.is_paired(ctx.store) is False  # no store
+    make_store(ctx, paired=False)
+    assert wactl.is_paired(ctx.store) is False  # logged out / no device row
+    (ctx.store / "whatsapp.db").unlink()
+    make_store(ctx, paired=True)
+    assert wactl.is_paired(ctx.store) is True
+
+
+def test_start_guard_refuses_unpaired_with_distinct_code(tmp_path):
+    ctx = make_ctx(tmp_path)
+    code, msg = wactl.bridge_start_problem(ctx)
+    assert code == wactl.EXIT_UNPAIRED and "wactl pair" in msg
+    make_store(ctx, paired=True)
+    assert wactl.bridge_start_problem(ctx) is None
+    # pair itself must not need a paired store
+    (ctx.store / "whatsapp.db").unlink()
+    assert wactl.bridge_start_problem(ctx, need_paired=False) is None
+
+
+def test_exit_code_4_in_systemd_restart_prevent_and_supervisor_stops():
+    unit = wactl.render_systemd_unit("bridge", ARGV, Path("/d"))
+    assert "RestartPreventExitStatus=3 4" in unit and "Restart=on-failure" in unit
+    result, sleeps = run_supervisor([(4, 1), (0, 1)])
+    assert result == wactl.EXIT_UNPAIRED and sleeps == []
+
+
+def test_supervisor_rechecks_before_each_restart():
+    clock = FakeClock()
+    stop = threading.Event()
+    codes = iter([1, 1, 1])
+    verdicts = iter([None, wactl.EXIT_UNPAIRED])
+    spawned = []
+
+    def spawn():
+        spawned.append(1)
+        return FakeChild(clock, next(codes), 1)
+
+    res = wactl.supervise(
+        spawn,
+        sleep=lambda s: False,
+        clock=clock,
+        stop=stop,
+        log=lambda m: None,
+        before_restart=lambda: next(verdicts),
+    )
+    assert res == wactl.EXIT_UNPAIRED and len(spawned) == 2
+
+
+def test_second_bridge_guard_port_and_pid(tmp_path):
+    import socket
+
+    ctx = make_ctx(tmp_path)
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        ctx.env["API_PORT"] = str(srv.getsockname()[1])
+        assert "already in use" in wactl.bridge_conflict(ctx, as_service=True)
+    ctx.env["API_PORT"] = "59124"
+    assert wactl.bridge_conflict(ctx, as_service=True) is None
+    # a live pid in the pid file (not ourselves) blocks
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (ctx.data / "run").mkdir()
+        ctx.pidfile("bridge").write_text(str(other.pid))
+        assert "already running" in wactl.bridge_conflict(ctx, as_service=True)
+        ctx.pidfile("bridge").write_text(str(os.getpid()))
+        assert wactl.bridge_conflict(ctx, as_service=True) is None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_second_bridge_guard_active_service_unless_it_is_the_service(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    monkeypatch.setattr(wactl, "installed_services", lambda c: ["bridge"])
+    monkeypatch.setattr(wactl, "service_state", lambda c, n: "active")
+    assert "service is running" in wactl.bridge_conflict(ctx, as_service=False)
+    assert wactl.bridge_conflict(ctx, as_service=True) is None
+
+
+def test_parse_tasklist_pid_is_exact():
+    out = '"python.exe","12345","Console","1","10,000 K"\n'
+    assert wactl.parse_tasklist_pid(out, 12345)
+    assert not wactl.parse_tasklist_pid(out, 1234)
+    assert not wactl.parse_tasklist_pid("INFO: No tasks are running which match the specified criteria.", 1)
+
+
+def test_schtasks_tr_within_limit_for_realistic_long_paths():
+    launcher = r"C:\Users\Jane Doe\Documents\Projects\whatsapp-mcp-pro\wactl.cmd"
+    data = r"C:\Users\Jane Doe\AppData\Local\whatsapp-mcp-pro"
+    for c in wactl.COMPONENTS:
+        tr = wactl.schtasks_create_args(c, launcher, data)[
+            wactl.schtasks_create_args(c, launcher, data).index("/TR") + 1
+        ]
+        assert len(tr) <= wactl.TR_MAX, len(tr)
+
+
+# ---- file modes
+
+
+@posix_only
+def test_backup_is_private_and_unique(tmp_path):
+    ctx = make_ctx(tmp_path)
+    make_store(ctx, paired=True)
+    b1 = wactl.backup_store(ctx)
+    b2 = wactl.backup_store(ctx)
+    assert b1 != b2
+    assert stat.S_IMODE(b1.stat().st_mode) == 0o700
+    assert stat.S_IMODE((ctx.data / "backups").stat().st_mode) == 0o700
+    for name in ("messages.db", "whatsapp.db"):
+        assert stat.S_IMODE((b1 / name).stat().st_mode) == 0o600
+    assert sqlite3.connect(b1 / "messages.db").execute("select count(*) from messages").fetchone() == (0,)
+
+
+@posix_only
+def test_private_dirs_and_logs(tmp_path):
+    d = wactl.ensure_private_dir(tmp_path / "x" / "logs")
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+    log = d / "a.log"
+    log.write_text("old")
+    os.chmod(log, 0o644)
+    fh = wactl.open_private_log(log)
+    fh.write(b"new")
+    fh.close()
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert log.read_text() == "oldnew"
+
+
+def test_plist_has_umask_077():
+    data = plistlib.loads(wactl.render_launchd_plist("bridge", ARGV, Path("/d"), "/bin"))
+    assert data["Umask"] == 0o077
+
+
+def test_systemd_dollar_and_percent_escaping():
+    argv = ["/u v", "run", "/r/a$b%c/wactl.py"]
+    unit = wactl.render_systemd_unit("bridge", argv, Path("/d%1"))
+    assert "/r/a$$b%%c/wactl.py" in unit
+    assert "WorkingDirectory=/d%%1\n" in unit
+
+
+def test_macos_install_boots_out_before_bootstrap(tmp_path, monkeypatch):
+    monkeypatch.setattr(wactl, "IS_MAC", True)
+    monkeypatch.setattr(wactl, "IS_WINDOWS", False)
+    monkeypatch.setattr(wactl, "launchd_dir", lambda: tmp_path / "LA")
+    ctx = make_ctx(tmp_path)
+    files, cmds = wactl.plan_service_install(ctx, ["bridge"])
+    verbs = [c[0][1] for c in cmds]
+    assert verbs == ["bootout", "bootstrap"]
+    assert cmds[0][1] is False and cmds[1][1] is True
+
+
+def test_update_build_keeps_dev_extras_with_inexact(tmp_path, monkeypatch):
+    monkeypatch.setattr(wactl, "pnpm_cmd", lambda: ["pnpm"])
+    ctx = make_ctx(tmp_path)
+    steps = wactl.build_steps(ctx, minimal=True, bridge_out="whatsapp-bridge.new", inexact=True)
+    assert "--inexact" in steps[1][1] and "--inexact" in steps[2][1]
+    assert "whatsapp-bridge.new" in steps[0][1]
+
+
+# ---- update sequence with a fake runner
+
+
+class FakeOps:
+    def __init__(self, ctx, healthy=(True, True), replace_fail_on=None, build_error=None, mcp_active=False):
+        self.ctx, self.calls = ctx, []
+        self.health = list(healthy)
+        self.replace_fail_on = replace_fail_on
+        self.build_error = build_error
+        self.mcp_active = mcp_active
+
+    def ops(self):
+        def build(ctx):
+            self.calls.append("build")
+            if self.build_error:
+                raise wactl.StepError(self.build_error)
+            ctx.bridge_bin.with_name(f"whatsapp-bridge.new{wactl.EXE}").write_text("NEW")
+
+        def replace(src, dst):
+            self.calls.append(f"replace {src.name}->{dst.name}")
+            if self.replace_fail_on and src.name.startswith(self.replace_fail_on):
+                raise OSError("denied")
+            os.replace(src, dst)
+
+        def healthy(url):
+            self.calls.append("health")
+            return self.health.pop(0) if self.health else True
+
+        return wactl.UpdateOps(
+            build=build,
+            stop=lambda c, n: self.calls.append(f"stop {n}"),
+            start=lambda c, n: self.calls.append(f"start {n}"),
+            healthy=healthy,
+            replace=replace,
+            is_active=lambda c, n: self.mcp_active and n == "mcp",
+        )
+
+
+def update_ctx(tmp_path):
+    ctx = make_ctx(tmp_path)
+    ctx.bridge_bin.write_text("OLD")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / ctx.bridge_bin.name).write_text("OLD")
+    return ctx, backup
+
+
+def test_update_success_sequence_swaps_binary_while_stopped(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, mcp_active=True)
+    msgs = []
+    assert wactl.apply_update(ctx, fake.ops(), backup, msgs.append) is True
+    exe = wactl.EXE
+    assert fake.calls == [
+        "build",
+        "stop bridge",
+        f"replace whatsapp-bridge{exe}->whatsapp-bridge.old{exe}",
+        f"replace whatsapp-bridge.new{exe}->whatsapp-bridge{exe}",
+        "start bridge",
+        "health",
+        "stop app",
+        "start app",
+        "health",
+        "stop mcp",
+        "start mcp",
+    ]
+    assert ctx.bridge_bin.read_text() == "NEW"
+
+
+def test_update_rolls_back_binary_when_bridge_unhealthy(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, healthy=(False, True))
+    msgs = []
+    assert wactl.apply_update(ctx, fake.ops(), backup, msgs.append) is False
+    assert ctx.bridge_bin.read_text() == "OLD"
+    text = "\n".join(msgs)
+    assert "did not become healthy" in text and "put back and the bridge is healthy again" in text
+    assert "restore the backup by hand" in text and "were not changed" not in text
+
+
+def test_update_reports_failed_rollback_honestly(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, healthy=(False,))
+    ops = fake.ops()
+    real = ops.replace
+
+    def flaky(src, dst):
+        if src.name.startswith("whatsapp-bridge.old"):
+            raise OSError("file in use")
+        real(src, dst)
+
+    ops.replace = flaky
+    msgs = []
+    assert wactl.apply_update(ctx, ops, backup, msgs.append) is False
+    text = "\n".join(msgs)
+    assert "Could not put the previous bridge binary back" in text and "NOT restored" in text
+    assert "healthy again" not in text
+
+
+def test_update_rollback_reports_still_unhealthy(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, healthy=(False, False))
+    msgs = []
+    wactl.apply_update(ctx, fake.ops(), backup, msgs.append)
+    assert any("did not become healthy" in m and "put back" in m for m in msgs)
+
+
+def test_update_swap_failure_restarts_old_bridge(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, replace_fail_on="whatsapp-bridge.new")
+    msgs = []
+    assert wactl.apply_update(ctx, fake.ops(), backup, msgs.append) is False
+    assert ctx.bridge_bin.read_text() == "OLD"
+    assert fake.calls[-1] == "start bridge"
+
+
+def test_update_build_failure_never_stops_bridge(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, build_error="go build failed")
+    assert wactl.apply_update(ctx, fake.ops(), backup, lambda m: None) is False
+    assert fake.calls == ["build"]

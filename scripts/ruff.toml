@@ -1,4 +1,4 @@
-# Config for scripts/wactl.py and its tests only (Python 3.11+, standard library).
+# Config for everything under scripts/ (wactl.py, its tests, and the other helper scripts).
 line-length = 110
 target-version = "py311"
 extend-exclude = ["merge-lid-chats.py"]

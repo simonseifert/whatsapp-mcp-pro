@@ -1,3 +1,11 @@
 #!/bin/sh
 # wactl launcher: runs scripts/wactl.py with uv. --no-project keeps uv from creating a venv in the repo.
-exec uv run --quiet --no-project "$(dirname "$0")/scripts/wactl.py" "$@"
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+exec uv run --quiet --no-project "$(dirname "$self")/scripts/wactl.py" "$@"
