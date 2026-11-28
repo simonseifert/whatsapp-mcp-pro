@@ -597,7 +597,7 @@ def test_macos_install_boots_out_before_bootstrap(tmp_path, monkeypatch):
 
 
 def test_update_build_keeps_dev_extras_with_inexact(tmp_path, monkeypatch):
-    monkeypatch.setattr(wactl, "pnpm_cmd", lambda: ["pnpm"])
+    monkeypatch.setattr(wactl, "pnpm_cmd", lambda *a: ["pnpm"])
     ctx = make_ctx(tmp_path)
     steps = wactl.build_steps(ctx, minimal=True, bridge_out="whatsapp-bridge.new", inexact=True)
     assert "--inexact" in steps[1][1] and "--inexact" in steps[2][1]
@@ -891,3 +891,37 @@ def test_run_clears_stale_child_file_and_unlinks_on_child_exit(tmp_path, monkeyp
     assert wactl.cmd_run(ctx, ns) == 0
     assert seen["during"] == "4242"  # the stale 999 was replaced by the live child
     assert not wactl.childfile(ctx, "app").exists()  # removed as soon as the child exited
+
+
+def test_pnpm_pin_reads_package_manager(tmp_path):
+    web = tmp_path / "wa-app" / "web"
+    web.mkdir(parents=True)
+    (web / "package.json").write_text('{"packageManager": "pnpm@11.22.0+sha512.abc"}')
+    assert wactl.pnpm_pin(tmp_path) == "11.22.0"
+    (web / "package.json").write_text("{}")
+    assert wactl.pnpm_pin(tmp_path) is None
+
+
+def test_pnpm_cmd_falls_back_to_npm_when_corepack_broken(monkeypatch, tmp_path):
+    state = {"pnpm": False}
+    calls = []
+
+    def which(name):
+        if name == "pnpm":
+            return "/x/pnpm" if state["pnpm"] else None
+        return f"/x/{name}"
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        state["pnpm"] = True
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    web = tmp_path / "wa-app" / "web"
+    web.mkdir(parents=True)
+    (web / "package.json").write_text('{"packageManager": "pnpm@11.22.0"}')
+    monkeypatch.setattr(wactl.shutil, "which", which)
+    monkeypatch.setattr(wactl, "corepack_works", lambda: False)
+    monkeypatch.setattr(wactl, "resolve_exe", lambda n: n)
+    monkeypatch.setattr(wactl.subprocess, "run", fake_run)
+    assert wactl.pnpm_cmd(tmp_path) == ["pnpm"]
+    assert calls[0][1:] == ["install", "-g", "pnpm@11.22.0"]

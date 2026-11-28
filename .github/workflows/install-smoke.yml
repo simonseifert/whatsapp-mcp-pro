@@ -59,10 +59,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Enable corepack
-        run: corepack enable
+          node-version: '22'
 
       # On Windows this runs the .cmd launcher through cmd, which is what users run.
       - name: Define wactl helper
@@ -77,15 +74,25 @@ jobs:
           } > "$RUNNER_TEMP/wactl-run.sh"
           chmod +x "$RUNNER_TEMP/wactl-run.sh"
 
-      - name: wactl doctor
+      # Before setup: a missing .env is expected, so this is informational only.
+      - name: wactl doctor (before setup)
         run: |
-          # Optional checks may warn; a required failure shows up in setup below.
-          "$RUNNER_TEMP/wactl-run.sh" doctor || echo "doctor reported problems (continuing)"
+          "$RUNNER_TEMP/wactl-run.sh" doctor || echo "doctor reported problems before setup (expected: no .env yet)"
 
       - name: wactl setup --minimal
         run: |
           "$RUNNER_TEMP/wactl-run.sh" setup --minimal --yes --data "$RUNNER_TEMP/wa"
           ls whatsapp-bridge/whatsapp-bridge*
+
+      # Proves the pnpm path (corepack, or the npm fallback) that setup used.
+      - name: Check pnpm
+        run: |
+          pnpm --version || corepack pnpm --version
+          ls wa-app/web/dist/index.html
+
+      - name: wactl doctor (after setup)
+        run: |
+          "$RUNNER_TEMP/wactl-run.sh" doctor
 
       # wa-app tolerates a missing bridge store, so no store fixture is needed.
       - name: Start the app and check health

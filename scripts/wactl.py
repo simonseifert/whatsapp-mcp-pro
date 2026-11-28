@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import platform
 import plistlib
@@ -237,7 +238,7 @@ def install_hint(tool: str, system: str) -> str:
             "uv": "curl -LsSf https://astral.sh/uv/install.sh | sh   (or: pipx install uv)",
             "go": "sudo apt install golang-go   (or download from https://go.dev/dl/)",
             "cc": "sudo apt install build-essential",
-            "node": "sudo apt install nodejs npm   (Node 20 or newer: https://nodejs.org)",
+            "node": "Node 22 or newer. apt nodejs is often too old: use NodeSource, nvm or https://nodejs.org",
             "pnpm": "corepack enable   (ships with Node), or: npm install -g pnpm   (apt has no pnpm)",
             "ffmpeg": "sudo apt install ffmpeg",
             "tailscale": "curl -fsSL https://tailscale.com/install.sh | sh   (apt repo: https://tailscale.com/download/linux)",
@@ -361,17 +362,19 @@ def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
     node = shutil.which("node")
     nv = parse_version(tool_output([node, "-v"])) if node else None
     row(
-        bool(nv and nv[0] >= 20),
-        "Node",
+        bool(nv and nv[0] >= 22),
+        "Node (22 or newer, pnpm 11 needs it)",
         ".".join(map(str, nv)) if nv else "not found",
         hint=install_hint("node", system),
     )
     pnpm = shutil.which("pnpm")
-    corepack = shutil.which("corepack")
+    corepack_ok = bool(shutil.which("corepack")) and corepack_works()
+    npm = shutil.which("npm")
     row(
-        bool(pnpm or corepack),
+        bool(pnpm or corepack_ok or npm),
         "pnpm",
-        pnpm or (f"via corepack ({corepack})" if corepack else "not found"),
+        pnpm
+        or ("via corepack" if corepack_ok else f"will be installed with npm ({npm})" if npm else "not found"),
         hint=install_hint("pnpm", system),
     )
     row(
@@ -443,16 +446,49 @@ def run_step(label: str, cmd: list[str], cwd: Path, env: dict[str, str] | None =
         raise StepError(f"{label} failed (exit {r.returncode})")
 
 
-def pnpm_cmd() -> list[str]:
+def corepack_works() -> bool:
+    """True if corepack runs. Some Node installs list it but ship without the module."""
+    exe = shutil.which("corepack")
+    if not exe:
+        return False
+    try:
+        r = subprocess.run([resolve_exe("corepack"), "--version"], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def pnpm_pin(repo: Path) -> str | None:
+    """The pnpm version wa-app/web pins in package.json (packageManager), or None."""
+    try:
+        pm = json.loads((repo / "wa-app" / "web" / "package.json").read_text()).get("packageManager", "")
+    except (OSError, ValueError):
+        return None
+    m = re.fullmatch(r"pnpm@(\d+\.\d+\.\d+)(?:\+.*)?", pm)
+    return m.group(1) if m else None
+
+
+def pnpm_cmd(repo: Path | None = None) -> list[str]:
     if shutil.which("pnpm"):
         return ["pnpm"]
-    if shutil.which("corepack"):
+    if corepack_works():
         with contextlib.suppress(OSError):
             subprocess.run([resolve_exe("corepack"), "enable"], capture_output=True)
         if shutil.which("pnpm"):
             return ["pnpm"]
         return ["corepack", "pnpm"]
-    raise StepError("pnpm and corepack are both missing. " + install_hint("pnpm", platform.system()))
+    npm = shutil.which("npm")
+    if npm:
+        ver = pnpm_pin(repo) if repo else None
+        spec = f"pnpm@{ver}" if ver else "pnpm"
+        say(f"corepack is missing or broken; installing {spec} with npm (npm install -g {spec})")
+        r = subprocess.run([resolve_exe("npm"), "install", "-g", spec], capture_output=True, text=True)
+        if r.returncode == 0 and shutil.which("pnpm"):
+            return ["pnpm"]
+        raise StepError(f"npm install -g {spec} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+    raise StepError(
+        "pnpm, a working corepack and npm are all missing. " + install_hint("pnpm", platform.system())
+    )
 
 
 def mcp_extra() -> str:
@@ -467,7 +503,7 @@ def build_steps(
     mcp = [uv, "sync", *extra_flag, "--project", str(ctx.repo / "whatsapp-mcp-server")]
     if not minimal:
         mcp += ["--extra", mcp_extra()]
-    pm = pnpm_cmd()
+    pm = pnpm_cmd(ctx.repo)
     web = ctx.repo / "wa-app" / "web"
     return [
         (

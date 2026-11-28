@@ -301,7 +301,8 @@ the phone if you want the app on your phone.
 Linux (Debian or Ubuntu):
 
 ```bash
-sudo apt install golang-go build-essential nodejs npm ffmpeg git   # Go 1.21+ is fine, it fetches the newer one
+sudo apt install golang-go build-essential ffmpeg git   # Go 1.21+ is fine, it fetches the newer one
+# Node 22 or newer (pnpm 11 needs it). apt's nodejs is usually too old: use NodeSource, nvm or https://nodejs.org
 curl -LsSf https://astral.sh/uv/install.sh | sh                    # uv
 curl -fsSL https://tailscale.com/install.sh | sh                   # for the phone
 ```
@@ -310,7 +311,7 @@ macOS ([Homebrew](https://brew.sh)):
 
 ```bash
 xcode-select --install                                             # the C compiler (cgo)
-brew install go uv node ffmpeg git tailscale
+brew install go uv node ffmpeg git tailscale   # node: 22 or newer
 ```
 
 Windows (PowerShell):
@@ -318,7 +319,7 @@ Windows (PowerShell):
 ```powershell
 winget install --id GoLang.Go
 winget install --id astral-sh.uv
-winget install --id OpenJS.NodeJS.LTS
+winget install --id OpenJS.NodeJS.LTS                              # Node 22 or newer
 winget install --id Git.Git
 winget install --id Gyan.FFmpeg
 winget install --id Tailscale.Tailscale
