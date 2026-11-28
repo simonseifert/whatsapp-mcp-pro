@@ -14,6 +14,9 @@ from pathlib import Path
 
 import pytest
 
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+unix_paths = pytest.mark.skipif(sys.platform == "win32", reason="renders POSIX paths such as /d")
+
 SCRIPT = Path(__file__).resolve().parents[1] / "wactl.py"
 spec = importlib.util.spec_from_file_location("wactl", SCRIPT)
 wactl = importlib.util.module_from_spec(spec)
@@ -154,6 +157,7 @@ def test_service_argv_shape():
     ]
 
 
+@unix_paths
 def test_systemd_unit_exact_paths_and_exit_code_3():
     unit = wactl.render_systemd_unit("bridge", ARGV, Path("/d"))
     assert unit.startswith(wactl.MARKER)
@@ -163,6 +167,7 @@ def test_systemd_unit_exact_paths_and_exit_code_3():
     assert "WantedBy=default.target" in unit
 
 
+@unix_paths
 def test_systemd_unit_quotes_spaces_and_percent():
     argv = ["/o b/uv", "run", "/r 100%/wactl.py", "run", "app", "--data", "/d x"]
     unit = wactl.render_systemd_unit("app", argv, Path("/d x"))
@@ -170,6 +175,7 @@ def test_systemd_unit_quotes_spaces_and_percent():
     assert "wa-bridge.service" in unit.split("After=")[1].splitlines()[0]
 
 
+@unix_paths
 def test_plist_is_runatload_no_keepalive_and_calls_run(tmp_path):
     data = plistlib.loads(wactl.render_launchd_plist("bridge", ARGV, Path("/d"), "/usr/bin:/bin"))
     assert data["Label"] == "com.wactl.bridge"
@@ -402,9 +408,6 @@ def make_store(ctx, paired):
     con.close()
 
 
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-
-
 def test_untracked_data_dir_files_do_not_block_update(clone):
     _, _, work = clone
     (work / "logs").mkdir()
@@ -441,6 +444,7 @@ def test_start_guard_refuses_unpaired_with_distinct_code(tmp_path):
     assert wactl.bridge_start_problem(ctx, need_paired=False) is None
 
 
+@unix_paths
 def test_exit_code_4_in_systemd_restart_prevent_and_supervisor_stops():
     unit = wactl.render_systemd_unit("bridge", ARGV, Path("/d"))
     assert "RestartPreventExitStatus=3 4 5" in unit and "Restart=on-failure" in unit
@@ -541,11 +545,13 @@ def test_private_dirs_and_logs(tmp_path):
     assert log.read_text() == "oldnew"
 
 
+@unix_paths
 def test_plist_has_umask_077():
     data = plistlib.loads(wactl.render_launchd_plist("bridge", ARGV, Path("/d"), "/bin"))
     assert data["Umask"] == 0o077
 
 
+@unix_paths
 def test_systemd_dollar_and_percent_escaping():
     argv = ["/u v", "run", "/r/a$b%c/wactl.py"]
     unit = wactl.render_systemd_unit("bridge", argv, Path("/d%1"))
@@ -553,6 +559,7 @@ def test_systemd_dollar_and_percent_escaping():
     assert "WorkingDirectory=/d%%1\n" in unit
 
 
+@unix_paths
 def test_macos_install_boots_out_before_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(wactl, "IS_MAC", True)
     monkeypatch.setattr(wactl, "IS_WINDOWS", False)
@@ -959,6 +966,7 @@ def test_service_path_contains_tool_dirs_and_system_bins(monkeypatch):
     assert parts[-3:] == ["/usr/local/bin", "/usr/bin", "/bin"]
 
 
+@unix_paths
 def test_systemd_unit_sets_path_and_blocks_exit_5():
     unit = wactl.render_systemd_unit("app", ARGV, Path("/d"), "/home/u/.local/bin:/usr/bin")
     assert "Environment=PATH=/home/u/.local/bin:/usr/bin\n" in unit
@@ -1132,6 +1140,7 @@ def test_windows_install_plan_uses_powershell_not_schtasks(tmp_path, monkeypatch
     assert "Register-ScheduledTask" in wactl.decode_powershell_args(cmds[0][0])
 
 
+@unix_paths
 def test_plist_sets_tmpdir_when_given():
     data = plistlib.loads(wactl.render_launchd_plist("bridge", ARGV, Path("/d"), "/bin", "/private/tmp"))
     assert data["EnvironmentVariables"]["TMPDIR"] == "/private/tmp"
