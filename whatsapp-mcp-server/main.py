@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -1314,6 +1315,25 @@ from lib.recall import recall as _recall  # noqa: E402
 _INBOX_LOCK = threading.Lock()
 
 
+def _replace_with_retry(src: str, dst: str, *, platform: str | None = None, attempts: int = 10) -> None:
+    """os.replace, retried on Windows.
+
+    There a replace fails with PermissionError (a sharing violation) while any
+    other thread or process has the destination open, even just to read it.
+    The window is a few milliseconds, so a short backoff gets through. POSIX
+    replaces atomically regardless and never retries.
+    """
+    retry = (platform or sys.platform) == "win32"
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not retry or attempt == attempts - 1:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def _load_inbox_state(cursor_file: str) -> dict[str, int]:
     """Read the cursor file. Missing -> {}; corrupt -> moved aside, warned, {}.
 
@@ -1332,7 +1352,7 @@ def _load_inbox_state(cursor_file: str) -> dict[str, int]:
     except (ValueError, TypeError) as exc:
         aside = f"{cursor_file}.corrupt-{int(time.time())}"
         try:
-            os.replace(cursor_file, aside)
+            _replace_with_retry(cursor_file, aside)
         except OSError:
             aside = "(could not move it aside)"
         logger.warning(f"Inbox cursor file {cursor_file} is unreadable ({exc}); saved as {aside}, starting fresh")
@@ -1351,7 +1371,7 @@ def _save_inbox_state(cursor_file: str, state: dict[str, int]) -> None:
             json.dump(state, fh)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, cursor_file)
+        _replace_with_retry(tmp, cursor_file)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
