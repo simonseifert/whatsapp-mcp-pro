@@ -1,8 +1,10 @@
 """Shared fixtures: a tiny fictional bridge store and an app client."""
 
+import asyncio
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -358,3 +360,12 @@ def logged_in(client: TestClient) -> TestClient:
     client.post("/api/auth/setup", json={"passphrase": PASSPHRASE})
     assert client.post("/api/auth/login", json={"passphrase": PASSPHRASE}).status_code == 200
     return client
+
+
+async def until(cond, timeout: float = 10.0) -> None:
+    """Waits for a condition instead of a fixed sleep, which slow CI runners outrun."""
+    deadline = time.monotonic() + timeout
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.005)

@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tests.conftest import ANA, EKIPA, NEIGHBOURHOOD
+from tests.conftest import ANA, EKIPA, NEIGHBOURHOOD, until
 from wa_app import appdb, live, store
 from wa_app.ai import config as ai_config
 from wa_app.ai import context, drafts
@@ -143,8 +143,7 @@ def test_closed_app_waits_20s_quiet(settings) -> None:
         rig.sleep_gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.05)
-        assert rig.sleeps == [20.0]
+        await until(lambda: rig.sleeps == [20.0])
         assert rig.fake.calls == [] and rig.rows() == []
         rig.sleep_gate.set()
         await rig.worker.idle()
@@ -176,11 +175,11 @@ def test_new_message_cancels_running_draft(settings) -> None:
         rig.fake.gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
-        assert rig.fake.active == 1
+        await until(lambda: rig.fake.active == 1)
         _insert(settings, ANA, "N2", "Još sam tu")
         rig.worker.on_events([_event(ANA, "N2")])
-        await asyncio.sleep(0.1)
+        await until(lambda: len(rig.fake.calls) == 2)
+        await until(lambda: rig.fake.active == 1)
         assert rig.fake.active == 1  # the first call was cancelled, the second runs
         rig.fake.gate.set()
         await rig.worker.idle()
@@ -250,7 +249,7 @@ def test_chat_switched_to_local_only_while_waiting_for_a_slot(settings) -> None:
         for _ in range(drafts.CLOUD_SLOTS):
             await rig.worker._cloud.acquire()  # the cloud is busy
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
+        await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
         ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
         for _ in range(drafts.CLOUD_SLOTS):
@@ -269,7 +268,7 @@ def test_chat_switched_off_while_waiting_for_a_slot_makes_no_call(settings) -> N
         for _ in range(drafts.CLOUD_SLOTS):
             await rig.worker._cloud.acquire()  # the cloud is busy
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
+        await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
         ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
         for _ in range(drafts.CLOUD_SLOTS):
@@ -288,7 +287,7 @@ def test_switched_off_during_the_quiet_wait_makes_no_draft(settings) -> None:
         _insert(settings, ANA, "N1")
         rig.sleep_gate = asyncio.Event()
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.1)
+        await until(lambda: rig.sleeps != [])
         ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
         rig.sleep_gate.set()
         await rig.worker.idle()
@@ -325,7 +324,8 @@ def test_local_cap_1_cloud_cap_3(settings, backend, cap) -> None:
         rig.fake.gate = asyncio.Event()
         for chat in chats:
             rig.worker.on_events([_event(chat, f"X-{chat[:6]}")])
-        await asyncio.sleep(0.2)
+        # every chat has a job (the extra ones queue for a slot) and the free slots are all in use
+        await until(lambda: len(rig.worker._jobs) == len(chats) and rig.fake.active == cap)
         assert rig.fake.active == cap
         rig.fake.gate.set()
         await rig.worker.idle()

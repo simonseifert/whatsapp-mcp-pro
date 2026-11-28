@@ -27,6 +27,7 @@ packages = ["wa_app"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-timeout>=2.3.1",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
 ]

@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pytest
 
-from tests.conftest import ANA, EKIPA
+from tests.conftest import ANA, EKIPA, until
 from tests.test_ai_drafts import CLOUD, LOCAL, Fake, Rig, _event, _insert, _ts, feed
 from wa_app import appdb, live, mcp_lib
 from wa_app.ai import config as ai_config
@@ -87,15 +87,6 @@ def test_reply_from_phone_supersedes_and_removes_card(settings) -> None:
         assert outcome(rig.appconn, 1)[:1] == ("used",)
 
     _run(settings, scenario)
-
-
-async def until(cond, timeout: float = 10.0) -> None:
-    """Waits for a condition instead of a fixed sleep, which slow CI runners outrun."""
-    deadline = time.monotonic() + timeout
-    while not cond():
-        if time.monotonic() > deadline:
-            raise AssertionError("condition not reached in time")
-        await asyncio.sleep(0.005)
 
 
 def test_reply_while_pending_cancels_the_job(settings) -> None:

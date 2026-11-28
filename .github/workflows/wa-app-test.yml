@@ -15,6 +15,7 @@ on:
 jobs:
   server:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -31,10 +32,12 @@ jobs:
         shell: bash
         run: |
           uv sync
-          uv run pytest -q
+          # A hang fails fast with a traceback of every thread instead of eating the job's whole time.
+          uv run pytest -q --timeout=120 --timeout-method=thread -o faulthandler_timeout=150
 
   web:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
