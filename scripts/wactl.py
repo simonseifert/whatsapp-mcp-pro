@@ -693,6 +693,7 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
     if other and other != os.getpid():
         say(f"wactl: {component} is already running for this data directory (pid {other}).")
         return 1
+    childfile(ctx, component).unlink(missing_ok=True)  # stale from a crashed earlier supervisor
     log_file = open_private_log(Path(log_path)) if log_path else None
     ctx.pidfile(component).write_text(str(os.getpid()))
     stop = threading.Event()
@@ -719,15 +720,20 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
         def __init__(self) -> None:
             self.p = popen_component(ctx, component, log_file, new_session=True)
             current["p"] = self.p
+            ensure_private_dir(childfile(ctx, component).parent)
             childfile(ctx, component).write_text(str(self.p.pid))
 
         def wait(self) -> int:
             while True:
                 try:
-                    return self.p.wait(timeout=1 if not stop.is_set() else 20)
+                    code = self.p.wait(timeout=1 if not stop.is_set() else 20)
                 except subprocess.TimeoutExpired:
                     if stop.is_set():
                         self.p.kill()
+                    continue
+                # The pid is free for reuse now; never leave it recorded during restart backoff.
+                childfile(ctx, component).unlink(missing_ok=True)
+                return code
 
     def log(msg: str) -> None:
         line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}"
@@ -852,16 +858,29 @@ def childfile(ctx: Context, c: str) -> Path:
     return ctx.data / "run" / f"{c}.child"
 
 
-def stop_pid(pid: int) -> None:
+def stop_pid(pid: int) -> bool:
+    """Stop a process. Returns True if it had to be SIGKILLed (POSIX), i.e. it could not clean up."""
     if IS_WINDOWS:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
-        return
+        return False
     os.kill(pid, signal.SIGTERM)
     for _ in range(60):  # longer than the supervisor's own 20 s wait for its child
         if not pid_alive(pid):
-            return
+            return False
         time.sleep(0.5)
     os.kill(pid, signal.SIGKILL)
+    return True
+
+
+def is_own_child_group(child: int) -> bool:
+    """True if `child` is still a session and group leader, as `run` starts its children.
+
+    A pid reused by an unrelated process is almost never both; this is a guard, not proof.
+    """
+    try:
+        return os.getpgid(child) == child and os.getsid(child) == child
+    except OSError:
+        return False
 
 
 def stop_run(ctx: Context, c: str, pid: int) -> None:
@@ -869,9 +888,10 @@ def stop_run(ctx: Context, c: str, pid: int) -> None:
     child: int | None = None
     with contextlib.suppress(OSError, ValueError):
         child = int(childfile(ctx, c).read_text().strip())
-    stop_pid(pid)
-    if child and not IS_WINDOWS and pid_alive(child):
-        # The supervisor was killed before it could stop its child, which sits in its own session.
+    killed = stop_pid(pid)
+    # Only a SIGKILLed supervisor can leave its child behind (a clean exit stops the child first),
+    # and only a pid that still looks like our child (own session and group) may be signalled.
+    if killed and child and not IS_WINDOWS and pid_alive(child) and is_own_child_group(child):
         for sig in (signal.SIGTERM, signal.SIGKILL):
             with contextlib.suppress(OSError):
                 os.killpg(child, sig)

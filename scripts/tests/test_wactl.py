@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import plistlib
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -772,8 +773,14 @@ def test_update_rollback_restarts_app_and_mcp(tmp_path):
 
 
 @posix_only
-def test_stop_run_kills_orphaned_child_group(tmp_path):
+def test_stop_run_kills_orphaned_child_group(tmp_path, monkeypatch):
     ctx = make_ctx(tmp_path)
+
+    def sigkill(pid):
+        os.kill(pid, signal.SIGKILL)
+        return True
+
+    monkeypatch.setattr(wactl, "stop_pid", sigkill)  # a supervisor that had to be SIGKILLed
     (ctx.data / "run").mkdir()
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
     sup = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -806,3 +813,81 @@ def test_run_refuses_second_app_supervisor(tmp_path, monkeypatch, capsys):
     finally:
         other.kill()
         other.wait()
+
+
+# ------------------------------------------------------------ fix round 3
+
+
+def test_is_own_child_group_needs_group_and_session_leader(monkeypatch):
+    monkeypatch.setattr(wactl.os, "getpgid", lambda p: p, raising=False)
+    monkeypatch.setattr(wactl.os, "getsid", lambda p: p, raising=False)
+    assert wactl.is_own_child_group(500)
+    monkeypatch.setattr(wactl.os, "getsid", lambda p: 1, raising=False)
+    assert not wactl.is_own_child_group(500)
+    monkeypatch.setattr(wactl.os, "getsid", lambda p: p, raising=False)
+    monkeypatch.setattr(wactl.os, "getpgid", lambda p: 1, raising=False)
+    assert not wactl.is_own_child_group(500)
+
+    def gone(p):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(wactl.os, "getpgid", gone, raising=False)
+    assert not wactl.is_own_child_group(500)
+
+
+def stop_run_fixture(tmp_path, monkeypatch, killed, own_group, child_alive=True):
+    monkeypatch.setattr(wactl, "IS_WINDOWS", False)
+    ctx = make_ctx(tmp_path)
+    (ctx.data / "run").mkdir()
+    ctx.pidfile("app").write_text("111")
+    wactl.childfile(ctx, "app").write_text("222")
+    sent = []
+    monkeypatch.setattr(wactl, "stop_pid", lambda pid: killed)
+    monkeypatch.setattr(wactl, "pid_alive", lambda pid: child_alive and not sent)
+    monkeypatch.setattr(wactl, "is_own_child_group", lambda c: own_group)
+    monkeypatch.setattr(wactl.os, "killpg", lambda pg, sig: sent.append((pg, sig)), raising=False)
+    monkeypatch.setattr(wactl.time, "sleep", lambda s: None)
+    wactl.stop_run(ctx, "app", 111)
+    return ctx, sent
+
+
+def test_stop_run_does_not_killpg_after_clean_supervisor_exit(tmp_path, monkeypatch):
+    ctx, sent = stop_run_fixture(tmp_path, monkeypatch, killed=False, own_group=True)
+    assert sent == []
+    assert not wactl.childfile(ctx, "app").exists()
+
+
+def test_stop_run_does_not_killpg_a_pid_that_is_not_our_group_leader(tmp_path, monkeypatch):
+    _, sent = stop_run_fixture(tmp_path, monkeypatch, killed=True, own_group=False)
+    assert sent == []
+
+
+def test_stop_run_killpgs_verified_child_after_supervisor_sigkill(tmp_path, monkeypatch):
+    _, sent = stop_run_fixture(tmp_path, monkeypatch, killed=True, own_group=True)
+    assert sent and sent[0] == (222, signal.SIGTERM)
+
+
+def test_run_clears_stale_child_file_and_unlinks_on_child_exit(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    (ctx.data / "run").mkdir()
+    (ctx.repo / "wa-app" / "server" / ".venv").mkdir(parents=True)
+    wactl.childfile(ctx, "app").write_text("999")
+    seen = {}
+
+    class P:
+        pid = 4242
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            seen["during"] = wactl.childfile(ctx, "app").read_text()
+            return 0
+
+    monkeypatch.setattr(wactl, "popen_component", lambda *a, **k: P())
+    monkeypatch.setattr(wactl.signal, "signal", lambda *a: None)
+    ns = argparse_ns(component="app", log=None, service=False)
+    assert wactl.cmd_run(ctx, ns) == 0
+    assert seen["during"] == "4242"  # the stale 999 was replaced by the live child
+    assert not wactl.childfile(ctx, "app").exists()  # removed as soon as the child exited
