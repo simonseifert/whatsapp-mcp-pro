@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -185,7 +186,7 @@ func isAbsFor(goos, p string) bool {
 // and case is folded (NTFS is case-insensitive); elsewhere only cleaned.
 func normPathFor(goos, p string) string {
 	if goos != "windows" {
-		return filepath.Clean(p)
+		return pathpkg.Clean(p) // slash semantics, whatever OS the tests run on
 	}
 	p = strings.ReplaceAll(p, "/", `\`)
 	for strings.Contains(p[1:], `\\`) { // keep a leading UNC prefix

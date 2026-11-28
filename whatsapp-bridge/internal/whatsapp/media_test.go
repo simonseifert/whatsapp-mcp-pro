@@ -135,29 +135,54 @@ func TestExtractTextContent(t *testing.T) {
 	}
 }
 
-func TestValidateMediaPathRejectsSiblingOfAllowedDir(t *testing.T) {
-	// /tmp is allowed; /tmp-evil is a different directory and must not ride in
-	// on a bare prefix match.
-	if err := validateMediaPath("/tmp-evil/payload.jpg"); err == nil {
-		t.Error("validateMediaPath(/tmp-evil/...) = nil, want error")
+// outsideTempDir makes a directory under the package directory, which is not
+// under any default temp root on any OS, so "outside the allowlist" cases mean
+// what they say even where os.TempDir() is allowed (macOS, Windows).
+func outsideTempDir(t *testing.T, pattern string) string {
+	t.Helper()
+	d, err := os.MkdirTemp(".", pattern)
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	if err := validateMediaPath("/tmp/ok.jpg"); err != nil {
-		t.Errorf("validateMediaPath(/tmp/ok.jpg) = %v, want nil", err)
+	d, err = filepath.Abs(d)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	return d
+}
+
+func TestValidateMediaPathRejectsSiblingOfAllowedDir(t *testing.T) {
+	// A directory that merely shares a name prefix with an allowed one must not
+	// ride in on a bare prefix match.
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
+	base := outsideTempDir(t, "sibling_")
+	allowed := filepath.Join(base, "media")
+	t.Setenv("MEDIA_ALLOWED_DIRS", allowed)
+	if err := validateMediaPath(filepath.Join(base, "media-evil", "payload.jpg")); err == nil {
+		t.Error("validateMediaPath(media-evil/...) = nil, want error")
+	}
+	if err := validateMediaPath(filepath.Join(allowed, "ok.jpg")); err != nil {
+		t.Errorf("validateMediaPath(media/ok.jpg) = %v, want nil", err)
 	}
 }
 
 func TestValidateMediaPathHonorsEnvAllowlist(t *testing.T) {
-	t.Setenv("MEDIA_ALLOWED_DIRS", "/home/alice, /srv/media")
-	for _, ok := range []string{"/home/alice/Code/pic.png", "/srv/media/a.ogg"} {
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
+	base := outsideTempDir(t, "envallow_")
+	alice := filepath.Join(base, "alice")
+	srv := filepath.Join(base, "srv")
+	t.Setenv("MEDIA_ALLOWED_DIRS", alice+", "+srv)
+	for _, ok := range []string{filepath.Join(alice, "Code", "pic.png"), filepath.Join(srv, "a.ogg")} {
 		if err := validateMediaPath(ok); err != nil {
 			t.Errorf("validateMediaPath(%s) = %v, want nil", ok, err)
 		}
 	}
-	if err := validateMediaPath("/home/aliceevil/pic.png"); err == nil {
+	if err := validateMediaPath(filepath.Join(base, "aliceevil", "pic.png")); err == nil {
 		t.Error("sibling of env-allowed dir accepted, want error")
 	}
 	t.Setenv("MEDIA_ALLOWED_DIRS", "")
-	if err := validateMediaPath("/home/alice/Code/pic.png"); err == nil {
+	if err := validateMediaPath(filepath.Join(alice, "Code", "pic.png")); err == nil {
 		t.Error("path accepted after env allowlist cleared, want error")
 	}
 }
@@ -165,19 +190,24 @@ func TestValidateMediaPathHonorsEnvAllowlist(t *testing.T) {
 func TestValidateMediaPathBlocksSymlinkEscape(t *testing.T) {
 	// A symlink inside an allowed dir pointing outside it must not pass — the
 	// bridge would otherwise read the target and send it.
-	tmp := t.TempDir()
-	t.Setenv("MEDIA_ALLOWED_DIRS", tmp)
-
-	// Target must be outside every allowed dir. /tmp is a default allow-root, so
-	// t.TempDir() (which lives under /tmp) would be legitimately allowed; use a
-	// stable read-only file outside it.
-	secret := "/etc/hostname"
-	if _, err := os.Stat(secret); err != nil {
-		t.Skipf("%s unavailable: %v", secret, err)
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
+	base := outsideTempDir(t, "symlink_")
+	allowed := filepath.Join(base, "allowed")
+	other := filepath.Join(base, "other")
+	for _, d := range []string{allowed, other} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	link := filepath.Join(tmp, "innocent.txt")
+	t.Setenv("MEDIA_ALLOWED_DIRS", allowed)
+
+	secret := filepath.Join(other, "notes.txt") // outside every allowed dir
+	if err := os.WriteFile(secret, []byte("s"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(allowed, "innocent.txt")
 	if err := os.Symlink(secret, link); err != nil {
-		t.Skipf("symlinks unsupported here: %v", err)
+		t.Skipf("symlinks unsupported here (Windows needs admin or developer mode): %v", err)
 	}
 
 	if err := validateMediaPath(link); err == nil {
@@ -185,7 +215,7 @@ func TestValidateMediaPathBlocksSymlinkEscape(t *testing.T) {
 	}
 
 	// A real file inside the allowed dir still works.
-	real := filepath.Join(tmp, "ok.jpg")
+	real := filepath.Join(allowed, "ok.jpg")
 	if err := os.WriteFile(real, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write real: %v", err)
 	}

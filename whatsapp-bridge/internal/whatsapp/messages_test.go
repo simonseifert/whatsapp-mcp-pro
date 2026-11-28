@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -68,6 +69,9 @@ func TestValidateMediaPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && !tt.wantErr && strings.HasPrefix(tt.path, "/") {
+				t.Skip("POSIX literal roots (/app, /tmp) are not allowed paths on Windows; see TestValidateMediaPath_AllowedUnderRoot")
+			}
 			err := validateMediaPath(tt.path)
 
 			if tt.wantErr {
@@ -88,6 +92,38 @@ func TestValidateMediaPath(t *testing.T) {
 	}
 }
 
+// defaultTempRoot is a directory every OS allows by default: /tmp on Linux
+// (exactly that, never TMPDIR), os.TempDir() on macOS and Windows.
+func defaultTempRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/tmp"
+	}
+	return os.TempDir()
+}
+
+// The "allowed" rows of TestValidateMediaPath, rooted in a real directory so
+// they mean the same on every OS (including Windows paths).
+func TestValidateMediaPath_AllowedUnderRoot(t *testing.T) {
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
+	root := outsideTempDir(t, "allowed_")
+	t.Setenv("MEDIA_ALLOWED_DIRS", root)
+	for _, rel := range []string{
+		"upload.png",
+		"keynote.pdf",
+		"environment.png",
+		filepath.Join("data", "store", "media", "123_s.whatsapp.net", "3EB0.jpg"),
+	} {
+		if err := validateMediaPath(filepath.Join(root, rel)); err != nil {
+			t.Errorf("validateMediaPath(%s) = %v, want nil", rel, err)
+		}
+	}
+	for _, rel := range []string{".env", "prod.env", "cert.pem", filepath.Join("x", "store", "messages.db")} {
+		if err := validateMediaPath(filepath.Join(root, rel)); err == nil {
+			t.Errorf("validateMediaPath(%s) = nil, want error", rel)
+		}
+	}
+}
+
 func TestValidateMediaPath_SymlinkEscape(t *testing.T) {
 	_ = os.Unsetenv("DISABLE_PATH_CHECK")
 
@@ -95,9 +131,9 @@ func TestValidateMediaPath_SymlinkEscape(t *testing.T) {
 	// outside it. os.ReadFile would follow the link, so validation must resolve
 	// it and reject — otherwise the link's own path (/tmp/...) passes the check
 	// while the bytes read come from the target.
-	dir, err := os.MkdirTemp("/tmp", "wamcp_symlink_")
+	dir, err := os.MkdirTemp(defaultTempRoot(), "wamcp_symlink_")
 	if err != nil {
-		t.Skipf("cannot create temp dir under /tmp: %v", err)
+		t.Skipf("cannot create temp dir under the default temp root: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
@@ -187,9 +223,9 @@ func TestValidateMediaPath_DotInAllowedRoot(t *testing.T) {
 func TestValidateMediaPath_SymlinkToSensitive(t *testing.T) {
 	t.Setenv("DISABLE_PATH_CHECK", "")
 
-	dir, err := os.MkdirTemp("/tmp", "wamcp_sensitive_")
+	dir, err := os.MkdirTemp(defaultTempRoot(), "wamcp_sensitive_")
 	if err != nil {
-		t.Skipf("cannot create temp dir under /tmp: %v", err)
+		t.Skipf("cannot create temp dir under the default temp root: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 

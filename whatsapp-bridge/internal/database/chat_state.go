@@ -97,15 +97,15 @@ func (store *MessageStore) SetChatMarkedUnread(chatJID string, unread bool, at t
 
 // MarkChatReadAt records that the chat was read at the given time. It only
 // moves last_read_at forward, and clears marked_unread when the read is newer
-// than the mark.
+// than the mark (a tie counts as newer, like setChatField).
 func (store *MessageStore) MarkChatReadAt(chatJID string, at time.Time) error {
 	at = changeTime(at)
 	_, err := store.db.Exec(`
 		INSERT INTO chat_state (chat_jid, last_read_at, marked_unread_changed_at) VALUES (?, ?, ?)
 		ON CONFLICT(chat_jid) DO UPDATE SET
-			marked_unread = CASE WHEN marked_unread_changed_at IS NULL OR excluded.last_read_at > marked_unread_changed_at
+			marked_unread = CASE WHEN marked_unread_changed_at IS NULL OR excluded.last_read_at >= marked_unread_changed_at
 				THEN 0 ELSE marked_unread END,
-			marked_unread_changed_at = CASE WHEN marked_unread_changed_at IS NULL OR excluded.last_read_at > marked_unread_changed_at
+			marked_unread_changed_at = CASE WHEN marked_unread_changed_at IS NULL OR excluded.last_read_at >= marked_unread_changed_at
 				THEN excluded.last_read_at ELSE marked_unread_changed_at END,
 			last_read_at = CASE WHEN last_read_at IS NULL OR excluded.last_read_at > last_read_at
 				THEN excluded.last_read_at ELSE last_read_at END`,

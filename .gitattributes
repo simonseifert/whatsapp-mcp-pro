@@ -1,0 +1,4 @@
+# Keep SQL migrations and Go sources LF on every checkout: tests compare
+# migration files byte for byte against the Go mirrors.
+*.sql text eol=lf
+*.go text eol=lf
