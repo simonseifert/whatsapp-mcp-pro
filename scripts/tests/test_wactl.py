@@ -961,7 +961,7 @@ def test_service_path_contains_tool_dirs_and_system_bins(monkeypatch):
         "which",
         lambda n: {"node": "/opt/node/bin/node", "claude": "/home/u/.claude/bin/claude"}.get(n),
     )
-    parts = wactl.service_path().split(os.pathsep)
+    parts = wactl.service_path().split(":")  # POSIX paths render with ":" on any host
     assert parts[:3] == ["/home/u/.local/bin", "/opt/node/bin", "/home/u/.claude/bin"]
     assert parts[-3:] == ["/usr/local/bin", "/usr/bin", "/bin"]
 
