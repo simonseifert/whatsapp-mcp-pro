@@ -1,4 +1,4 @@
-import { apiFetch } from './api'
+import { apiFetch, ApiError } from './api'
 
 export type PushSupport = 'ok' | 'install-first' | 'unsupported'
 
@@ -95,4 +95,15 @@ export async function resyncPush(): Promise<void> {
 /** For tests: forget that this load already resynced. */
 export const resetResync = () => {
   resynced = false
+}
+
+/** Whether the server can send pushes at all: `/api/push/key` answers 503 while `WA_APP_PUSH_SUBJECT` is unset.
+ *  Any other failure counts as "on", so a flaky network never shows a setup warning. */
+export async function pushServerEnabled(): Promise<boolean> {
+  try {
+    await apiFetch('/api/push/key')
+    return true
+  } catch (error) {
+    return !(error instanceof ApiError && error.status === 503)
+  }
 }

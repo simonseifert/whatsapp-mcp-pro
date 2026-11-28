@@ -10,6 +10,7 @@ import {
   testBackend,
 } from '../api'
 import type { BackendCfg, BackendInput, BackendTestResult, DraftContext } from '../api-types'
+import { GettingStarted, AI_SECTION_ID, PushSetupHelp, usePushServer } from '../components/GettingStarted'
 import { HistorySection } from '../components/HistorySection'
 import { BackendForm } from '../components/BackendForm'
 import { QuickRepliesSection } from '../components/QuickRepliesSection'
@@ -234,7 +235,7 @@ function AiSection() {
   }
 
   return (
-    <div className="settings-group">
+    <div className="settings-group" id={AI_SECTION_ID}>
       <div className="settings-label">AI</div>
       {loadFailed && <p className="form-error">Couldn&apos;t load your AIs.</p>}
       {backends?.length === 0 && editing === null && (
@@ -368,7 +369,7 @@ function AiSection() {
 }
 
 /** Notifications: the permission prompt only ever comes from tapping the switch, after the line that says why. */
-function NotificationsSection() {
+function NotificationsSection({ pushOn }: { pushOn: boolean | null }) {
   const support = pushSupport()
   const [state, setState] = useState<'on' | 'off' | 'denied' | null>(null)
   const [busy, setBusy] = useState(false)
@@ -420,6 +421,14 @@ function NotificationsSection() {
     }
   }
 
+  if (pushOn === false)
+    return (
+      <div className="settings-group">
+        <div className="settings-label">Notifications</div>
+        <PushSetupHelp />
+      </div>
+    )
+
   const disabled = support !== 'ok' || state === null || state === 'denied' || busy
   return (
     <div className="settings-group">
@@ -455,6 +464,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
   const [version, setVersion] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [showLists, setShowLists] = useState(false)
+  const pushOn = usePushServer()
 
   useEffect(() => {
     let live = true
@@ -479,6 +489,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
         <h1 className="large-title">Settings</h1>
       </header>
       <div className="settings">
+        <GettingStarted pushOn={pushOn} />
         <div className="settings-group">
           <div className="settings-label">Chats</div>
           <button className="button-text neutral" type="button" onClick={() => setShowLists(true)}>
@@ -520,7 +531,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
             )}
           </div>
         </div>
-        <NotificationsSection />
+        <NotificationsSection pushOn={pushOn} />
         <HistorySection />
         <AiSection />
         <DraftContextSection />
