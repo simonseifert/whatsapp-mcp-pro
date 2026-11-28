@@ -256,6 +256,11 @@ func validateMediaPath(mediaPath string) error {
 	// Resolve symlinks on the longest existing prefix of the path: this defeats
 	// a symlink planted anywhere along the path while still permitting a leaf
 	// file that has not been created yet.
+	if hasUnresolvableLink(absPath) {
+		// A dangling or otherwise unresolvable link: its literal path would sit
+		// inside an allowed root while the real destination is unknown.
+		return fmt.Errorf("media path cannot be resolved")
+	}
 	resolvedPath := resolveExistingPrefix(absPath)
 	roots := allowedMediaRoots()
 
@@ -404,6 +409,24 @@ func resolveExistingPrefix(absPath string) string {
 			return absPath
 		}
 		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
+}
+
+// hasUnresolvableLink reports whether some component of absPath exists (Lstat
+// succeeds) but cannot be resolved by EvalSymlinks, e.g. a symlink or reparse
+// point whose target is missing or unreadable. resolveExistingPrefix would
+// skip such a component and judge the link by its own literal path.
+func hasUnresolvableLink(absPath string) bool {
+	for current := absPath; ; {
+		if _, err := os.Lstat(current); err == nil {
+			_, evalErr := filepath.EvalSymlinks(current)
+			return evalErr != nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
 		current = parent
 	}
 }

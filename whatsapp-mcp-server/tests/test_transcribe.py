@@ -435,6 +435,7 @@ def test_auto_tick_logs_forged_message_ids_on_one_line(groq, monkeypatch, tmp_pa
 
 def test_wa_app_data_expands_a_tilde(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser reads this on Windows
     monkeypatch.setenv("WA_APP_DATA", "~/wa-data")
     assert transcribe._wa_app_db_path() == tmp_path / "wa-data" / "app.db"
 

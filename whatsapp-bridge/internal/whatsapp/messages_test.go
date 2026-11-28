@@ -148,11 +148,33 @@ func TestValidateMediaPath_SymlinkEscape(t *testing.T) {
 
 	// A symlink to a file outside the allowlist must be rejected.
 	link := filepath.Join(dir, "escape.jpg")
-	if err := os.Symlink("/etc/passwd", link); err != nil {
-		t.Skipf("cannot create symlink: %v", err)
+	target := filepath.Join(outsideTempDir(t, "escape_target_"), "secret.txt")
+	if err := os.WriteFile(target, []byte("s"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink (Windows needs developer mode): %v", err)
 	}
 	if err := validateMediaPath(link); err == nil {
-		t.Errorf("symlink %s -> /etc/passwd should be rejected, got nil", link)
+		t.Errorf("symlink %s -> %s should be rejected, got nil", link, target)
+	}
+}
+
+// A link whose target is missing cannot be resolved; its literal path is inside
+// the allowlist, so it must be refused rather than judged by that path.
+func TestValidateMediaPath_DanglingSymlinkRefused(t *testing.T) {
+	_ = os.Unsetenv("DISABLE_PATH_CHECK")
+	dir, err := os.MkdirTemp(defaultTempRoot(), "wamcp_dangling_")
+	if err != nil {
+		t.Skipf("cannot create temp dir under the default temp root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	link := filepath.Join(dir, "gone.jpg")
+	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), link); err != nil {
+		t.Skipf("cannot create symlink (Windows needs developer mode): %v", err)
+	}
+	if err := validateMediaPath(link); err == nil {
+		t.Errorf("dangling symlink %s accepted, want error", link)
 	}
 }
 
