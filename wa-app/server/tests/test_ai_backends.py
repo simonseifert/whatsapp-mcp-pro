@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -139,12 +140,28 @@ else:
 """
 
 
+def _assert_dead(pid: int) -> None:
+    if sys.platform == "win32":  # os.kill(pid, 0) would terminate the process there
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        assert str(pid) not in out
+        return
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 @pytest.fixture
 def fake_claude(tmp_path, monkeypatch):
     path = tmp_path / "bin" / "claude"
     path.parent.mkdir()
-    path.write_text(FAKE.format(python=sys.executable))
-    path.chmod(0o755)
+    if sys.platform == "win32":
+        # No shebangs on Windows: a claude.cmd shim runs the script with this interpreter.
+        script = tmp_path / "bin" / "claude_fake.py"
+        script.write_text(FAKE.format(python=sys.executable))
+        path = path.with_suffix(".cmd")
+        path.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+    else:
+        path.write_text(FAKE.format(python=sys.executable))
+        path.chmod(0o755)
     monkeypatch.setenv("WA_APP_CLAUDE_BIN", str(path))
     monkeypatch.setenv("FAKE_OUT", str(tmp_path / "rec"))
     return tmp_path / "rec"
@@ -180,7 +197,8 @@ def test_claude_cli_args_exact(settings, fake_claude) -> None:
     cwd = settings.data_dir / "claude-cwd"
     assert Path(str(fake_claude) + ".cwd").read_text() == str(cwd.resolve())
     assert list(cwd.iterdir()) == []
-    assert stat.S_IMODE(cwd.stat().st_mode) == 0o700
+    if sys.platform != "win32":  # no POSIX mode bits on Windows
+        assert stat.S_IMODE(cwd.stat().st_mode) == 0o700
 
 
 def test_claude_cli_keeps_chat_text_out_of_argv(settings, fake_claude) -> None:
@@ -218,8 +236,7 @@ def test_claude_cli_timeout_kills(settings, fake_claude, monkeypatch) -> None:
         _run(backends.complete(_cli(), None, PROMPT, settings, timeout=1.0))
     assert time.monotonic() - started < 10
     pid = int(Path(str(fake_claude) + ".pid").read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    _assert_dead(pid)
 
 
 def test_claude_cli_cancel_kills(settings, fake_claude, monkeypatch) -> None:
@@ -238,8 +255,7 @@ def test_claude_cli_cancel_kills(settings, fake_claude, monkeypatch) -> None:
 
     _run(scenario())
     pid = int(Path(str(fake_claude) + ".pid").read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    _assert_dead(pid)
 
 
 @pytest.mark.parametrize("mode", ["fail", "garbage", "error"])
@@ -288,3 +304,51 @@ def test_openai_pinned_connects_to_the_validated_address(settings, monkeypatch) 
     _run(backends.complete(cfg, None, PROMPT, settings, transport=httpx2.MockTransport(handler), pin=pin))
     assert seen["url"] == "http://10.0.0.7:11434/v1/chat/completions"
     assert seen["host"] == "ollama.home:11434"
+
+
+# --- process-tree kill, platform injected ---------------------------------------------------------------------
+
+
+def test_spawn_kwargs_per_platform() -> None:
+    assert backends._spawn_kwargs("linux") == {"start_new_session": True}
+    assert backends._spawn_kwargs("darwin") == {"start_new_session": True}
+    if sys.platform == "win32":
+        assert "creationflags" in backends._spawn_kwargs("win32")
+
+
+def test_kill_tree_posix_uses_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[int, int]] = []
+    sigkill = getattr(backends.signal, "SIGKILL", 9)
+    monkeypatch.setattr(backends.os, "killpg", lambda pid, sig: seen.append((pid, sig)), raising=False)
+    plain: list[str] = []
+    _run(backends._kill_tree(4242, lambda: plain.append("kill"), "linux"))
+    assert seen == [(4242, sigkill)]
+    assert plain == []
+
+
+def test_kill_tree_windows_uses_taskkill_then_kill(monkeypatch: pytest.MonkeyPatch) -> None:
+    launched: list[tuple[Any, ...]] = []
+
+    class FakeProc:
+        async def wait(self) -> int:
+            return 0
+
+    async def fake_exec(*argv: Any, **kw: Any) -> FakeProc:
+        launched.append(argv)
+        return FakeProc()
+
+    monkeypatch.setattr(backends.asyncio, "create_subprocess_exec", fake_exec)
+    killed: list[str] = []
+    _run(backends._kill_tree(4242, lambda: killed.append("kill"), "win32"))
+    assert launched == [("taskkill", "/T", "/F", "/PID", "4242")]
+    assert killed == ["kill"]
+
+
+def test_kill_tree_windows_survives_missing_taskkill(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def boom(*argv: Any, **kw: Any) -> None:
+        raise FileNotFoundError("taskkill")
+
+    monkeypatch.setattr(backends.asyncio, "create_subprocess_exec", boom)
+    killed: list[str] = []
+    _run(backends._kill_tree(1, lambda: killed.append("kill"), "win32"))
+    assert killed == ["kill"]

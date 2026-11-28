@@ -14,7 +14,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # mattn/go-sqlite3 needs cgo; windows-latest ships mingw gcc.
+      CGO_ENABLED: '1'
 
     steps:
       - uses: actions/checkout@v4
@@ -26,16 +33,19 @@ jobs:
           cache-dependency-path: whatsapp-bridge/go.sum
 
       - name: Install dependencies
+        shell: bash
         run: |
           cd whatsapp-bridge
           go mod download
 
       - name: Run tests
+        shell: bash
         run: |
           cd whatsapp-bridge
           go test -v -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage to Codecov
+        if: runner.os == 'Linux'
         uses: codecov/codecov-action@v4
         with:
           file: whatsapp-bridge/coverage.out
@@ -43,7 +53,13 @@ jobs:
           fail_ci_if_error: false
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CGO_ENABLED: '1'
 
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +71,7 @@ jobs:
           cache-dependency-path: whatsapp-bridge/go.sum
 
       - name: Build
+        shell: bash
         run: |
           cd whatsapp-bridge
           go build -v ./...

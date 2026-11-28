@@ -14,7 +14,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -28,11 +32,13 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
+        shell: bash
         run: |
           cd whatsapp-mcp-server
           uv sync --all-extras
 
       - name: requirements.txt matches uv.lock
+        if: runner.os == 'Linux'
         # Docker and pip-audit read requirements.txt; a stale one once kept
         # dependencies the lock had already patched.
         run: |
@@ -41,16 +47,19 @@ jobs:
           git diff --exit-code -- requirements.txt
 
       - name: Type check
+        if: runner.os == 'Linux'
         run: |
           cd whatsapp-mcp-server
           uv run mypy .
 
       - name: Run tests
+        shell: bash
         run: |
           cd whatsapp-mcp-server
           uv run pytest --cov=whatsapp --cov=main --cov=lib --cov-report=xml --cov-report=term-missing -v
 
       - name: Upload coverage to Codecov
+        if: runner.os == 'Linux'
         uses: codecov/codecov-action@v4
         with:
           file: whatsapp-mcp-server/coverage.xml

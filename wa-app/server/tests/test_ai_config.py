@@ -1,6 +1,8 @@
 import json
 import stat
+import sys
 
+import pytest
 from starlette.testclient import TestClient
 
 from tests import conftest as fx
@@ -15,6 +17,9 @@ def _db(settings):
     return appdb.connect(settings)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no POSIX mode bits; the file relies on the user profile ACL"
+)
 def test_key_file_created_mode_600(settings) -> None:
     blob = secrets.encrypt(settings, SECRET)
     path = settings.data_dir / "ai.key"

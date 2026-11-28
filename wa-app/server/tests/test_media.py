@@ -2,6 +2,7 @@
 
 import io
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -86,12 +87,13 @@ def test_media_path_must_stay_in_store(logged_in: TestClient, settings, download
     outside = _jpeg(tmp_path / "elsewhere" / "secret.jpg")
     results["M1"] = str(outside)
     assert logged_in.get(f"/api/media/{NIKOLA}/M1").status_code == 404
-    # A symlink inside the store that points out of it is refused too.
-    link = settings.store_path / NIKOLA / "link.jpg"
-    link.parent.mkdir(parents=True, exist_ok=True)
-    link.symlink_to(outside)
-    results["M2"] = str(link)
-    assert logged_in.get(f"/api/media/{NIKOLA}/M2").status_code == 404
+    # A symlink inside the store that points out of it is refused too (creating symlinks needs admin on Windows).
+    if sys.platform != "win32":
+        link = settings.store_path / NIKOLA / "link.jpg"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(outside)
+        results["M2"] = str(link)
+        assert logged_in.get(f"/api/media/{NIKOLA}/M2").status_code == 404
     # So is a traversal that normalises out of it.
     results["M3"] = str(settings.store_path / NIKOLA / ".." / ".." / "elsewhere" / "secret.jpg")
     assert logged_in.get(f"/api/media/{NIKOLA}/M3").status_code == 404

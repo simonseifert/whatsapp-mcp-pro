@@ -9,6 +9,7 @@ inline fixes that.
 import base64
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,7 @@ def captured_send(monkeypatch, tmp_path):
 
 
 def test_default_staging_root_is_tmp():
-    assert whatsapp.MEDIA_TEMP_DIR == "/tmp"
+    assert whatsapp.MEDIA_TEMP_DIR == whatsapp.platform_temp_dir()
 
 
 def test_sends_a_file_given_as_base64(captured_send):
@@ -67,7 +68,8 @@ def test_sends_a_file_given_as_base64(captured_send):
     assert captured_send["content"] == PNG_BYTES
     # And the name is preserved, since the extension drives how WhatsApp renders it.
     assert Path(captured_send["media_path"]).name == "screenshot.png"
-    assert captured_send["mode"] == 0o600
+    if sys.platform != "win32":  # no POSIX mode bits on Windows
+        assert captured_send["mode"] == 0o600
     payload = dict(captured_send["payload"])
     assert str(payload.pop("idempotency_key")).startswith("mcp-send_file-")
     assert payload == {
@@ -187,7 +189,8 @@ def test_directory_or_empty_names_fall_back_to_upload(captured_send, filename):
     assert result["success"] is True
     assert Path(captured_send["media_path"]).name == "upload"
     assert captured_send["content"] == PNG_BYTES
-    assert captured_send["mode"] == 0o600
+    if sys.platform != "win32":  # no POSIX mode bits on Windows
+        assert captured_send["mode"] == 0o600
     assert not Path(captured_send["media_path"]).parent.exists()
 
 

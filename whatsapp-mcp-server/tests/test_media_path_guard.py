@@ -7,6 +7,7 @@ source path is now validated in Python first, and send_file repeats the check.
 """
 
 import os
+import sys
 
 import pytest
 
@@ -74,6 +75,7 @@ def test_rejects_a_sibling_dir_sharing_the_prefix(media_dirs):
         whatsapp.validate_outgoing_media_path(str(f))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs admin or developer mode on Windows")
 def test_rejects_a_symlink_escaping_the_allowlist(media_dirs):
     allowed, outside = media_dirs
     target = outside / "secret.txt"
@@ -197,6 +199,7 @@ def test_store_rule_holds_even_with_path_check_disabled(media_dirs, monkeypatch)
         whatsapp.validate_outgoing_media_path(str(f))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs admin or developer mode on Windows")
 def test_refuses_a_link_whose_target_looks_like_a_secret(media_dirs):
     allowed, _ = media_dirs
     target = allowed / "id_rsa"
@@ -222,7 +225,7 @@ def test_disable_path_check_still_refuses_secrets(media_dirs, monkeypatch):
 def test_bridge_defaults_are_always_allowed(monkeypatch):
     monkeypatch.delenv("MEDIA_ALLOWED_DIRS", raising=False)
     assert whatsapp._allowed_media_dirs() == list(whatsapp.BRIDGE_DEFAULT_MEDIA_DIRS)
-    assert "/tmp" in whatsapp.BRIDGE_DEFAULT_MEDIA_DIRS
+    assert whatsapp.MEDIA_TEMP_DIR in whatsapp.BRIDGE_DEFAULT_MEDIA_DIRS
 
 
 def test_send_audio_refuses_before_converting(media_dirs, bridge_calls, conversions):
@@ -315,6 +318,7 @@ def test_transcribe_audio_file_refuses_outside_the_allowlist(media_dirs, transcr
     assert transcribed == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs admin or developer mode on Windows")
 def test_transcribe_audio_file_refuses_a_symlink_escape(media_dirs, transcribed):
     import main
 

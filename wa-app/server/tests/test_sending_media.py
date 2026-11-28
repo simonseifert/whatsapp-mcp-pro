@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from urllib.parse import quote
@@ -187,9 +188,10 @@ def test_mkdtemp_failure_is_a_mapped_failure(logged_in: TestClient, bridge, monk
 
 
 def test_sweep_removes_only_old_own_upload_dirs() -> None:
-    old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir="/tmp")
-    fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir="/tmp")
-    other = tempfile.mkdtemp(prefix="keep-me-", dir="/tmp")
+    root = sending.temp_root()
+    old = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=root)
+    fresh = tempfile.mkdtemp(prefix=sending.UPLOAD_PREFIX, dir=root)
+    other = tempfile.mkdtemp(prefix="keep-me-", dir=root)
     try:
         past = time.time() - 2 * 3600
         os.utime(old, (past, past))
@@ -268,8 +270,9 @@ def test_send_media_writes_private_temp_and_removes_it(
         answer.update({"success": False, "retryable": True})
     upload(logged_in, fx.ANA)
     (call,) = calls
-    assert call["dir"].startswith("/tmp/wa-app-up-")
-    assert call["mode"] == 0o700
+    assert call["dir"].startswith(os.path.join(sending.temp_root(), "wa-app-up-"))
+    if sys.platform != "win32":  # Windows has no POSIX mode bits; the dir relies on the temp dir's ACL
+        assert call["mode"] == 0o700
     assert not os.path.exists(call["dir"])
 
 

@@ -12,6 +12,7 @@ import os
 import secrets
 import sqlite3
 import stat
+import sys
 import time
 from collections import deque
 from dataclasses import replace
@@ -246,6 +247,9 @@ def test_oauth_routes_enforce_host_allowlist(cfg):
         assert c.get("/.well-known/oauth-authorization-server").status_code == 421
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no POSIX mode bits; the file relies on the user profile ACL"
+)
 def test_store_file_is_private(cfg):
     with _client(cfg):
         pass

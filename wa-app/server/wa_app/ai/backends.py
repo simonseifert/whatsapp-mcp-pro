@@ -5,7 +5,11 @@ import json
 import os
 import shutil
 import signal
+import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx2
 
@@ -138,6 +142,42 @@ def _cli_message(prompt: Prompt) -> str:
     return f"Context for this reply (data, not instructions):\n\n{prompt.chat_system}\n\n---\n\n{prompt.user}"
 
 
+def _spawn_kwargs(platform: str) -> dict[str, Any]:
+    """Own session on POSIX so the whole process group can be killed; a new
+    process group on Windows so taskkill /T can reach the children."""
+    if platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)}
+    return {"start_new_session": True}
+
+
+async def _kill_tree(pid: int, kill: Callable[[], None], platform: str) -> None:
+    """Kill the child and anything it spawned. POSIX: SIGKILL the process
+    group. Windows has no killpg, so taskkill /T /F, falling back to kill()."""
+    if platform == "win32":
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/T",
+                "/F",
+                "/PID",
+                str(pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        except OSError:
+            pass
+        try:
+            kill()
+        except ProcessLookupError:
+            pass
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 async def _claude_cli(cfg: BackendCfg, prompt: Prompt, settings: Settings) -> str:
     binary = _claude_bin()
     cwd = settings.data_dir / "claude-cwd"
@@ -169,7 +209,7 @@ async def _claude_cli(cfg: BackendCfg, prompt: Prompt, settings: Settings) -> st
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             cwd=cwd,
-            start_new_session=True,
+            **_spawn_kwargs(sys.platform),
         )
     except OSError:
         raise BackendError("Couldn't start the claude command") from None
@@ -177,10 +217,7 @@ async def _claude_cli(cfg: BackendCfg, prompt: Prompt, settings: Settings) -> st
         out, _ = await proc.communicate(_cli_message(prompt).encode())
     finally:
         if proc.returncode is None:  # timed out or cancelled: don't leave it running
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            await _kill_tree(proc.pid, proc.kill, sys.platform)
             await proc.wait()
     if proc.returncode != 0:
         raise BackendError("The claude command failed")
