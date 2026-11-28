@@ -362,10 +362,12 @@ def logged_in(client: TestClient) -> TestClient:
     return client
 
 
-async def until(cond, timeout: float = 10.0) -> None:
-    """Waits for a condition instead of a fixed sleep, which slow CI runners outrun."""
+async def until(cond, timeout: float = 10.0, describe=None) -> None:
+    """Waits for a condition instead of a fixed sleep, which slow CI runners outrun. `describe()` adds the
+    state to the failure message so a CI-only timeout shows what was reached."""
     deadline = time.monotonic() + timeout
     while not cond():
         if time.monotonic() > deadline:
-            raise AssertionError("condition not reached in time")
+            state = f": {describe()}" if describe else ""
+            raise AssertionError(f"condition not reached in time{state}")
         await asyncio.sleep(0.005)

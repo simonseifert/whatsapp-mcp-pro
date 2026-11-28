@@ -328,7 +328,13 @@ def test_local_cap_1_cloud_cap_3(settings, backend, cap) -> None:
         for chat in chats:
             rig.worker.on_events([_event(chat, f"X-{chat[:6]}")])
         # every chat has a job (the extra ones queue for a slot) and the free slots are all in use
-        await until(lambda: len(rig.worker._jobs) == len(chats) and rig.fake.active == cap)
+        await until(
+            lambda: len(rig.worker._jobs) == len(chats) and rig.fake.active == cap,
+            describe=lambda: (
+                f"jobs={sorted(rig.worker._jobs)} active={rig.fake.active} peak={rig.fake.peak} "
+                f"calls={len(rig.fake.calls)} rows={[rig.rows(c) for c in chats]}"
+            ),
+        )
         assert rig.fake.active == cap
         rig.fake.gate.set()
         await rig.worker.idle()
