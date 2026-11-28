@@ -719,12 +719,9 @@ def routes(
 
     async def ai_backends(request: Request) -> Response:
         if request.method == "GET":
-            return JSONResponse(
-                {
-                    "backends": [await backend_json(b) for b in ai_config.list_backends(conn)],
-                    "default_id": ai_config.default_backend_id(conn),
-                }
-            )
+            with appdb.db_lock:  # the shared connection is also read from worker threads
+                backends, default_id = ai_config.list_backends(conn), ai_config.default_backend_id(conn)
+            return JSONResponse({"backends": [await backend_json(b) for b in backends], "default_id": default_id})
         body = await body_of(request)
         if not isinstance(body, dict):
             return _error(422, "Expected a JSON object")
@@ -740,9 +737,9 @@ def routes(
             backend_id = int(request.path_params["id"])
         except ValueError:
             return _error(404, "Backend not found")
-        if ai_config.get_backend(conn, backend_id) is None:
-            return _error(404, "Backend not found")
         with appdb.db_lock:
+            if ai_config.get_backend(conn, backend_id) is None:
+                return _error(404, "Backend not found")
             ai_config.delete_backend(conn, backend_id)
         return JSONResponse({"ok": True})
 
@@ -751,12 +748,14 @@ def routes(
             backend_id = int(request.path_params["id"])
         except ValueError:
             return _error(404, "Backend not found")
-        cfg = ai_config.get_backend(conn, backend_id)
+        with appdb.db_lock:
+            cfg = ai_config.get_backend(conn, backend_id)
         if cfg is None:
             return _error(404, "Backend not found")
         started = time.monotonic()
         try:
-            secret = ai_config.backend_secret(conn, settings, backend_id)
+            with appdb.db_lock:
+                secret = ai_config.backend_secret(conn, settings, backend_id)
         except Exception:  # noqa: BLE001 - e.g. the key file changed; the cause could name key material
             return JSONResponse({"ok": False, "ms": 0, "error": "Couldn't read the saved key"})
         try:

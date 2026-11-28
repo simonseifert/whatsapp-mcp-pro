@@ -657,7 +657,10 @@ def uv_exe() -> str:
     """Absolute path of uv: $UV, else PATH. systemd and launchd start us with a short PATH."""
     found = os.environ.get("UV") or shutil.which("uv")
     # Not resolved: a Homebrew or mise shim path survives upgrades, its Cellar target does not.
-    return os.path.abspath(found) if found else "uv"
+    if not found:
+        return "uv"
+    # A bare name (UV=uv) stays a name; only a path is made absolute.
+    return os.path.abspath(found) if (os.sep in found or (os.altsep and os.altsep in found)) else found
 
 
 def service_path(extra: tuple[str, ...] = ()) -> str:
