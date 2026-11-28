@@ -460,7 +460,7 @@ def test_poll_ticks_do_not_wait_behind_a_saturated_default_pool(settings: Settin
 
         poller.poll_once = counting  # type: ignore[method-assign]
         task = asyncio.create_task(poller.run(live.Hub(), interval=0.01))
-        await asyncio.sleep(0.4)
+        await fx.until(lambda: len(ticks) >= 3, timeout=3)
         task.cancel()
         release.set()
         await blocker

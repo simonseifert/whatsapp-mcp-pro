@@ -251,7 +251,8 @@ def test_chat_switched_to_local_only_while_waiting_for_a_slot(settings) -> None:
         rig.worker.on_events([_event(ANA, "N1")])
         await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
-        ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
         for _ in range(drafts.CLOUD_SLOTS):
             rig.worker._cloud.release()
         await rig.worker.idle()
@@ -270,7 +271,8 @@ def test_chat_switched_off_while_waiting_for_a_slot_makes_no_call(settings) -> N
         rig.worker.on_events([_event(ANA, "N1")])
         await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
-        ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
         for _ in range(drafts.CLOUD_SLOTS):
             rig.worker._cloud.release()
         await rig.worker.idle()
@@ -288,7 +290,8 @@ def test_switched_off_during_the_quiet_wait_makes_no_draft(settings) -> None:
         rig.sleep_gate = asyncio.Event()
         rig.worker.on_events([_event(ANA, "N1")])
         await until(lambda: rig.sleeps != [])
-        ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"enabled": False})
         rig.sleep_gate.set()
         await rig.worker.idle()
         assert rig.fake.calls == [] and rig.rows() == []

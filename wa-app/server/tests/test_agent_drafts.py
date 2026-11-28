@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 from starlette.testclient import TestClient
 
-from tests.conftest import ANA, EKIPA, LUKAS
+from tests.conftest import ANA, EKIPA, LUKAS, until
 from tests.test_ai_drafts import _event, _insert, _ts, feed, run
 from tests.test_ai_learning import outcome
 from wa_app import config, live
@@ -157,7 +157,7 @@ def test_push_publishes_the_draft_event_and_supersedes_ai_work(settings) -> None
         rig.fake.gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.05)
+        await until(lambda: rig.fake.active == 1)  # the AI call has started
         assert rig.rows() == [("pending", None)]  # an auto draft is running
         rig.events()
         view = rig.worker.push(ANA, "Evo me u 7", None)

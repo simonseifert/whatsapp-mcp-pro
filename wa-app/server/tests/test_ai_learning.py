@@ -492,8 +492,9 @@ def test_distill_rechecks_local_only_after_the_slot(settings) -> None:
         for _ in range(3):
             await rig.worker._cloud.acquire()
         rig.worker._schedule_distill(ANA)
-        await asyncio.sleep(0.1)
-        ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
+        await until(lambda: ANA in rig.worker._distills)
+        with appdb.db_lock:  # the worker threads share this connection; the API route takes the lock too
+            ai_config.save_chat_ai(rig.appconn, ANA, {"local_only": True})
         for _ in range(3):
             rig.worker._cloud.release()
         await rig.worker.idle()
