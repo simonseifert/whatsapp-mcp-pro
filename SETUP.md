@@ -420,7 +420,11 @@ What it creates:
 |---|---|---|
 | Linux | `~/.config/systemd/user/*.service` (honours `XDG_CONFIG_HOME`), then `daemon-reload` and `enable --now` | `wa-bridge`, `wa-app`, `wa-mcp` |
 | macOS | `~/Library/LaunchAgents/*.plist`, mode 600, loaded with `launchctl bootstrap gui/<uid>` | `com.wactl.bridge`, `com.wactl.app`, `com.wactl.mcp` |
-| Windows | Task Scheduler tasks that run at logon | `wactl-bridge`, `wactl-app`, `wactl-mcp` |
+| Windows | Per-user Task Scheduler tasks that run at logon (PowerShell `Register-ScheduledTask`, run level limited, no administrator rights) | `wactl-bridge`, `wactl-app`, `wactl-mcp` |
+
+On Linux and macOS the services get a `PATH` that includes the folders of `uv`, `node` and `claude` as found at install time
+(systemd and launchd start with a short one), and macOS jobs also get `TMPDIR` set to the system temp dir. If you move
+uv, rerun `wactl service install`.
 
 The names carry a prefix so they never clash with units you wrote yourself (an existing `wa-bridge.service` that wactl
 did not write is left alone and the install stops). Every service runs the same thing, `wactl run <component>`: a
@@ -580,6 +584,8 @@ launchctl load ~/Library/LaunchAgents/com.example.whatsapp-bridge.plist
 - **Secrets files.** `.env`, `vapid.pem`, backups and logs are meant to be mode 600, but `chmod` does nothing on
   Windows. They are protected only by the permissions of your user profile folder, so keep the repo and the data
   directory inside your profile and do not share that account.
+- **Links in media paths.** Creating symlinks needs administrator rights or Developer Mode; directory junctions
+  (`mklink /J`) do not. Either way the media allowlist resolves a path before comparing it with the temp folder.
 - **Time zones.** The MCP server installs the `tzdata` package on Windows, which has no system tz database.
 - **Stopping.** `wactl stop` kills the whole process tree (`taskkill /T /F`); there is no graceful signal for a hidden
   console process. Services start at logon, not at boot.
@@ -599,7 +605,18 @@ environments (keeping extras you installed) and builds the app, then restarts **
 for it to answer, then the app**, and checks the app the same way. If anything fails it puts the previous bridge binary
 back, restarts what it touched, and says where the backup is. Databases are never restored automatically: the new bridge
 may already have migrated them, so restore from the backup by hand if the old bridge misbehaves
-(`git checkout <old commit>` returns the code).
+(`git checkout <old commit>` returns the code). The newest 5 backups in `<data>/backups/` are kept and older ones are
+deleted (`update` prints which).
+
+If your bridge or app is run by something else, such as your own systemd units, `update` and `start` refuse instead of
+reporting a false success. `./wactl update --build-only` pulls, backs up, builds and syncs without restarting anything
+and prints the restart order (bridge, then app, then the MCP server); restart them yourself.
+
+**Moving from hand-written units to wactl.** Stop and disable your own units (`systemctl --user disable --now ...`),
+then `./wactl service install`. wactl units are named `wa-bridge`, `wa-app` and `wa-mcp`; install stops with an
+explanation if a unit with one of those names exists that wactl did not write (a hand-made `wa-app.service`), so rename
+or remove it first. Use the same data directory (`WA_DATA_DIR` or `--data`) so the paired session carries over, and
+never run both at once: two bridges on one session fight each other.
 
 Manual equivalent (bridge first, because the app and MCP server read the store the bridge migrates):
 

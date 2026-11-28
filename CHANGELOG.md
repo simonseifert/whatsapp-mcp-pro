@@ -41,8 +41,11 @@ App and MCP audit fixes (see DECISIONS.md D24):
   systemd user units (`wa-bridge`, `wa-app`, `wa-mcp`), LaunchAgents (`com.wactl.*`) or Task Scheduler tasks
   (`wactl-*`), and all call `wactl run`, which restarts with backoff and stops on exit code 3 (stream replaced) and 4
   (not paired). `wactl update` refuses a dirty tree or non-fast-forward, backs up the store, updates the bridge first
-  and the app second, checks health and rolls the bridge binary back on failure. See DECISIONS D28.
-- CI runs the Go, Python and wa-app tests on Linux, macOS and Windows, plus an install smoke test (`wactl doctor`,
+  and the app second, checks health and rolls the bridge binary back on failure; `--build-only` skips the restarts for
+  installs run by your own units, and the last 5 backups are kept. Services find `uv` through an absolute path and a
+  generated `PATH`, Windows tasks are per-user (PowerShell, no administrator rights), and pid files are checked against
+  the process before anything is signalled. See DECISIONS D28.
+- CI runs the Go, Python and wa-app tests and wactl's own tests on Linux, macOS and Windows, plus an install smoke test (`wactl doctor`,
   `setup`, start and stop the app, `service install --dry-run`) on all three.
 - wa-app: a Getting started card at the top of Settings (notifications, load older messages, set up AI drafts), with a
   Dismiss button. `WA_APP_PUSH_SUBJECT` is explained in the wa-app README.

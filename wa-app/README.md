@@ -186,7 +186,7 @@ claude -p --output-format json --model <model> --system-prompt <fixed text> \
   --strict-mcp-config --setting-sources ""
 ```
 
-Only the fixed instructions go in `--system-prompt`; everything derived from the chat (note, rules, examples, messages) goes in on stdin, so it never shows in the process list. It runs from an empty working directory, with a 120 s timeout. `--strict-mcp-config --setting-sources ""` matters for speed: without them the CLI starts every MCP server, hook and plugin you have configured. A draft took about 2.6 s with the flags and 26 to 29 s without. Set `WA_APP_CLAUDE_BIN` if `claude` is not on the server's `PATH`.
+Only the fixed instructions go in `--system-prompt`; everything derived from the chat (note, rules, examples, messages) goes in on stdin, so it never shows in the process list. It runs from an empty working directory, with a 120 s timeout. `--strict-mcp-config --setting-sources ""` matters for speed: without them the CLI starts every MCP server, hook and plugin you have configured. A draft took about 2.6 s with the flags and 26 to 29 s without. Set `WA_APP_CLAUDE_BIN` if `claude` is not on the server's `PATH`. Services made by `wactl service install` get a `PATH` that includes the folder of the `claude` found at install time; if you install Claude Code later, set `WA_APP_CLAUDE_BIN` to its full path.
 
 ### Costs
 

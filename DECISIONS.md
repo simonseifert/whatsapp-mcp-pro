@@ -452,10 +452,13 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   backoff 2 to 60 s, reset after 10 minutes up, stop signals forwarded, a pid file in `<data>/run`.
 - **Exit codes 3 and 4 stop restarts.** 3 is the bridge's "stream replaced" (another process took the session; restarting
   steals it back and ping-pongs). 4 is wactl's "not paired" (restarting only creates a fresh QR each time). Both are also
-  in the systemd `RestartPreventExitStatus=3 4`. A second bridge on the same store or port is refused.
+  in the systemd `RestartPreventExitStatus=3 4 5`; 5 means the program could not be started at all (for example uv is not
+  found), which also must not loop. A second copy of any component on the same pid file or port is refused, and
+  `update` and `start` refuse over components that something other than wactl runs.
 - **Unit name prefixes avoid clashes.** systemd `wa-bridge`, `wa-app`, `wa-mcp`; launchd `com.wactl.*`; Task Scheduler
-  `wactl-*`. wactl marks what it writes and refuses to overwrite or remove anything without the marker, so the
-  maintainer's hand-written `whatsapp-bridge` and `wa-app` units keep working next to it. `scripts/deploy-live.sh` is
+  `wactl-*`. wactl marks what it writes and refuses to overwrite or remove anything without the marker: install
+  refuses if a non-wactl unit of the same name exists (for example a hand-made `wa-app.service`), and the maintainer's
+  `whatsapp-bridge` and `whatsapp-mcp` units do not share a name with anything wactl writes. `scripts/deploy-live.sh` is
   unchanged.
 - **Default layout unchanged.** Without `WA_DATA_DIR` or `--data` the data directory is `whatsapp-bridge/` and the store
   `whatsapp-bridge/store`, as before.
@@ -474,8 +477,9 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   with an unresolvable symlink is refused. `MEDIA_ALLOWED_DIRS` stays the override.
 - **What CI proves.** Build, vet, unit tests for the bridge, MCP server and wa-app, and an install smoke test on Linux,
   macOS and Windows runners: `doctor`, `setup`, start/health/stop of the app, pid files gone, `service install --dry-run`
-  rendering the right systemctl, launchctl or schtasks commands. **What it does not prove:** a real `launchctl bootstrap`
-  or `schtasks /Create`, a login-time start, a real WhatsApp pairing, the bridge running on macOS or Windows, `update`
+  rendering the right systemctl, launchctl or PowerShell task commands, and it runs `setup --minimal` only (the default
+  recall extras are untested on Windows). **What it does not prove:** a real `launchctl bootstrap`
+  or `Register-ScheduledTask`, a login-time start, a real WhatsApp pairing, the bridge running on macOS or Windows, `update`
   against a real remote, and the rollback path end to end (unit tested with fake runners). Those need a person on each OS
   once; the first report from one is worth more than more mocks.
 

@@ -301,7 +301,9 @@ the phone if you want the app on your phone.
 Linux (Debian or Ubuntu):
 
 ```bash
-sudo apt install golang-go build-essential ffmpeg git   # Go 1.21+ is fine, it fetches the newer one
+sudo apt install build-essential ffmpeg git
+# Go: apt's golang-go is too old on Debian 12 and Ubuntu 22.04 (go.mod asks for a newer toolchain).
+# Install the current Go from https://go.dev/dl/. Go 1.21 or newer can then fetch the exact toolchain itself.
 # Node 22 or newer (pnpm 11 needs it). apt's nodejs is usually too old: use NodeSource, nvm or https://nodejs.org
 curl -LsSf https://astral.sh/uv/install.sh | sh                    # uv
 curl -fsSL https://tailscale.com/install.sh | sh                   # for the phone
@@ -311,7 +313,8 @@ macOS ([Homebrew](https://brew.sh)):
 
 ```bash
 xcode-select --install                                             # the C compiler (cgo)
-brew install go uv node ffmpeg git tailscale   # node: 22 or newer
+brew install go uv node ffmpeg git             # node: 22 or newer
+brew install --cask tailscale                  # the Tailscale app (for the phone)
 ```
 
 Windows (PowerShell):
@@ -356,7 +359,7 @@ skip it and notifications stay off. `setup --minimal` skips the recall and trans
 |---|---|
 | Linux | systemd user units `wa-bridge` and `wa-app` (add `--with-mcp` for `wa-mcp`). Run `loginctl enable-linger $USER` once so they also run when you are logged out. |
 | macOS | LaunchAgents `com.wactl.bridge` and `com.wactl.app` (and `com.wactl.mcp`), mode 600. |
-| Windows | Task Scheduler tasks `wactl-bridge` and `wactl-app` (and `wactl-mcp`), started at logon. |
+| Windows | Per-user Task Scheduler tasks `wactl-bridge` and `wactl-app` (and `wactl-mcp`), started at logon, registered with PowerShell at the limited run level. No administrator rights needed. |
 
 All of them run `wactl run <component>`, which restarts a crashed process with a short wait and stops for good when
 the bridge says another device took the session (exit code 3) or the phone is not paired (exit code 4).
@@ -409,7 +412,9 @@ rejects other `Host` headers. For Claude Desktop and the remote connector, see [
 It refuses if you have local changes or the branch cannot fast-forward, backs up the store, pulls, rebuilds, then
 restarts the bridge first and the app second, checking each answers its health URL. If the new bridge does not come up
 it puts the previous bridge binary back and tells you where the backup is. It never restores your databases by
-itself. Manual equivalent: [SETUP.md, Updating](SETUP.md#updating).
+itself. The last 5 backups in `<data>/backups/` are kept; older ones are deleted. If your bridge or app is run by
+something else (your own systemd units, for example), `update` refuses; use `./wactl update --build-only` to pull,
+back up and build, then restart them yourself. Manual equivalent: [SETUP.md, Updating](SETUP.md#updating).
 
 Other commands: `./wactl status`, `./wactl logs bridge -f`, `./wactl restart app`, `./wactl stop`,
 `./wactl service uninstall`.

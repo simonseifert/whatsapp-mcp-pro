@@ -2,18 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A new user on Linux, macOS or Windows can install, pair, run, keep running and update the bridge, the MCP server and wa-app with one tool and a short README, and an existing user (Nirmal) can update with one command. Everything that runs on Linux today also runs on macOS and Windows.
+**Goal:** A new user on Linux, macOS or Windows can install, pair, run, keep running and update the bridge, the MCP server and wa-app with one tool and a short README, and an existing user can update with one command. Everything that runs on Linux today also runs on macOS and Windows.
 
 **Architecture:** One cross-platform control script, `scripts/wactl.py` (Python standard library only, run as `uv run scripts/wactl.py <command>`, since uv is already a prerequisite), with thin launchers `wactl` (POSIX shell) and `wactl.cmd` (Windows) at the repo root. It loads `.env` itself on every OS, so launchd, systemd and Task Scheduler entries all call `wactl run <component>` instead of each re-implementing env loading. Runtime code loses its POSIX-only assumptions (`/tmp`, `os.getuid`). CI runs the test suites and an install smoke test on ubuntu, macos and windows runners, which is the only way the macOS and Windows claims get verified.
 
 **Tech Stack:** Python 3.11+ stdlib (wactl), Go (bridge, cgo sqlite), Python/uv (MCP server, wa-app server), Node 20+ with pnpm via corepack (wa-app web), GitHub Actions matrix.
 
-**Spec:** this document. Source: Simon's request on 2026-11-28 ("make it so it also runs on macOS smoothly and Windows too, fill those gaps, polish everything and update the README") after the gap list given to him: update order, push subject, Linux-only install, stale README, history fill discoverability.
+**Spec:** this document. Source: the maintainer's request on 2026-11-28 ("make it so it also runs on macOS smoothly and Windows too, fill those gaps, polish everything and update the README") after the gap list given to them: update order, push subject, Linux-only install, stale README, history fill discoverability.
 
 ## Global Constraints
 
-- Branch `feat/xplat` from `origin/main`, worktree `~/.cache/wa-tools/wt/xplat`. Never commit on main. Do not push (the controller pushes).
-- Never touch Simon's live install: the checkout `~/Code/tools/whatsapp-mcp-pro`, its systemd units (`whatsapp-bridge`, `whatsapp-mcp`, `wa-app`, `whatsapp-bridge-friday`) and `~/.local/share/whatsapp-mcp-pro`. `scripts/deploy-live.sh` keeps working unchanged. Tests and smoke runs use temp directories only, never pair a real WhatsApp account, never start a second bridge against a real store.
+- Branch `feat/xplat` from `origin/main`, a separate git worktree. Never commit on main. Do not push (the controller pushes).
+- Never touch the maintainer's live install: its checkout (`<live checkout>`), its hand-written systemd units and its data directory (`<live data dir>`). `scripts/deploy-live.sh` keeps working unchanged. Tests and smoke runs use temp directories only, never pair a real WhatsApp account, never start a second bridge against a real store.
 - Public repo: no real numbers, JIDs, names, hosts, IPs, emails or personal paths in tracked files.
 - Docs and CLI output: plain language, sentence case, no em dashes.
 - Defaults stay backward compatible: the bridge's working directory stays `whatsapp-bridge/` (store at `whatsapp-bridge/store`) unless `WA_DATA_DIR` / `--data` says otherwise; `WA_STORE_PATH` resolution in `whatsapp-mcp-server/lib/utils.py` is unchanged; existing `.env` keys keep their meaning.
@@ -64,7 +64,7 @@
 - `pair`: run the bridge in the foreground in the data dir so the QR shows; on success tell the user to stop it and run `wactl service install` (or `wactl start`).
 - `run bridge|app|mcp`: foreground supervisor. Loads `.env`, sets `WA_STORE_PATH` for app/mcp to the bridge store, cwd for the bridge = data dir. Restarts on non-zero exit with backoff 2s doubling to 60s, resets after 10 min up; exit code 3 → stop with a message; SIGINT/SIGTERM (Windows: Ctrl-C/CTRL_BREAK) forwarded to the child, then exit.
 - `start|stop|restart|status [component]`: through the installed service manager if services are installed, else `start` spawns detached `run` processes with a pid file in the data dir. `status` shows each component (service state or pid) and health: bridge `GET http://127.0.0.1:<port>/api/health`, app `GET http://127.0.0.1:8085/api/health`.
-- `service install|uninstall|status [--with-mcp]`: Linux systemd user units (`~/.config/systemd/user/wa-bridge.service`, `wa-app.service`, optional `wa-mcp.service`), enable + `loginctl enable-linger` hint; macOS LaunchAgents (`~/Library/LaunchAgents/com.wactl.<component>.plist`, KeepAlive false since wactl run supervises, RunAtLoad true, logs to data dir); Windows Task Scheduler at-logon tasks (`schtasks /Create /SC ONLOGON /TN wactl-<component> /TR "...wactl.cmd run <component>" /RL LIMITED /F`), hidden window. Every service calls `wactl run <component>`. Unit names must not collide with Simon's existing `whatsapp-bridge`, `whatsapp-mcp`, `wa-app` units: use the `wa-` / `wactl-` prefixes above, and `service install` refuses (with an explanation) if a non-wactl unit named `wa-app.service` already exists.
+- `service install|uninstall|status [--with-mcp]`: Linux systemd user units (`~/.config/systemd/user/wa-bridge.service`, `wa-app.service`, optional `wa-mcp.service`), enable + `loginctl enable-linger` hint; macOS LaunchAgents (`~/Library/LaunchAgents/com.wactl.<component>.plist`, KeepAlive false since wactl run supervises, RunAtLoad true, logs to data dir); Windows Task Scheduler at-logon tasks (`schtasks /Create /SC ONLOGON /TN wactl-<component> /TR "...wactl.cmd run <component>" /RL LIMITED /F`), hidden window. Every service calls `wactl run <component>`. Unit names must not collide with the maintainer's existing hand-written units (`whatsapp-bridge`, `whatsapp-mcp`, `wa-app`): use the `wa-` / `wactl-` prefixes above, and `service install` refuses (with an explanation) if a non-wactl unit named `wa-app.service` already exists.
 - `update [--yes]`: refuse if `git status --porcelain` is non-empty or the branch can't fast-forward; `git pull --ff-only`; back up `messages.db` and `whatsapp.db` with the sqlite3 backup API to `<data>/backups/<timestamp>/` plus the current bridge binary; rebuild bridge, uv sync both, pnpm build; restart bridge, wait for health (60 s), restart app, wait for health; on any failure after the backup: restore the previous bridge binary, restart, and print what failed and where the backup is. Prints a one-line summary of what changed (`git log --oneline old..new | head`).
 - `logs [component]`: tail the component log (journalctl on systemd, log file otherwise).
 
@@ -99,4 +99,4 @@
 ### Task 7: Review and ship
 
 - [ ] Final whole-branch review (most capable model), one fix wave, CI green on all three OSes.
-- [ ] PR; merge with Simon's OK; Simon's live install is not changed by this (deploy-live.sh path), so no deploy beyond `git pull` of docs; draft the Nirmal update message with writing-as-simon for Simon's approval.
+- [ ] PR; merge with the maintainer's OK; the maintainer's live install is not changed by this (deploy-live.sh path), so no deploy beyond `git pull` of docs; draft the update message for existing users for the maintainer's approval.
