@@ -37,10 +37,14 @@ sqlite3 --version
 it automatically on first build, unless `GOTOOLCHAIN=local` is set in the
 environment; unset it if the build complains about the toolchain.
 
+`./wactl doctor` (Windows: `.\wactl.cmd doctor`) checks all of this and prints the install command for what is
+missing. The [README Quickstart](README.md#quickstart) has the install commands for Linux, macOS and Windows.
+
 macOS: `brew install go uv sqlite3`. Linux: use your package manager, or the
 official Go tarball if the packaged Go is older than 1.26. The bridge needs CGO
 (SQLite), so a C compiler must be present (`build-essential` on Debian/Ubuntu,
-Xcode command line tools on macOS). Only the optional `mlx` transcription
+Xcode command line tools on macOS, a MinGW-w64 gcc such as `winget install --id BrechtSanders.WinLibs.POSIX.UCRT`
+on Windows). Only the optional `mlx` transcription
 backend is Apple-Silicon-only.
 
 **The user needs their phone with WhatsApp installed and logged in.**
@@ -163,6 +167,9 @@ order: whisper-server, mlx, faster-whisper, groq.
 ---
 
 ## 4. Pair the phone (THE HUMAN MUST DO THIS)
+
+With wactl: `./wactl pair` does the three commands below for you (it uses the data directory, so the session lands in
+`<data>/store`). Press Ctrl-C once it says connected.
 
 ```bash
 cd ../whatsapp-bridge
@@ -394,6 +401,41 @@ The bridge stops when its terminal closes, and it exits on purpose when it has
 been disconnected for more than about three minutes, expecting a supervisor to
 restart it. Run it under one.
 
+### The short way: `wactl service install`
+
+```bash
+./wactl service install            # bridge and app; add --with-mcp for the shared HTTP MCP server
+./wactl service status
+./wactl service install --dry-run  # print what it would write, change nothing
+./wactl service uninstall          # remove only what wactl wrote; data stays
+```
+
+Pair first (`./wactl pair`, step 4) and stop it again before installing: two bridges on one session fight each other.
+A service whose bridge is not paired stops with exit code 4 instead of looping, and `wactl run bridge` refuses to start
+when another bridge already holds the port or the pid file.
+
+What it creates:
+
+| OS | Files | Names |
+|---|---|---|
+| Linux | `~/.config/systemd/user/*.service` (honours `XDG_CONFIG_HOME`), then `daemon-reload` and `enable --now` | `wa-bridge`, `wa-app`, `wa-mcp` |
+| macOS | `~/Library/LaunchAgents/*.plist`, mode 600, loaded with `launchctl bootstrap gui/<uid>` | `com.wactl.bridge`, `com.wactl.app`, `com.wactl.mcp` |
+| Windows | Task Scheduler tasks that run at logon | `wactl-bridge`, `wactl-app`, `wactl-mcp` |
+
+The names carry a prefix so they never clash with units you wrote yourself (an existing `wa-bridge.service` that wactl
+did not write is left alone and the install stops). Every service runs the same thing, `wactl run <component>`: a
+supervisor that restarts a crashed process after 2, 4, 8, 16, 32, then 60 seconds, forwards stop signals, and stops for
+good on exit code 3 ("stream replaced": another process took this session) and 4 (not paired). On Linux the systemd
+units also say `RestartPreventExitStatus=3 4`. No unit, plist or task contains a secret: wactl reads `.env` itself.
+Logs go to `<data>/logs/<component>.log` (mode 600), or `./wactl logs bridge -f` (journalctl for systemd).
+
+Linux: run `loginctl enable-linger $USER` once, or the user units stop when you log out. Windows: the tasks start at
+logon and run in your session, so they stop when you log out. The data directory is `whatsapp-bridge/` unless you set
+`WA_DATA_DIR` in `.env` or pass `--data`; the store is `<data>/store`.
+
+The sections below are the manual equivalents, for when you want a system-wide unit, a different layout, or are not
+using wactl.
+
 ### Linux: systemd
 
 Keeping code and data in separate directories means a `git pull` or rebuild
@@ -523,7 +565,60 @@ launchctl load ~/Library/LaunchAgents/com.example.whatsapp-bridge.plist
 ### Anything else
 
 `scripts/run-bridge.sh` is a restart loop that sources `../.env`; run it from
-`whatsapp-bridge/` inside `tmux` or `screen`. On Windows, NSSM works.
+`whatsapp-bridge/` inside `tmux` or `screen`. On Windows, `wactl service install` is the supported way; NSSM also works.
+
+### Windows notes
+
+- **C compiler.** The bridge's SQLite driver uses cgo, so the build needs a gcc on `PATH`. This was kept on purpose
+  rather than switching to a pure Go driver (DECISIONS D28). `winget install --id BrechtSanders.WinLibs.POSIX.UCRT`
+  works; open a new terminal afterwards. `wactl doctor` detects a missing compiler and says so.
+- **ffmpeg** for voice notes: `winget install --id Gyan.FFmpeg`. Without it, sending a voice note fails with a message
+  naming that command.
+- **Launcher.** Use `.\wactl.cmd` in the repo folder (or `uv run scripts\wactl.py`).
+- **Paths.** Folders with spaces work. The bridge binary is `whatsapp-bridge.exe`. Media sent from disk must sit under
+  your temp folder (`%TEMP%`) or a folder listed in `MEDIA_ALLOWED_DIRS`.
+- **Secrets files.** `.env`, `vapid.pem`, backups and logs are meant to be mode 600, but `chmod` does nothing on
+  Windows. They are protected only by the permissions of your user profile folder, so keep the repo and the data
+  directory inside your profile and do not share that account.
+- **Time zones.** The MCP server installs the `tzdata` package on Windows, which has no system tz database.
+- **Stopping.** `wactl stop` kills the whole process tree (`taskkill /T /F`); there is no graceful signal for a hidden
+  console process. Services start at logon, not at boot.
+
+## Updating
+
+Easiest:
+
+```bash
+./wactl update        # Windows: .\wactl.cmd update
+```
+
+It refuses to run if tracked files have local changes, the branch has no upstream, or the pull would not be a
+fast-forward. Otherwise it backs up `messages.db` and `whatsapp.db` (sqlite backup API) and the current bridge binary to
+`<data>/backups/<timestamp>/`, runs `git pull --ff-only`, shows the new commits, rebuilds the bridge, syncs the Python
+environments (keeping extras you installed) and builds the app, then restarts **the bridge first, waits up to 60 seconds
+for it to answer, then the app**, and checks the app the same way. If anything fails it puts the previous bridge binary
+back, restarts what it touched, and says where the backup is. Databases are never restored automatically: the new bridge
+may already have migrated them, so restore from the backup by hand if the old bridge misbehaves
+(`git checkout <old commit>` returns the code).
+
+Manual equivalent (bridge first, because the app and MCP server read the store the bridge migrates):
+
+```bash
+cd whatsapp-mcp-pro && git pull --ff-only
+cp -a <data>/store <data>/store.bak            # or stop the bridge and copy messages.db and whatsapp.db
+cd whatsapp-bridge && go build -o whatsapp-bridge.new . && cd ..
+# stop the bridge, then swap the binary (rename, not overwrite, so you can go back)
+mv whatsapp-bridge/whatsapp-bridge whatsapp-bridge/whatsapp-bridge.old
+mv whatsapp-bridge/whatsapp-bridge.new whatsapp-bridge/whatsapp-bridge
+# start the bridge, check http://127.0.0.1:8080/api/health, then:
+(cd whatsapp-mcp-server && uv sync --inexact)
+(cd wa-app/server && uv sync --inexact)
+(cd wa-app/web && pnpm install --frozen-lockfile && pnpm build)
+# restart the app (and the MCP server if you run it), check http://127.0.0.1:8085/api/health
+```
+
+On Windows the binary is `whatsapp-bridge.exe`, and a running exe cannot be overwritten, which is why the swap is a
+rename after stopping the bridge. `scripts/deploy-live.sh` is the maintainer's own variant of this for a custom layout.
 
 ### A second number
 
@@ -551,9 +646,9 @@ Safe while the bridge runs. Details, name mapping and limits: [docs/IMPORT.md](d
 
 ## Optional: the wa-app chat app
 
-A chat PWA for your own number that rides the bridge. Build, install and expose it as described in the
-[README's App section](README.md#app). It needs the bridge running (it sends through it) and reads the same
-`messages.db`, so set `WA_STORE_PATH` in its unit to the bridge's store directory. It listens on
+A chat PWA for your own number that rides the bridge. `./wactl setup` builds it, `./wactl service install` runs it, and
+the [README Quickstart](README.md#3-open-the-app-on-your-phone) shows how to open it on your phone. It needs the bridge running (it sends through it) and reads the same
+`messages.db`, so with a hand-written unit set `WA_STORE_PATH` to the bridge's store directory (wactl does this for you). It listens on
 `127.0.0.1:8085`; expose it only with `tailscale serve`, not Funnel.
 
 ## Troubleshooting

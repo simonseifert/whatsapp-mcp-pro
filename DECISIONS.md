@@ -439,3 +439,43 @@ Choices made while building wa-app M2 (AI drafts), where the plan was silent or 
   hides Forward and the server refuses them.
 - **Sending from a jump window:** sending while the chat shows a window around an old message first returns to the
   latest messages, so the new bubble lands at the bottom.
+
+## D28 - 2026-11-28 - Cross-platform install: wactl
+
+- **Why:** the install was a hand-written systemd recipe for one Linux layout. A new user on macOS or Windows had no path
+  from a clone to the app on their phone, and updating meant remembering the order.
+- **stdlib only, one file** (`scripts/wactl.py`, Python 3.11+, launched by `uv run --no-project` through `wactl` and
+  `wactl.cmd`). Nothing to install before it, no dependency to break on a fresh machine. It never prints secret values
+  (`API_KEY=<set>`) and embeds none in units, plists or tasks; it reads `.env` itself.
+- **`run` is the one supervisor.** Every service on every OS runs `wactl run <component> --data <dir> --service`, so the
+  restart rules live in one place instead of three (systemd `Restart=`, launchd `KeepAlive`, Task Scheduler has none):
+  backoff 2 to 60 s, reset after 10 minutes up, stop signals forwarded, a pid file in `<data>/run`.
+- **Exit codes 3 and 4 stop restarts.** 3 is the bridge's "stream replaced" (another process took the session; restarting
+  steals it back and ping-pongs). 4 is wactl's "not paired" (restarting only creates a fresh QR each time). Both are also
+  in the systemd `RestartPreventExitStatus=3 4`. A second bridge on the same store or port is refused.
+- **Unit name prefixes avoid clashes.** systemd `wa-bridge`, `wa-app`, `wa-mcp`; launchd `com.wactl.*`; Task Scheduler
+  `wactl-*`. wactl marks what it writes and refuses to overwrite or remove anything without the marker, so the
+  maintainer's hand-written `whatsapp-bridge` and `wa-app` units keep working next to it. `scripts/deploy-live.sh` is
+  unchanged.
+- **Default layout unchanged.** Without `WA_DATA_DIR` or `--data` the data directory is `whatsapp-bridge/` and the store
+  `whatsapp-bridge/store`, as before.
+- **`update` order and rollback.** Refuse on a dirty tree (tracked files only), no upstream or a non-fast-forward. Back up
+  both databases with the sqlite backup API (dirs 0700, files 0600) and the bridge binary. Pull, rebuild, then bridge
+  first (the app and MCP server read the store the bridge migrates), health check, app second, health check. The binary is
+  swapped by rename on every OS because Windows cannot overwrite a running exe. On failure the old binary goes back and
+  the components it touched are restarted. Databases are never restored automatically, since the new bridge may have
+  migrated them; the message says where the backup is.
+- **cgo stays, a C compiler on Windows.** The bridge keeps `mattn/go-sqlite3`. Switching to a pure Go driver would change
+  the engine under a store with years of history and its FTS and migration behaviour for a one-time install step.
+  `wactl doctor` detects the compiler and prints the winget command.
+- **Temp dir rule.** Uploads (wa-app), converted audio (MCP) and the bridge media allowlist agree on one root per OS:
+  `/tmp` on Linux (`TMPDIR` never widens it), the symlink-resolved system temp dir on macOS (`/private/var/...`) and
+  Windows (TMP, TEMP, then USERPROFILE as Go does, compared case-insensitively). Paths outside it are refused, and a path
+  with an unresolvable symlink is refused. `MEDIA_ALLOWED_DIRS` stays the override.
+- **What CI proves.** Build, vet, unit tests for the bridge, MCP server and wa-app, and an install smoke test on Linux,
+  macOS and Windows runners: `doctor`, `setup`, start/health/stop of the app, pid files gone, `service install --dry-run`
+  rendering the right systemctl, launchctl or schtasks commands. **What it does not prove:** a real `launchctl bootstrap`
+  or `schtasks /Create`, a login-time start, a real WhatsApp pairing, the bridge running on macOS or Windows, `update`
+  against a real remote, and the rollback path end to end (unit tested with fake runners). Those need a person on each OS
+  once; the first report from one is worth more than more mocks.
+
