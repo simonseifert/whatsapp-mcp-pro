@@ -89,13 +89,22 @@ def test_reply_from_phone_supersedes_and_removes_card(settings) -> None:
     _run(settings, scenario)
 
 
+async def until(cond, timeout: float = 10.0) -> None:
+    """Waits for a condition instead of a fixed sleep, which slow CI runners outrun."""
+    deadline = time.monotonic() + timeout
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.005)
+
+
 def test_reply_while_pending_cancels_the_job(settings) -> None:
     async def scenario(rig):
         rig.setup()
         rig.fake.gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.05)
+        await until(lambda: rig.rows() == [("pending", None)])
         assert rig.rows() == [("pending", None)]
         rig.events()
         own = live.Event("message", {"chat_jid": ANA, "message": {
@@ -278,7 +287,7 @@ def test_nightly_sweep_distills_chats_with_new_outcomes(settings) -> None:
         rig.setup(chat=EKIPA)
         seed_outcomes(rig.appconn, 3, ANA)
         task = asyncio.create_task(rig.worker.run())
-        await asyncio.sleep(0.05)
+        await until(lambda: len(delays) >= 2)
         await rig.worker.idle()
         assert delays[0] == pytest.approx(60.0) and delays[1] == pytest.approx(24 * 3600 - 1)
         assert len(rig.fake.calls) == 1
@@ -449,7 +458,7 @@ def test_old_own_row_does_not_cancel_a_newer_draft(settings) -> None:
         rig.sleep_gate = asyncio.Event()
         _insert(settings, ANA, "N1")
         rig.worker.on_events([_event(ANA, "N1")])
-        await asyncio.sleep(0.05)
+        await until(lambda: rig.sleeps == [20.0])
         assert rig.sleeps == [20.0] and rig.rows() == []
         rig.events()
         old = live.Event("message", {"chat_jid": ANA, "message": {

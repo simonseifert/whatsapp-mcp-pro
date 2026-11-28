@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ApiError, dismissDraft, fetchDraft, requestDraft } from './api'
 import type { DraftView } from './api-types'
 import { subscribeLive } from './live'
@@ -34,7 +34,9 @@ export function useDraft(chatJid: string) {
     [chatJid],
   )
   const latest = useRef(draft)
-  useEffect(() => {
+  // Layout effect, not a passive one: a click right after the card appears must already see it, or
+  // dismiss() finds no draft to DELETE and the card only vanishes locally.
+  useLayoutEffect(() => {
     latest.current = draft
   })
   const [error, setError] = useState<string | null>(null)
