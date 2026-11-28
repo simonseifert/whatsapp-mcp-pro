@@ -902,26 +902,56 @@ def test_pnpm_pin_reads_package_manager(tmp_path):
     assert wactl.pnpm_pin(tmp_path) is None
 
 
-def test_pnpm_cmd_falls_back_to_npm_when_corepack_broken(monkeypatch, tmp_path):
-    state = {"pnpm": False}
-    calls = []
+def _pnpm_env(monkeypatch, tmp_path, works, windows=False):
+    """works: set of command strings that succeed; npm install adds 'pnpm --version' via the prefix path."""
+    web = tmp_path / "wa-app" / "web"
+    web.mkdir(parents=True, exist_ok=True)
+    (web / "package.json").write_text('{"packageManager": "pnpm@11.22.0"}')
+    prefix = tmp_path / "npmprefix"
+    prefix.mkdir(exist_ok=True)
+    ran = []
 
-    def which(name):
-        if name == "pnpm":
-            return "/x/pnpm" if state["pnpm"] else None
-        return f"/x/{name}"
+    def fake_runs_ok(cmd, cwd=None):
+        key = " ".join(cmd) if not cmd[0].startswith(str(prefix)) else "global-pnpm --version"
+        ran.append(key)
+        return key in works
 
     def fake_run(cmd, **kw):
-        calls.append(cmd)
-        state["pnpm"] = True
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        ran.append(" ".join(cmd))
+        out = str(prefix) if cmd[1:3] == ["prefix", "-g"] else ""
+        if cmd[1] == "install":
+            name = "pnpm.cmd" if windows else "bin/pnpm"
+            f = prefix / name
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("")
+            works.add("global-pnpm --version")
+        return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
 
-    web = tmp_path / "wa-app" / "web"
-    web.mkdir(parents=True)
-    (web / "package.json").write_text('{"packageManager": "pnpm@11.22.0"}')
-    monkeypatch.setattr(wactl.shutil, "which", which)
-    monkeypatch.setattr(wactl, "corepack_works", lambda: False)
-    monkeypatch.setattr(wactl, "resolve_exe", lambda n: n)
+    monkeypatch.setattr(wactl, "runs_ok", fake_runs_ok)
+    monkeypatch.setattr(wactl, "IS_WINDOWS", windows)
+    monkeypatch.setattr(wactl.shutil, "which", lambda n: f"/x/{n}")
     monkeypatch.setattr(wactl.subprocess, "run", fake_run)
+    return ran, prefix
+
+
+def test_pnpm_cmd_uses_working_pnpm(monkeypatch, tmp_path):
+    _pnpm_env(monkeypatch, tmp_path, {"pnpm --version"})
     assert wactl.pnpm_cmd(tmp_path) == ["pnpm"]
-    assert calls[0][1:] == ["install", "-g", "pnpm@11.22.0"]
+
+
+def test_pnpm_cmd_skips_broken_pnpm_for_corepack(monkeypatch, tmp_path):
+    _pnpm_env(monkeypatch, tmp_path, {"corepack --version", "corepack pnpm --version"})
+    assert wactl.pnpm_cmd(tmp_path) == ["corepack", "pnpm"]
+
+
+def test_pnpm_cmd_falls_back_to_npm_when_both_broken(monkeypatch, tmp_path, capsys):
+    ran, prefix = _pnpm_env(monkeypatch, tmp_path, set())
+    cmd = wactl.pnpm_cmd(tmp_path)
+    assert cmd == [str(prefix / "bin" / "pnpm")]
+    assert any(r.endswith("install -g pnpm@11.22.0") for r in ran)
+    assert "installing pnpm@11.22.0" in capsys.readouterr().out
+
+
+def test_pnpm_cmd_windows_uses_npm_prefix_cmd(monkeypatch, tmp_path):
+    _, prefix = _pnpm_env(monkeypatch, tmp_path, set(), windows=True)
+    assert wactl.pnpm_cmd(tmp_path) == [str(prefix / "pnpm.cmd")]

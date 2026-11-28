@@ -368,15 +368,17 @@ def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
         hint=install_hint("node", system),
     )
     pnpm = shutil.which("pnpm")
-    corepack_ok = bool(shutil.which("corepack")) and corepack_works()
     npm = shutil.which("npm")
-    row(
-        bool(pnpm or corepack_ok or npm),
-        "pnpm",
-        pnpm
-        or ("via corepack" if corepack_ok else f"will be installed with npm ({npm})" if npm else "not found"),
-        hint=install_hint("pnpm", system),
-    )
+    if pnpm and runs_ok(["pnpm", "--version"]):
+        row(True, "pnpm", pnpm)
+    else:
+        broken = f"the pnpm at {pnpm} is broken" if pnpm else "pnpm not found"
+        if corepack_works():
+            row(True, "pnpm", f"{broken}; setup will use corepack")
+        elif npm:
+            row(True, "pnpm", f"{broken}; setup will install it with npm")
+        else:
+            row(False, "pnpm", broken, hint=install_hint("pnpm", system))
     row(
         bool(shutil.which("ffmpeg")),
         "ffmpeg",
@@ -446,16 +448,20 @@ def run_step(label: str, cmd: list[str], cwd: Path, env: dict[str, str] | None =
         raise StepError(f"{label} failed (exit {r.returncode})")
 
 
-def corepack_works() -> bool:
-    """True if corepack runs. Some Node installs list it but ship without the module."""
-    exe = shutil.which("corepack")
-    if not exe:
-        return False
+def runs_ok(cmd: list[str], cwd: Path | None = None) -> bool:
+    """True if the command runs and exits 0. Shims left behind by a Node upgrade fail here."""
     try:
-        r = subprocess.run([resolve_exe("corepack"), "--version"], capture_output=True, timeout=30)
+        r = subprocess.run(
+            [resolve_exe(cmd[0]), *cmd[1:]], capture_output=True, timeout=60, cwd=cwd, env=tool_env()
+        )
     except (OSError, subprocess.SubprocessError):
         return False
     return r.returncode == 0
+
+
+def corepack_works() -> bool:
+    """True if corepack runs. Some Node installs list it but ship without the module."""
+    return bool(shutil.which("corepack")) and runs_ok(["corepack", "--version"])
 
 
 def pnpm_pin(repo: Path) -> str | None:
@@ -468,24 +474,50 @@ def pnpm_pin(repo: Path) -> str | None:
     return m.group(1) if m else None
 
 
+def npm_global_pnpm(npm: str) -> list[str] | None:
+    """The pnpm that `npm install -g` just put in npm's global bin, even if PATH has not caught up."""
+    if runs_ok(["pnpm", "--version"]):
+        return ["pnpm"]
+    try:
+        r = subprocess.run([npm, "prefix", "-g"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    prefix = r.stdout.strip()
+    if r.returncode != 0 or not prefix:
+        return None
+    base = Path(prefix)
+    for cand in (base / "pnpm.cmd", base / "bin" / "pnpm") if IS_WINDOWS else (base / "bin" / "pnpm",):
+        if cand.exists() and runs_ok([str(cand), "--version"]):
+            return [str(cand)]
+    return None
+
+
 def pnpm_cmd(repo: Path | None = None) -> list[str]:
-    if shutil.which("pnpm"):
+    """A pnpm command that really runs. Presence on PATH is not enough: shims break after Node upgrades."""
+    cwd = repo / "wa-app" / "web" if repo else None
+    if runs_ok(["pnpm", "--version"], cwd):
         return ["pnpm"]
     if corepack_works():
+        if shutil.which("pnpm"):
+            say("the pnpm on PATH is broken; trying corepack")
         with contextlib.suppress(OSError):
             subprocess.run([resolve_exe("corepack"), "enable"], capture_output=True)
-        if shutil.which("pnpm"):
+        if runs_ok(["pnpm", "--version"], cwd):
             return ["pnpm"]
-        return ["corepack", "pnpm"]
+        if runs_ok(["corepack", "pnpm", "--version"], cwd):
+            return ["corepack", "pnpm"]
     npm = shutil.which("npm")
     if npm:
         ver = pnpm_pin(repo) if repo else None
         spec = f"pnpm@{ver}" if ver else "pnpm"
-        say(f"corepack is missing or broken; installing {spec} with npm (npm install -g {spec})")
-        r = subprocess.run([resolve_exe("npm"), "install", "-g", spec], capture_output=True, text=True)
-        if r.returncode == 0 and shutil.which("pnpm"):
-            return ["pnpm"]
-        raise StepError(f"npm install -g {spec} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        say(f"pnpm and corepack are missing or broken; installing {spec} with npm (npm install -g {spec})")
+        r = subprocess.run([npm, "install", "-g", spec], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise StepError(f"npm install -g {spec} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        found = npm_global_pnpm(npm)
+        if found:
+            return found
+        raise StepError(f"npm installed {spec} but it does not run. Open a new terminal and retry.")
     raise StepError(
         "pnpm, a working corepack and npm are all missing. " + install_hint("pnpm", platform.system())
     )
