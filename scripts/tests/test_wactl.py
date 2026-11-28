@@ -187,31 +187,6 @@ def test_write_secret_file_is_mode_600(tmp_path):
         assert stat.S_IMODE(p.stat().st_mode) == 0o600
 
 
-def test_schtasks_args_quote_path_with_spaces():
-    launcher = r"C:\Users\Jane Doe\wa tools\wactl.cmd"
-    data = r"C:\Users\Jane Doe\wa data"
-    args = wactl.schtasks_create_args("bridge", launcher, data)
-    assert args[:1] == ["schtasks"]
-    assert args[args.index("/SC") + 1] == "ONLOGON"
-    assert args[args.index("/TN") + 1] == "wactl-bridge"
-    assert args[args.index("/RL") + 1] == "LIMITED"
-    assert "/F" in args
-    tr = args[args.index("/TR") + 1]
-    assert "-WindowStyle Hidden" in tr
-    assert f"'{launcher}' run bridge --data '{data}'" in tr
-    assert "--log" not in tr and tr.endswith('--service"')
-    # the full command line, as Windows would see it, keeps /TR as one argument
-    line = subprocess.list2cmdline(args)
-    assert tr.replace('"', '\\"') in line
-
-
-def test_schtasks_args_escape_single_quote_in_path():
-    tr = wactl.schtasks_create_args("app", r"C:\O'Neil\wactl.cmd", r"C:\d")[
-        wactl.schtasks_create_args("app", "x", "y").index("/TR") + 1
-    ]
-    assert "O''Neil" in tr
-
-
 def test_refuses_foreign_unit(tmp_path):
     d = tmp_path / "systemd"
     d.mkdir()
@@ -407,7 +382,9 @@ def make_ctx(tmp_path, env=None):
     (repo / "whatsapp-bridge").mkdir(parents=True, exist_ok=True)
     data = tmp_path / "data"
     data.mkdir(exist_ok=True)
-    return wactl.Context(repo=repo, data=data, env=env or {"API_PORT": "59123"})
+    return wactl.Context(
+        repo=repo, data=data, env=env or {"API_PORT": "59123", "WA_APP_PORT": "59125", "MCP_PORT": "59126"}
+    )
 
 
 def make_store(ctx, paired):
@@ -466,7 +443,7 @@ def test_start_guard_refuses_unpaired_with_distinct_code(tmp_path):
 
 def test_exit_code_4_in_systemd_restart_prevent_and_supervisor_stops():
     unit = wactl.render_systemd_unit("bridge", ARGV, Path("/d"))
-    assert "RestartPreventExitStatus=3 4" in unit and "Restart=on-failure" in unit
+    assert "RestartPreventExitStatus=3 4 5" in unit and "Restart=on-failure" in unit
     result, sleeps = run_supervisor([(4, 1), (0, 1)])
     assert result == wactl.EXIT_UNPAIRED and sleeps == []
 
@@ -493,7 +470,8 @@ def test_supervisor_rechecks_before_each_restart():
     assert res == wactl.EXIT_UNPAIRED and len(spawned) == 2
 
 
-def test_second_bridge_guard_port_and_pid(tmp_path):
+def test_second_bridge_guard_port_and_pid(tmp_path, monkeypatch):
+    monkeypatch.setattr(wactl, "proc_info", lambda pid: ("1", "python wactl.py run bridge"))
     import socket
 
     ctx = make_ctx(tmp_path)
@@ -530,16 +508,6 @@ def test_parse_tasklist_pid_is_exact():
     assert wactl.parse_tasklist_pid(out, 12345)
     assert not wactl.parse_tasklist_pid(out, 1234)
     assert not wactl.parse_tasklist_pid("INFO: No tasks are running which match the specified criteria.", 1)
-
-
-def test_schtasks_tr_within_limit_for_realistic_long_paths():
-    launcher = r"C:\Users\Jane Doe\Documents\Projects\whatsapp-mcp-pro\wactl.cmd"
-    data = r"C:\Users\Jane Doe\AppData\Local\whatsapp-mcp-pro"
-    for c in wactl.COMPONENTS:
-        tr = wactl.schtasks_create_args(c, launcher, data)[
-            wactl.schtasks_create_args(c, launcher, data).index("/TR") + 1
-        ]
-        assert len(tr) <= wactl.TR_MAX, len(tr)
 
 
 # ---- file modes
@@ -801,6 +769,7 @@ def test_stop_run_kills_orphaned_child_group(tmp_path, monkeypatch):
 
 
 def test_run_refuses_second_app_supervisor(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(wactl, "proc_info", lambda pid: ("1", "python wactl.py run app"))
     ctx = make_ctx(tmp_path)
     (ctx.data / "run").mkdir()
     (ctx.repo / "wa-app" / "server" / ".venv").mkdir(parents=True)
@@ -955,3 +924,275 @@ def test_pnpm_cmd_falls_back_to_npm_when_both_broken(monkeypatch, tmp_path, caps
 def test_pnpm_cmd_windows_uses_npm_prefix_cmd(monkeypatch, tmp_path):
     _, prefix = _pnpm_env(monkeypatch, tmp_path, set(), windows=True)
     assert wactl.pnpm_cmd(tmp_path) == [str(prefix / "pnpm.cmd")]
+
+
+# ------------------------------------------------------------ final fix wave
+
+
+def test_uv_exe_is_absolute_when_found(tmp_path, monkeypatch):
+    fake = tmp_path / "uvbin" / "uv"
+    fake.parent.mkdir()
+    fake.write_text("")
+    monkeypatch.delenv("UV", raising=False)
+    monkeypatch.setattr(wactl.shutil, "which", lambda n: str(fake) if n == "uv" else None)
+    assert os.path.isabs(wactl.uv_exe())
+    monkeypatch.setenv("UV", str(fake))
+    assert wactl.uv_exe() == str(fake.resolve())
+
+
+def test_component_command_uses_absolute_uv(tmp_path, monkeypatch):
+    monkeypatch.setattr(wactl, "uv_exe", lambda: "/abs/uv")
+    ctx = make_ctx(tmp_path)
+    assert wactl.component_command(ctx, "app")[0] == "/abs/uv"
+    assert wactl.component_command(ctx, "mcp")[0] == "/abs/uv"
+
+
+def test_service_path_contains_tool_dirs_and_system_bins(monkeypatch):
+    monkeypatch.setattr(wactl, "uv_exe", lambda: "/home/u/.local/bin/uv")
+    monkeypatch.setattr(
+        wactl.shutil,
+        "which",
+        lambda n: {"node": "/opt/node/bin/node", "claude": "/home/u/.claude/bin/claude"}.get(n),
+    )
+    parts = wactl.service_path().split(os.pathsep)
+    assert parts[:3] == ["/home/u/.local/bin", "/opt/node/bin", "/home/u/.claude/bin"]
+    assert parts[-3:] == ["/usr/local/bin", "/usr/bin", "/bin"]
+
+
+def test_systemd_unit_sets_path_and_blocks_exit_5():
+    unit = wactl.render_systemd_unit("app", ARGV, Path("/d"), "/home/u/.local/bin:/usr/bin")
+    assert "Environment=PATH=/home/u/.local/bin:/usr/bin\n" in unit
+    assert "RestartPreventExitStatus=3 4 5" in unit
+
+
+def test_spawn_failure_stops_instead_of_looping():
+    result, sleeps = run_supervisor([(wactl.EXIT_SPAWN_FAILED, 0), (0, 1)])
+    assert result == wactl.EXIT_SPAWN_FAILED and sleeps == []
+
+
+def test_run_logs_spawn_failure_without_traceback(tmp_path, monkeypatch, capsys):
+    ctx = make_ctx(tmp_path)
+    (ctx.repo / "wa-app" / "server" / ".venv").mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise FileNotFoundError("uv")
+
+    monkeypatch.setattr(wactl, "popen_component", boom)
+    monkeypatch.setattr(wactl.signal, "signal", lambda *a: None)
+    ns = argparse_ns(component="app", log=None, service=False)
+    assert wactl.cmd_run(ctx, ns) == wactl.EXIT_SPAWN_FAILED
+    assert "cannot start app" in capsys.readouterr().out
+
+
+def test_port_conflict_for_app_and_mcp(tmp_path):
+    import socket
+
+    ctx = make_ctx(tmp_path)
+    for comp, key in (("app", "WA_APP_PORT"), ("mcp", "MCP_PORT")):
+        with socket.socket() as srv:
+            srv.bind(("127.0.0.1", 0))
+            srv.listen()
+            ctx.env[key] = str(srv.getsockname()[1])
+            monkey_env = os.environ.pop(key, None)
+            try:
+                assert "already in use" in wactl.port_conflict(ctx, comp, True)
+            finally:
+                if monkey_env is not None:
+                    os.environ[key] = monkey_env
+
+
+def test_foreign_run_problem_flags_unmanaged_component(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    monkeypatch.setattr(wactl, "installed_services", lambda c: [])
+    monkeypatch.setattr(wactl, "http_ok", lambda url, timeout=3: True)
+    msg = wactl.foreign_run_problem(ctx, "app")
+    assert msg and "run by something else" in msg and "--build-only" in msg
+    monkeypatch.setattr(wactl, "http_ok", lambda url, timeout=3: False)
+    assert wactl.foreign_run_problem(ctx, "app") is None
+    monkeypatch.setattr(wactl, "http_ok", lambda url, timeout=3: True)
+    monkeypatch.setattr(wactl, "installed_services", lambda c: ["app"])
+    assert wactl.foreign_run_problem(ctx, "app") is None
+
+
+def test_update_refuses_when_install_is_run_by_something_else(tmp_path, monkeypatch, capsys):
+    ctx = make_ctx(tmp_path)
+    monkeypatch.setattr(wactl, "check_update_ready", lambda repo: None)
+    monkeypatch.setattr(
+        wactl, "foreign_run_problem", lambda c, n: "bridge is answering on port 1" if n == "bridge" else None
+    )
+    monkeypatch.setattr(wactl, "backup_store", lambda c: pytest.fail("must not back up or pull"))
+    assert wactl.cmd_update(ctx, argparse_ns(build_only=False, yes=True)) == 1
+    assert "refusing" in capsys.readouterr().out
+
+
+def test_build_only_builds_swaps_and_restarts_nothing(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx)
+    msgs = []
+    assert wactl.apply_build_only(ctx, fake.ops(), backup, msgs.append) is True
+    assert fake.calls[0] == "build" and not any(c.startswith(("stop", "start")) for c in fake.calls)
+    assert ctx.bridge_bin.read_text() == "NEW"
+    assert any("Restart in this order" in m for m in msgs)
+
+
+def test_build_only_swap_failure_keeps_new_binary_aside(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, replace_fail_on="whatsapp-bridge.new")
+    msgs = []
+    assert wactl.apply_build_only(ctx, fake.ops(), backup, msgs.append) is True
+    assert any("Could not swap" in m for m in msgs)
+
+
+# ---- pid identity
+
+
+def test_parse_pidfile_formats():
+    assert wactl.parse_pidfile("123\n456789\nwactl\n") == (123, "456789")
+    assert wactl.parse_pidfile("123") == (123, "-")
+    assert wactl.parse_pidfile("junk") is None
+
+
+def test_pid_identity_requires_wactl_cmdline_and_matching_start():
+    assert wactl.pid_identity_ok("99", ("99", "/x/python /r/scripts/wactl.py run app"))
+    assert wactl.pid_identity_ok("-", ("5", "python C:\\r\\scripts\\wactl.py run app"))
+    assert not wactl.pid_identity_ok("99", ("100", "python wactl.py run app"))  # pid reused later
+    assert not wactl.pid_identity_ok("99", ("99", "nginx: master process"))
+
+
+def test_read_pid_removes_stale_or_reused_pid_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(wactl, "IS_WINDOWS", False)
+    ctx = make_ctx(tmp_path)
+    (ctx.data / "run").mkdir()
+    pf = ctx.pidfile("app")
+    pf.write_text("777\n42\nwactl\n")
+    monkeypatch.setattr(wactl, "pid_alive", lambda pid: False)
+    assert wactl.read_pid(ctx, "app") is None and not pf.exists()
+    pf.write_text("777\n42\nwactl\n")
+    monkeypatch.setattr(wactl, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(wactl, "proc_info", lambda pid: ("42", "nginx"))
+    assert wactl.read_pid(ctx, "app") is None and not pf.exists()
+    pf.write_text("777\n42\nwactl\n")
+    monkeypatch.setattr(wactl, "proc_info", lambda pid: ("42", "python /r/scripts/wactl.py run app"))
+    assert wactl.read_pid(ctx, "app") == 777 and pf.exists()
+
+
+@posix_only
+def test_pid_alive_treats_permission_error_as_not_ours(monkeypatch):
+    def deny(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(wactl.os, "kill", deny)
+    assert wactl.pid_alive(1) is False
+
+
+@posix_only
+def test_proc_info_and_pidfile_roundtrip_for_this_process(tmp_path, monkeypatch):
+    info = wactl.proc_info(os.getpid())
+    assert info is not None and info[0]
+    ctx = make_ctx(tmp_path)
+    (ctx.data / "run").mkdir()
+    wactl.write_pidfile(ctx, "app")
+    assert wactl.parse_pidfile(ctx.pidfile("app").read_text()) == (os.getpid(), info[0])
+
+
+# ---- Windows task, launchd TMPDIR
+
+
+def test_task_register_script_is_per_user_limited_hidden_and_quoted():
+    script = wactl.task_register_script(
+        "bridge", r"C:\Users\Jane Doe\wa tools\wactl.cmd", r"C:\Users\Jane Doe\d"
+    )
+    assert "Register-ScheduledTask -TaskName 'wactl-bridge'" in script
+    assert "-AtLogOn -User $me" in script and "-RunLevel Limited" in script and "-Hidden" in script
+    assert "-WindowStyle Hidden" in script
+    assert "wactl.cmd''" in script and "--service" in script  # the inner quotes are doubled
+    assert "schtasks" not in script
+
+
+def test_task_register_script_escapes_single_quote_in_path():
+    script = wactl.task_register_script("app", r"C:\O'Neil\wactl.cmd", r"C:\d")
+    assert "O''''Neil" in script  # doubled once for the command, once for the -Argument literal
+
+
+def test_powershell_args_roundtrip_and_unregister():
+    script = wactl.task_unregister_script("mcp")
+    assert "Unregister-ScheduledTask -TaskName 'wactl-mcp'" in script
+    argv = wactl.powershell_args(script)
+    assert argv[:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
+    assert wactl.decode_powershell_args(argv) == script
+
+
+def test_windows_install_plan_uses_powershell_not_schtasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(wactl, "IS_WINDOWS", True)
+    monkeypatch.setattr(wactl, "IS_MAC", False)
+    ctx = make_ctx(tmp_path)
+    files, cmds = wactl.plan_service_install(ctx, ["bridge", "app"])
+    assert files == [] and len(cmds) == 2
+    assert all(c[0][0] == "powershell.exe" for c in cmds)
+    assert "Register-ScheduledTask" in wactl.decode_powershell_args(cmds[0][0])
+
+
+def test_plist_sets_tmpdir_when_given():
+    data = plistlib.loads(wactl.render_launchd_plist("bridge", ARGV, Path("/d"), "/bin", "/private/tmp"))
+    assert data["EnvironmentVariables"]["TMPDIR"] == "/private/tmp"
+
+
+def test_macos_plan_puts_tmpdir_in_plist(tmp_path, monkeypatch):
+    monkeypatch.setattr(wactl, "IS_MAC", True)
+    monkeypatch.setattr(wactl, "IS_WINDOWS", False)
+    monkeypatch.setattr(wactl, "launchd_dir", lambda: tmp_path / "LA")
+    files, _ = wactl.plan_service_install(make_ctx(tmp_path), ["bridge"])
+    env = plistlib.loads(files[0][1])["EnvironmentVariables"]
+    assert env["TMPDIR"] == os.path.realpath(wactl.tempfile.gettempdir())
+
+
+# ---- backups, hints, uninstall, stop
+
+
+def test_prune_backups_keeps_newest_five(tmp_path):
+    root = tmp_path / "backups"
+    names = [f"2026010{i}-000000" for i in range(1, 8)]
+    for n in names:
+        (root / n).mkdir(parents=True)
+    removed = wactl.prune_backups(root)
+    assert [d.name for d in removed] == names[:2]
+    assert sorted(d.name for d in root.iterdir()) == names[2:]
+    assert wactl.prune_backups(tmp_path / "nope") == []
+
+
+def test_tailscale_and_go_hints():
+    assert "--cask" in wactl.install_hint("tailscale", "Darwin")
+    assert "go.dev/dl" in wactl.install_hint("go", "Linux")
+
+
+def test_uninstall_covers_all_components_without_flags(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(wactl, "IS_WINDOWS", False)
+    monkeypatch.setattr(wactl, "IS_MAC", False)
+    monkeypatch.setattr(wactl, "systemd_dir", lambda: tmp_path / "u")
+    ctx = make_ctx(tmp_path)
+    ns = argparse_ns(action="uninstall", dry_run=True, with_mcp=False, all_installed=False)
+    assert wactl.cmd_service(ctx, ns) == 0
+    out = capsys.readouterr().out
+    assert "wa-mcp" in out and "wa-bridge" in out and "wa-app" in out
+
+
+def test_stop_with_service_also_stops_leftover_pid_process(tmp_path, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    calls = []
+    monkeypatch.setattr(wactl, "installed_services", lambda c: ["app"])
+    monkeypatch.setattr(wactl, "read_pid", lambda c, n: 321)
+    monkeypatch.setattr(wactl, "stop_run", lambda c, n, pid: calls.append(("stop_run", n, pid)))
+    monkeypatch.setattr(wactl, "service_control", lambda c, a, n: calls.append(("svc", a, n)) or 0)
+    wactl.cmd_control("stop")(ctx, argparse_ns(component="app"))
+    assert calls == [("stop_run", "app", 321), ("svc", "stop", "app")]
+
+
+def test_install_stops_running_detached_process_first(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(wactl, "IS_WINDOWS", False)
+    monkeypatch.setattr(wactl, "IS_MAC", False)
+    monkeypatch.setattr(wactl, "systemd_dir", lambda: tmp_path / "u")
+    ctx = make_ctx(tmp_path)
+    monkeypatch.setattr(wactl, "read_pid", lambda c, n: 55 if n == "app" else None)
+    ns = argparse_ns(action="install", dry_run=True, with_mcp=False)
+    wactl.cmd_service(ctx, ns)
+    assert "already running (pid 55)" in capsys.readouterr().out

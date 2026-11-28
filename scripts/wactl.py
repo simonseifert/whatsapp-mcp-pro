@@ -14,6 +14,7 @@ per OS, update, cli.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import json
 import os
@@ -28,6 +29,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -45,8 +47,9 @@ DEFAULT_COMPONENTS = ("bridge", "app")
 MARKER = "# Managed by wactl. Do not edit; run `wactl service install` to regenerate."
 EXIT_STREAM_REPLACED = 3
 EXIT_UNPAIRED = 4
-STOP_CODES = (EXIT_STREAM_REPLACED, EXIT_UNPAIRED)
-TR_MAX = 261  # schtasks /TR limit
+EXIT_SPAWN_FAILED = 5
+STOP_CODES = (EXIT_STREAM_REPLACED, EXIT_UNPAIRED, EXIT_SPAWN_FAILED)
+KEEP_BACKUPS = 5
 # Windows-only constants, looked up by name so POSIX type checkers stay quiet.
 WIN_NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -236,9 +239,9 @@ def install_hint(tool: str, system: str) -> str:
     table = {
         "Linux": {
             "uv": "curl -LsSf https://astral.sh/uv/install.sh | sh   (or: pipx install uv)",
-            "go": "sudo apt install golang-go   (or download from https://go.dev/dl/)",
+            "go": "download Go from https://go.dev/dl/ (apt golang-go is too old on Debian 12, Ubuntu 22.04)",
             "cc": "sudo apt install build-essential",
-            "node": "Node 22 or newer. apt nodejs is often too old: use NodeSource, nvm or https://nodejs.org",
+            "node": "Node 22 or newer. apt nodejs is often too old: NodeSource, nvm or nodejs.org",
             "pnpm": "corepack enable   (ships with Node), or: npm install -g pnpm   (apt has no pnpm)",
             "ffmpeg": "sudo apt install ffmpeg",
             "tailscale": "curl -fsSL https://tailscale.com/install.sh | sh   (apt repo: https://tailscale.com/download/linux)",
@@ -250,7 +253,7 @@ def install_hint(tool: str, system: str) -> str:
             "node": "brew install node",
             "pnpm": "brew install pnpm   (or: corepack enable)",
             "ffmpeg": "brew install ffmpeg",
-            "tailscale": "brew install tailscale",
+            "tailscale": "brew install --cask tailscale   (the app)",
         },
         "Windows": {
             "uv": "winget install --id astral-sh.uv",
@@ -332,7 +335,9 @@ def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
     if go:
         have = parse_version(tool_output([go, "version"]))
         if have and need:
-            ok, note = judge_go(have, need, os.environ.get("GOTOOLCHAIN", ""))
+            ok, note = judge_go(
+                have, need, tool_output([go, "env", "GOTOOLCHAIN"]) or os.environ.get("GOTOOLCHAIN", "")
+            )
             row(
                 ok,
                 "Go",
@@ -625,6 +630,11 @@ def supervise(
                 "Not restarting; restarting would start a ping-pong. Stop the other client, then start again."
             )
             return EXIT_STREAM_REPLACED
+        if code == EXIT_SPAWN_FAILED:
+            log(
+                "wactl: the component could not be started at all. Not restarting; fix the error above first."
+            )
+            return EXIT_SPAWN_FAILED
         if code == EXIT_UNPAIRED:
             log("wactl: the bridge reports no linked device. Not restarting. Run `wactl pair`.")
             return EXIT_UNPAIRED
@@ -641,13 +651,29 @@ def supervise(
                 return verdict
 
 
+def uv_exe() -> str:
+    """Absolute path of uv: $UV, else PATH. systemd and launchd start us with a short PATH."""
+    found = os.environ.get("UV") or shutil.which("uv")
+    return str(Path(found).resolve()) if found and os.path.exists(found) else (found or "uv")
+
+
+def service_path(extra: tuple[str, ...] = ()) -> str:
+    """PATH for generated services: where uv, node and claude live, plus the system bins."""
+    dirs: list[str] = []
+    for exe in (uv_exe(), shutil.which("node"), shutil.which("claude")):
+        if exe and os.path.isabs(exe):
+            dirs.append(str(Path(exe).parent))
+    dirs += [*extra, "/usr/local/bin", "/usr/bin", "/bin"]
+    return os.pathsep.join(dict.fromkeys(dirs))
+
+
 def component_command(ctx: Context, component: str) -> list[str]:
     if component == "bridge":
         return [str(ctx.bridge_bin)]
     if component == "app":
-        return ["uv", "run", "--no-sync", "--project", str(ctx.repo / "wa-app" / "server"), "wa-app"]
+        return [uv_exe(), "run", "--no-sync", "--project", str(ctx.repo / "wa-app" / "server"), "wa-app"]
     return [
-        "uv",
+        uv_exe(),
         "run",
         "--no-sync",
         "--project",
@@ -684,21 +710,46 @@ def is_paired(store: Path) -> bool:
 UNPAIRED_MSG = "this data directory has no linked WhatsApp device ({store}). Run `wactl pair` first."
 
 
+def mcp_port(env: dict[str, str]) -> int:
+    return int(os.environ.get("MCP_PORT") or env.get("MCP_PORT") or 8082)
+
+
+def component_port(ctx: Context, c: str) -> int:
+    return {"bridge": bridge_port, "app": app_port, "mcp": mcp_port}[c](ctx.env)
+
+
+def port_conflict(ctx: Context, c: str, as_service: bool) -> str | None:
+    """Why a second copy of this component must not start, or None."""
+    pid = read_pid(ctx, c)
+    if pid and pid != os.getpid():
+        return f"{c} is already running for this data directory (pid {pid}). Stop it first."
+    port = component_port(ctx, c)
+    if port_in_use(port):
+        return f"port {port} is already in use (a {c} may be running). Stop it first: `wactl stop {c}`."
+    if not as_service and c in installed_services(ctx) and service_state(ctx, c) in ("active", "running"):
+        return f"the {c} service is running. Stop it first with `wactl stop {c}`."
+    return None
+
+
 def bridge_conflict(ctx: Context, as_service: bool) -> str | None:
     """Why a second bridge must not start on this store, or None."""
-    port = bridge_port(ctx.env)
-    if port_in_use(port):
-        return f"port {port} is already in use (a bridge may be running). Stop it first: `wactl stop bridge`."
-    pid = read_pid(ctx, "bridge")
-    if pid and pid != os.getpid():
-        return f"a bridge is already running for this data directory (pid {pid}). Stop it first."
-    if (
-        not as_service
-        and "bridge" in installed_services(ctx)
-        and service_state(ctx, "bridge") in ("active", "running")
-    ):
-        return "the bridge service is running. Stop it first with `wactl stop bridge`."
-    return None
+    return port_conflict(ctx, "bridge", as_service)
+
+
+FOREIGN_MSG = (
+    "{c} is answering on port {port}, but wactl did not start it (no wactl service or pid file). "
+    "This install is run by something else, for example your own systemd units. Stop it first, "
+    "or use `wactl update --build-only` and restart it yourself."
+)
+
+
+def foreign_run_problem(ctx: Context, c: str) -> str | None:
+    """A message if this component is up but not managed by wactl, else None."""
+    if c in installed_services(ctx) or read_pid(ctx, c):
+        return None
+    port = component_port(ctx, c)
+    up = port_in_use(port) if c == "mcp" else http_ok(f"http://127.0.0.1:{port}/api/health")
+    return FOREIGN_MSG.format(c=c, port=port) if up else None
 
 
 def bridge_start_problem(
@@ -744,26 +795,27 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
     if problem:
         say(f"wactl: {problem}")
         return 1
+    if args.service:
+        wait_port_free(component_port(ctx, component), threading.Event(), 10)
     if component == "bridge":
-        if args.service:
-            wait_port_free(bridge_port(ctx.env), threading.Event(), 10)
         guard = bridge_start_problem(ctx, as_service=args.service)
         if guard:
             say(f"wactl: refusing to start the bridge: {guard[1]}")
             return guard[0]
+    else:
+        conflict = port_conflict(ctx, component, args.service)
+        if conflict:
+            say(f"wactl: refusing to start {component}: {conflict}")
+            return 1
     # A scheduled task's hidden console can report a TTY, so --service always logs to the file.
     default_log = IS_WINDOWS and (args.service or not sys.stdout.isatty())
     log_path = args.log or (str(ctx.logs() / f"{component}.log") if default_log else None)
     if not args.log:
         ensure_private_dir(ctx.logs())
     ensure_private_dir(ctx.pidfile(component).parent)
-    other = read_pid(ctx, component)
-    if other and other != os.getpid():
-        say(f"wactl: {component} is already running for this data directory (pid {other}).")
-        return 1
     childfile(ctx, component).unlink(missing_ok=True)  # stale from a crashed earlier supervisor
     log_file = open_private_log(Path(log_path)) if log_path else None
-    ctx.pidfile(component).write_text(str(os.getpid()))
+    write_pidfile(ctx, component)
     stop = threading.Event()
     current: dict[str, subprocess.Popen | None] = {"p": None}
 
@@ -786,12 +838,22 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
 
     class Child:
         def __init__(self) -> None:
-            self.p = popen_component(ctx, component, log_file, new_session=True)
+            self.p: subprocess.Popen | None = None
+            try:
+                self.p = popen_component(ctx, component, log_file, new_session=True)
+            except OSError as exc:
+                log(
+                    f"wactl: cannot start {component}: {exc}. Check that the program exists and is "
+                    "executable (for uv, set UV=/full/path or fix PATH), then start it again."
+                )
+                return
             current["p"] = self.p
             ensure_private_dir(childfile(ctx, component).parent)
             childfile(ctx, component).write_text(str(self.p.pid))
 
         def wait(self) -> int:
+            if self.p is None:
+                return EXIT_SPAWN_FAILED
             while True:
                 try:
                     code = self.p.wait(timeout=1 if not stop.is_set() else 20)
@@ -829,7 +891,8 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
         )
     finally:
         with contextlib.suppress(OSError, ValueError):
-            if ctx.pidfile(component).read_text().strip() == str(os.getpid()):
+            parsed = parse_pidfile(ctx.pidfile(component).read_text())
+            if parsed and parsed[0] == os.getpid():
                 ctx.pidfile(component).unlink()
                 childfile(ctx, component).unlink(missing_ok=True)
         if log_file:
@@ -882,16 +945,76 @@ def pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return False  # alive but another user's process, so it cannot be ours
     return True
 
 
-def read_pid(ctx: Context, c: str) -> int | None:
+def proc_info(pid: int) -> tuple[str, str] | None:
+    """(start-time marker, command line) of a process, or None if it cannot be read."""
     try:
-        pid = int(ctx.pidfile(c).read_text().strip())
-    except (OSError, ValueError):
+        if sys.platform.startswith("linux"):
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            start = stat.rsplit(")", 1)[1].split()[19]  # field 22: start time in clock ticks
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            return start, cmd
+        if IS_WINDOWS:
+            script = (
+                f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; "
+                "if ($p) { $p.CreationDate.ToFileTimeUtc(); $p.CommandLine }"
+            )
+            out = tool_output(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], 30)
+            lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+            return (lines[0], " ".join(lines[1:])) if len(lines) >= 2 else None
+        start = tool_output(["ps", "-o", "lstart=", "-p", str(pid)])
+        cmd = tool_output(["ps", "-o", "command=", "-p", str(pid)])
+        return (start, cmd) if start and cmd else None
+    except (OSError, IndexError):
         return None
-    return pid if pid_alive(pid) else None
+
+
+def parse_pidfile(text: str) -> tuple[int, str] | None:
+    """(pid, recorded start marker or "-") from a pid file; accepts the old pid-only format."""
+    lines = text.split()
+    try:
+        pid = int(lines[0])
+    except (IndexError, ValueError):
+        return None
+    return pid, (lines[1] if len(lines) > 2 else "-")
+
+
+def pid_identity_ok(recorded_start: str, info: tuple[str, str]) -> bool:
+    """True if this live process is a wactl supervisor started when the pid file says."""
+    start, cmd = info
+    if "wactl.py" not in cmd.lower():
+        return False
+    return recorded_start == "-" or recorded_start == start
+
+
+def write_pidfile(ctx: Context, c: str) -> None:
+    info = proc_info(os.getpid())
+    ctx.pidfile(c).write_text(f"{os.getpid()}\n{info[0] if info else '-'}\nwactl\n")
+
+
+def read_pid(ctx: Context, c: str) -> int | None:
+    """The pid of a live wactl supervisor for this component, or None. Stale files are removed."""
+    try:
+        parsed = parse_pidfile(ctx.pidfile(c).read_text())
+    except OSError:
+        return None
+    if parsed is None:
+        ctx.pidfile(c).unlink(missing_ok=True)
+        return None
+    pid, start = parsed
+    if not pid_alive(pid):
+        ctx.pidfile(c).unlink(missing_ok=True)
+        return None
+    info = proc_info(pid)
+    if info is None and IS_WINDOWS:
+        return pid  # cannot inspect (slow or blocked PowerShell): fall back to liveness
+    if info is None or not pid_identity_ok(start, info):
+        ctx.pidfile(c).unlink(missing_ok=True)  # the pid was reused by something else
+        return None
+    return pid
 
 
 def spawn_detached(ctx: Context, c: str) -> int:
@@ -986,6 +1109,10 @@ def cmd_control(action: str) -> Callable[[Context, argparse.Namespace], int]:
         svc = installed_services(ctx)
         for c in targets(args, ctx):
             if c in svc:
+                leftover = read_pid(ctx, c) if action in ("stop", "restart") else None
+                if leftover:
+                    stop_run(ctx, c, leftover)  # a detached copy, or the service's own supervisor
+                    say(f"{c}: stopped wactl process {leftover}")
                 rc |= service_control(ctx, action, c)
                 continue
             pid = read_pid(ctx, c)
@@ -1001,6 +1128,11 @@ def cmd_control(action: str) -> Callable[[Context, argparse.Namespace], int]:
                 problem = check_runnable(ctx, c)
                 if problem:
                     say(f"{c}: {problem}")
+                    rc = 1
+                    continue
+                foreign = foreign_run_problem(ctx, c)
+                if foreign:
+                    say(f"{c}: not started: {foreign}")
                     rc = 1
                     continue
                 if c == "bridge":
@@ -1022,8 +1154,7 @@ def component_health(ctx: Context, c: str) -> str:
         return "healthy" if http_ok(f"http://127.0.0.1:{bridge_port(ctx.env)}/api/health") else "no answer"
     if c == "app":
         return "healthy" if http_ok(f"http://127.0.0.1:{app_port(ctx.env)}/api/health") else "no answer"
-    host, port = "127.0.0.1", ctx.env.get("MCP_PORT", "8082")
-    return "listening" if port_in_use(int(port), host) else "not listening"
+    return "listening" if port_in_use(mcp_port(ctx.env)) else "not listening"
 
 
 def cmd_status(ctx: Context, args: argparse.Namespace) -> int:
@@ -1038,6 +1169,8 @@ def cmd_status(ctx: Context, args: argparse.Namespace) -> int:
             pid = read_pid(ctx, c)
             state = f"pid {pid}" if pid else "not running"
         health = component_health(ctx, c)
+        if state == "not running" and health in ("healthy", "listening"):
+            state = "run by something else"
         if c == "mcp" and state == "not running" and health == "not listening":
             continue
         say(f"{c:7} {state:22} {health}")
@@ -1102,7 +1235,8 @@ def systemd_dir() -> Path:
     return (Path(base) if base else Path.home() / ".config") / "systemd" / "user"
 
 
-def render_systemd_unit(component: str, argv: list[str], data: Path) -> str:
+def render_systemd_unit(component: str, argv: list[str], data: Path, path_env: str = "") -> str:
+    env_line = f"Environment={systemd_quote('PATH=' + path_env)}\n" if path_env else ""
     after = "network-online.target" + (" wa-bridge.service" if component != "bridge" else "")
     desc = {
         "bridge": "WhatsApp bridge",
@@ -1118,14 +1252,15 @@ After={after}
 [Service]
 Type=simple
 WorkingDirectory={str(data).replace("%", "%%")}
-ExecStart={" ".join(systemd_quote(a) for a in argv)}
+{env_line}ExecStart={" ".join(systemd_quote(a) for a in argv)}
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 # Exit code 3 means "stream replaced": another process took the WhatsApp session.
 # Restarting would steal it back and start a ping-pong, so never restart on it.
 # Exit code 4 means "no linked device": restarting would only start a new pairing each time.
-RestartPreventExitStatus=3 4
+# Exit code 5 means the program could not be started at all.
+RestartPreventExitStatus=3 4 5
 
 [Install]
 WantedBy=default.target
@@ -1147,13 +1282,18 @@ def launchd_dir() -> Path:
     return Path.home() / "Library" / "LaunchAgents"
 
 
-def render_launchd_plist(component: str, argv: list[str], data: Path, path_env: str) -> bytes:
+def render_launchd_plist(
+    component: str, argv: list[str], data: Path, path_env: str, tmpdir: str | None = None
+) -> bytes:
+    env = {"PATH": path_env}
+    if tmpdir:
+        env["TMPDIR"] = tmpdir  # the bridge and the MCP server must agree on the temp root
     return plistlib.dumps(
         {
             "Label": f"com.wactl.{component}",
             "ProgramArguments": argv,
             "WorkingDirectory": str(data),
-            "EnvironmentVariables": {"PATH": path_env},
+            "EnvironmentVariables": env,
             "Umask": 0o077,
             "RunAtLoad": True,
             # wactl run supervises and honours exit code 3, so launchd must not restart it.
@@ -1164,30 +1304,48 @@ def render_launchd_plist(component: str, argv: list[str], data: Path, path_env: 
     )
 
 
-def windows_task_command(launcher: str, component: str, data: str) -> str:
-    """The /TR command. No --log: `run` logs to <data>\\logs\\<component>.log itself on Windows."""
-
-    def q(s: str) -> str:
-        return "'" + s.replace("'", "''") + "'"
-
-    inner = f"& {q(launcher)} run {component} --data {q(data)} --service"
-    return f'powershell.exe -NoProfile -WindowStyle Hidden -Command "{inner}"'
+def ps_quote(s: str) -> str:
+    """A PowerShell single-quoted string literal."""
+    return "'" + s.replace("'", "''") + "'"
 
 
-def schtasks_create_args(component: str, launcher: str, data: str) -> list[str]:
-    return [
-        "schtasks",
-        "/Create",
-        "/SC",
-        "ONLOGON",
-        "/TN",
-        f"wactl-{component}",
-        "/TR",
-        windows_task_command(launcher, component, data),
-        "/RL",
-        "LIMITED",
-        "/F",
-    ]
+def task_register_script(component: str, launcher: str, data: str) -> str:
+    """PowerShell that registers a per-user at-logon task. Works without administrator rights."""
+    inner = f"& {ps_quote(launcher)} run {component} --data {ps_quote(data)} --service"
+    argument = f'-NoProfile -WindowStyle Hidden -Command "{inner}"'
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            "$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+            f"$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument {ps_quote(argument)}",
+            "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $me",
+            "$principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited",
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+            "-ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden",
+            f"Register-ScheduledTask -TaskName 'wactl-{component}' -Action $action -Trigger $trigger "
+            "-Principal $principal -Settings $settings -Force | Out-Null",
+        ]
+    )
+
+
+def task_unregister_script(component: str) -> str:
+    return (
+        f"Unregister-ScheduledTask -TaskName 'wactl-{component}' -Confirm:$false "
+        "-ErrorAction SilentlyContinue"
+    )
+
+
+def powershell_args(script: str) -> list[str]:
+    """argv that runs a script without quoting problems (-EncodedCommand is UTF-16LE base64)."""
+    enc = base64.b64encode(script.encode("utf-16-le")).decode()
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc]
+
+
+def decode_powershell_args(argv: list[str]) -> str | None:
+    """The script inside powershell_args() output, for dry-run display."""
+    if argv[:1] == ["powershell.exe"] and "-EncodedCommand" in argv:
+        return base64.b64decode(argv[-1]).decode("utf-16-le")
+    return None
 
 
 def service_names(args: argparse.Namespace) -> list[str]:
@@ -1263,7 +1421,7 @@ def service_control(ctx: Context, action: str, c: str) -> int:
 
 
 def uv_path() -> str:
-    return shutil.which("uv") or "uv"
+    return uv_exe()
 
 
 def plan_service_install(
@@ -1274,24 +1432,27 @@ def plan_service_install(
     cmds: list[tuple[list[str], bool]] = []
     if IS_WINDOWS:
         for c in comps:
-            cmds.append((schtasks_create_args(c, str(ctx.launcher), str(ctx.data)), True))
+            cmds.append((powershell_args(task_register_script(c, str(ctx.launcher), str(ctx.data))), True))
     elif IS_MAC:
         for c in comps:
             p = launchd_dir() / f"com.wactl.{c}.plist"
             argv = service_argv(c, uv_path(), ctx.script, ctx.data)
-            path_env = os.pathsep.join(
-                dict.fromkeys(
-                    [str(Path(uv_path()).parent), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-                )
-            )
-            files.append((p, render_launchd_plist(c, argv, ctx.data, path_env), True))
+            path_env = service_path(("/opt/homebrew/bin",))
+            tmpdir = os.path.realpath(tempfile.gettempdir())
+            files.append((p, render_launchd_plist(c, argv, ctx.data, path_env, tmpdir), True))
             # bootout first so a second install replaces the loaded job instead of failing
             cmds.append((["launchctl", "bootout", f"gui/{uid()}/com.wactl.{c}"], False))
             cmds.append((["launchctl", "bootstrap", f"gui/{uid()}", str(p)], True))
     else:
         for c in comps:
             argv = service_argv(c, uv_path(), ctx.script, ctx.data)
-            files.append((systemd_dir() / f"wa-{c}.service", render_systemd_unit(c, argv, ctx.data), False))
+            files.append(
+                (
+                    systemd_dir() / f"wa-{c}.service",
+                    render_systemd_unit(c, argv, ctx.data, service_path()),
+                    False,
+                )
+            )
         cmds.append((["systemctl", "--user", "daemon-reload"], True))
         for c in comps:
             cmds.append((["systemctl", "--user", "enable", "--now", f"wa-{c}"], True))
@@ -1316,15 +1477,12 @@ def cmd_service(ctx: Context, args: argparse.Namespace) -> int:
             if conflict:
                 say(f"wactl: {conflict}")
                 return 1
-        if IS_WINDOWS:
-            for c in comps:
-                tr = windows_task_command(str(ctx.launcher), c, str(ctx.data))
-                if len(tr) > TR_MAX:
-                    say(
-                        f"wactl: the task command for {c} is {len(tr)} characters; Windows allows {TR_MAX}. "
-                        "Move the repo or the data directory to a shorter path (for example C:\\wa)."
-                    )
-                    return 1
+        for c in comps:
+            running = read_pid(ctx, c)
+            if running:
+                say(f"{prefix}stop the wactl process for {c} that is already running (pid {running})")
+                if not dry:
+                    stop_run(ctx, c, running)
         files, cmds = plan_service_install(ctx, comps)
         for path, content, private in files:
             say(f"{prefix}write {path}" + (" (mode 600)" if private else ""))
@@ -1342,7 +1500,11 @@ def cmd_service(ctx: Context, args: argparse.Namespace) -> int:
                 for c in comps:
                     open_private_log(ctx.logs() / f"{c}.log").close()
         for cmd, required in cmds:
-            say(f"{prefix}run {subprocess.list2cmdline(cmd) if IS_WINDOWS else shlex.join(cmd)}")
+            script = decode_powershell_args(cmd)
+            if script:
+                say(f"{prefix}run powershell.exe -EncodedCommand <this script>:\n{script}")
+            else:
+                say(f"{prefix}run {subprocess.list2cmdline(cmd) if IS_WINDOWS else shlex.join(cmd)}")
             if not dry:
                 r = subprocess.run(cmd, capture_output=True, text=True)
                 if r.returncode != 0 and required:
@@ -1355,11 +1517,16 @@ def cmd_service(ctx: Context, args: argparse.Namespace) -> int:
         )
         return 0
     # uninstall
-    for c in comps if not args.all_installed else COMPONENTS:
+    present = installed_services(ctx) if not dry else list(COMPONENTS)
+    if not present:
+        say("No wactl services installed.")
+    for c in COMPONENTS:
+        if c not in present:
+            continue
         if IS_WINDOWS:
             ucmds = [
                 ["schtasks", "/End", "/TN", f"wactl-{c}"],
-                ["schtasks", "/Delete", "/TN", f"wactl-{c}", "/F"],
+                powershell_args(task_unregister_script(c)),
             ]
             paths: list[Path] = []
         elif IS_MAC:
@@ -1371,10 +1538,12 @@ def cmd_service(ctx: Context, args: argparse.Namespace) -> int:
                 say(f"{c}: {p} is not a wactl unit, leaving it alone")
                 continue
             ucmds, paths = [["systemctl", "--user", "disable", "--now", f"wa-{c}"]], [p]
-        if not dry and not any(c == x for x in installed_services(ctx)):
-            continue
         for cmd in ucmds:
-            say(f"{prefix}run {shlex.join(cmd)}")
+            script = decode_powershell_args(cmd)
+            say(
+                f"{prefix}run "
+                + (f"powershell.exe -EncodedCommand <{script}>" if script else shlex.join(cmd))
+            )
             if not dry:
                 subprocess.run(cmd, capture_output=True)
         for p in paths:
@@ -1448,6 +1617,17 @@ def backup_store(ctx: Context) -> Path:
         if not IS_WINDOWS:
             os.chmod(copy, 0o700)
     return dest
+
+
+def prune_backups(root: Path, keep: int = KEEP_BACKUPS) -> list[Path]:
+    """Delete all but the newest `keep` backup folders (names are timestamps). Returns what was removed."""
+    if not root.is_dir():
+        return []
+    dirs = sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.name)
+    doomed = dirs[:-keep] if keep > 0 else dirs
+    for d in doomed:
+        shutil.rmtree(d, ignore_errors=True)
+    return doomed
 
 
 def wait_healthy(url: str, seconds: int = 60) -> bool:
@@ -1603,11 +1783,41 @@ def apply_update(ctx: Context, ops: UpdateOps, backup: Path, say_: Callable[[str
     return False
 
 
+def apply_build_only(ctx: Context, ops: UpdateOps, backup: Path, say_: Callable[[str], None] = say) -> bool:
+    """Build and sync without restarting anything; the user restarts what runs the install."""
+    try:
+        ops.build(ctx)
+    except Exception as exc:
+        say_(f"Build failed: {exc}. Nothing was restarted and the running bridge was not replaced.")
+        return False
+    old = ctx.bridge_bin.with_name(f"whatsapp-bridge.old{EXE}")
+    new = ctx.bridge_bin.with_name(f"whatsapp-bridge.new{EXE}")
+    try:
+        if ctx.bridge_bin.exists():
+            ops.replace(ctx.bridge_bin, old)
+        ops.replace(new, ctx.bridge_bin)
+        say_(f"The new bridge binary is in place; the previous one is {old.name}.")
+    except OSError as exc:
+        say_(f"Could not swap the binary in ({exc}); the new one is {new}. Stop the bridge and rename it.")
+    say_("Built and synced. Nothing was restarted. Restart in this order, and check each health URL:")
+    say_(f"  1. the bridge, then http://127.0.0.1:{bridge_port(ctx.env)}/api/health")
+    say_(f"  2. wa-app, then http://127.0.0.1:{app_port(ctx.env)}/api/health")
+    say_("  3. the MCP server, if you run it")
+    say_(f"The backup of the databases and the old binary is in {backup}.")
+    return True
+
+
 def cmd_update(ctx: Context, args: argparse.Namespace) -> int:
     problem = check_update_ready(ctx.repo)
     if problem:
         say(f"wactl update: {problem}")
         return 1
+    if not args.build_only:
+        for c in COMPONENTS:
+            foreign = foreign_run_problem(ctx, c)
+            if foreign:
+                say(f"wactl update: refusing, because {foreign}")
+                return 1
     old = git(ctx.repo, "rev-parse", "HEAD").stdout.strip()
     if (
         can_prompt(args.yes)
@@ -1617,6 +1827,8 @@ def cmd_update(ctx: Context, args: argparse.Namespace) -> int:
         return 1
     backup = backup_store(ctx)
     say(f"Backed up the databases and the bridge binary to {backup}")
+    for gone in prune_backups(ctx.data / "backups"):
+        say(f"Removed old backup {gone.name} (the last {KEEP_BACKUPS} are kept)")
     pull = git(ctx.repo, "pull", "--ff-only", "--quiet")
     if pull.returncode != 0:
         say(f"git pull failed, nothing was changed except the backup: {pull.stderr.strip()}")
@@ -1628,6 +1840,8 @@ def cmd_update(ctx: Context, args: argparse.Namespace) -> int:
         log = git(ctx.repo, "log", "--oneline", f"{old}..{new}").stdout.splitlines()
         say(f"Updated {len(log)} commit(s):")
         say("\n".join("  " + line for line in log[:10]))
+    if args.build_only:
+        return 0 if apply_build_only(ctx, real_update_ops(), backup) else 1
     if apply_update(ctx, real_update_ops(), backup):
         return 0
     say(f"The code is still at the new commit; to go back: git checkout {old}")
@@ -1667,9 +1881,15 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--with-mcp", action="store_true", help="also manage the shared MCP HTTP server")
     sv.add_argument("--dry-run", action="store_true", help="print what would be written and run")
     sv.add_argument(
-        "--all", dest="all_installed", action="store_true", help="uninstall: all three components"
+        "--all",
+        dest="all_installed",
+        action="store_true",
+        help="accepted for compatibility; uninstall always removes all wactl services",
     )
-    sub.add_parser("update", parents=[common], help="pull, back up, rebuild, restart")
+    up = sub.add_parser("update", parents=[common], help="pull, back up, rebuild, restart")
+    up.add_argument(
+        "--build-only", action="store_true", help="pull, back up, build and sync, but restart nothing"
+    )
     lg = sub.add_parser("logs", parents=[common], help="show a component log")
     lg.add_argument("component", nargs="?", choices=COMPONENTS)
     lg.add_argument("-n", "--lines", type=int, default=100)
