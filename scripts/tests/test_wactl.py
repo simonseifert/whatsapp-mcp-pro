@@ -724,3 +724,85 @@ def test_update_build_failure_never_stops_bridge(tmp_path):
     fake = FakeOps(ctx, build_error="go build failed")
     assert wactl.apply_update(ctx, fake.ops(), backup, lambda m: None) is False
     assert fake.calls == ["build"]
+
+
+# ------------------------------------------------------------ fix round 2
+
+
+@posix_only
+def test_open_private_log_leaves_user_parent_dir_alone(tmp_path):
+    parent = tmp_path / "userdir"
+    parent.mkdir()
+    os.chmod(parent, 0o755)
+    wactl.open_private_log(parent / "a.log").close()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+    assert stat.S_IMODE((parent / "a.log").stat().st_mode) == 0o600
+
+
+def test_update_unexpected_exception_still_rolls_back_and_restarts_app(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx)
+    ops = fake.ops()
+    base_start = ops.start
+    state = {"n": 0}
+
+    def start(c, n):
+        state["n"] += 1
+        if n == "app" and state["n"] == 2:
+            raise PermissionError("access denied")
+        base_start(c, n)
+
+    ops.start = start
+    msgs = []
+    assert wactl.apply_update(ctx, ops, backup, msgs.append) is False
+    assert ctx.bridge_bin.read_text() == "OLD"
+    assert "access denied" in "\n".join(msgs)
+    assert "app was restarted" in "\n".join(msgs)
+    assert fake.calls.count("start bridge") == 2
+
+
+def test_update_rollback_restarts_app_and_mcp(tmp_path):
+    ctx, backup = update_ctx(tmp_path)
+    fake = FakeOps(ctx, healthy=(True, False), mcp_active=True)
+    msgs = []
+    assert wactl.apply_update(ctx, fake.ops(), backup, msgs.append) is False
+    text = "\n".join(msgs)
+    assert "app was restarted" in text
+    assert fake.calls.count("start app") == 2
+
+
+@posix_only
+def test_stop_run_kills_orphaned_child_group(tmp_path):
+    ctx = make_ctx(tmp_path)
+    (ctx.data / "run").mkdir()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    sup = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        ctx.pidfile("app").write_text(str(sup.pid))
+        wactl.childfile(ctx, "app").write_text(str(child.pid))
+        # reap the processes as they die, as init would for real (non-child) pids
+        for proc in (sup, child):
+            threading.Thread(target=proc.wait, daemon=True).start()
+        wactl.stop_run(ctx, "app", sup.pid)
+        sup.wait(timeout=5)
+        child.wait(timeout=5)
+        assert not ctx.pidfile("app").exists() and not wactl.childfile(ctx, "app").exists()
+    finally:
+        for p in (child, sup):
+            if p.poll() is None:
+                p.kill()
+
+
+def test_run_refuses_second_app_supervisor(tmp_path, monkeypatch, capsys):
+    ctx = make_ctx(tmp_path)
+    (ctx.data / "run").mkdir()
+    (ctx.repo / "wa-app" / "server" / ".venv").mkdir(parents=True)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        ctx.pidfile("app").write_text(str(other.pid))
+        ns = argparse_ns(component="app", log=None, service=False)
+        assert wactl.cmd_run(ctx, ns) == 1
+        assert "already running" in capsys.readouterr().out
+    finally:
+        other.kill()
+        other.wait()

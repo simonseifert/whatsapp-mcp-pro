@@ -118,8 +118,12 @@ def ensure_private_dir(path: Path) -> Path:
 
 
 def open_private_log(path: Path):
-    """Open a log for appending, created and kept at mode 600 on POSIX."""
-    ensure_private_dir(path.parent)
+    """Open a log for appending, created and kept at mode 600 on POSIX.
+
+    The parent directory is created if missing but its mode is left alone: it may be one the user
+    chose with --log. Callers that own the directory call ensure_private_dir first.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     if not IS_WINDOWS:
         os.chmod(path, 0o600)
@@ -679,11 +683,17 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
         if guard:
             say(f"wactl: refusing to start the bridge: {guard[1]}")
             return guard[0]
-    log_path = args.log or (
-        str(ctx.logs() / f"{component}.log") if IS_WINDOWS and not sys.stdout.isatty() else None
-    )
-    log_file = open_private_log(Path(log_path)) if log_path else None
+    # A scheduled task's hidden console can report a TTY, so --service always logs to the file.
+    default_log = IS_WINDOWS and (args.service or not sys.stdout.isatty())
+    log_path = args.log or (str(ctx.logs() / f"{component}.log") if default_log else None)
+    if not args.log:
+        ensure_private_dir(ctx.logs())
     ensure_private_dir(ctx.pidfile(component).parent)
+    other = read_pid(ctx, component)
+    if other and other != os.getpid():
+        say(f"wactl: {component} is already running for this data directory (pid {other}).")
+        return 1
+    log_file = open_private_log(Path(log_path)) if log_path else None
     ctx.pidfile(component).write_text(str(os.getpid()))
     stop = threading.Event()
     current: dict[str, subprocess.Popen | None] = {"p": None}
@@ -709,6 +719,7 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
         def __init__(self) -> None:
             self.p = popen_component(ctx, component, log_file, new_session=True)
             current["p"] = self.p
+            childfile(ctx, component).write_text(str(self.p.pid))
 
         def wait(self) -> int:
             while True:
@@ -746,6 +757,7 @@ def cmd_run(ctx: Context, args: argparse.Namespace) -> int:
         with contextlib.suppress(OSError, ValueError):
             if ctx.pidfile(component).read_text().strip() == str(os.getpid()):
                 ctx.pidfile(component).unlink()
+                childfile(ctx, component).unlink(missing_ok=True)
         if log_file:
             log_file.close()
 
@@ -835,16 +847,40 @@ def spawn_detached(ctx: Context, c: str) -> int:
     return p.pid
 
 
+def childfile(ctx: Context, c: str) -> Path:
+    """Where `run` records its child's pid (the child lives in its own session on POSIX)."""
+    return ctx.data / "run" / f"{c}.child"
+
+
 def stop_pid(pid: int) -> None:
     if IS_WINDOWS:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
         return
     os.kill(pid, signal.SIGTERM)
-    for _ in range(40):
+    for _ in range(60):  # longer than the supervisor's own 20 s wait for its child
         if not pid_alive(pid):
             return
         time.sleep(0.5)
     os.kill(pid, signal.SIGKILL)
+
+
+def stop_run(ctx: Context, c: str, pid: int) -> None:
+    """Stop a `wactl run` supervisor and make sure its child is gone too."""
+    child: int | None = None
+    with contextlib.suppress(OSError, ValueError):
+        child = int(childfile(ctx, c).read_text().strip())
+    stop_pid(pid)
+    if child and not IS_WINDOWS and pid_alive(child):
+        # The supervisor was killed before it could stop its child, which sits in its own session.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            with contextlib.suppress(OSError):
+                os.killpg(child, sig)
+            for _ in range(20):
+                if not pid_alive(child):
+                    break
+                time.sleep(0.25)
+    ctx.pidfile(c).unlink(missing_ok=True)
+    childfile(ctx, c).unlink(missing_ok=True)
 
 
 def targets(args: argparse.Namespace, ctx: Context) -> list[str]:
@@ -866,9 +902,8 @@ def cmd_control(action: str) -> Callable[[Context, argparse.Namespace], int]:
                 continue
             pid = read_pid(ctx, c)
             if action in ("stop", "restart") and pid:
-                stop_pid(pid)
+                stop_run(ctx, c, pid)
                 say(f"{c}: stopped (pid {pid})")
-                ctx.pidfile(c).unlink(missing_ok=True)
             elif action == "stop":
                 say(f"{c}: not running")
             if action in ("start", "restart"):
@@ -1116,7 +1151,7 @@ def service_control(ctx: Context, action: str, c: str) -> int:
         if action in ("stop", "restart"):
             pid = read_pid(ctx, c)
             if pid:
-                stop_pid(pid)
+                stop_run(ctx, c, pid)
             ctx.pidfile(c).unlink(missing_ok=True)
         cmds = {
             "start": [["schtasks", "/Run", "/TN", f"wactl-{c}"]],
@@ -1362,8 +1397,7 @@ def stop_component(ctx: Context, c: str) -> None:
         service_control(ctx, "stop", c)
     pid = read_pid(ctx, c)
     if pid:
-        stop_pid(pid)
-        ctx.pidfile(c).unlink(missing_ok=True)
+        stop_run(ctx, c, pid)
     if c == "bridge":
         wait_port_free(bridge_port(ctx.env), threading.Event(), 30)
 
@@ -1406,6 +1440,7 @@ def apply_update(ctx: Context, ops: UpdateOps, backup: Path, say_: Callable[[str
     old = ctx.bridge_bin.with_name(f"whatsapp-bridge.old{EXE}")
     new = ctx.bridge_bin.with_name(f"whatsapp-bridge.new{EXE}")
     swapped = stopped = False
+    touched: list[str] = []  # components update stopped or restarted, to bring back after a rollback
     failure = ""
     try:
         ops.build(ctx)
@@ -1424,15 +1459,17 @@ def apply_update(ctx: Context, ops: UpdateOps, backup: Path, say_: Callable[[str
         ops.start(ctx, "bridge")
         if not ops.healthy(bridge_url):
             raise StepError("the bridge did not become healthy within 60 s")
+        touched.append("app")
         ops.stop(ctx, "app")
         ops.start(ctx, "app")
         if not ops.healthy(app_url):
             raise StepError("wa-app did not become healthy within 60 s")
         if ops.is_active(ctx, "mcp"):
+            touched.append("mcp")
             ops.stop(ctx, "mcp")
             ops.start(ctx, "mcp")
-    except StepError as exc:
-        failure = str(exc)
+    except Exception as exc:  # any failure after the backup must reach the rollback below
+        failure = str(exc) or type(exc).__name__
     if not failure:
         with contextlib.suppress(OSError):
             old.unlink(missing_ok=True)
@@ -1445,19 +1482,32 @@ def apply_update(ctx: Context, ops: UpdateOps, backup: Path, say_: Callable[[str
             ops.stop(ctx, "bridge")
             ops.replace(old, ctx.bridge_bin)
             restored = True
-        except OSError as exc:
+        except Exception as exc:
             say_(f"Could not put the previous bridge binary back: {exc}")
         if restored:
-            ops.start(ctx, "bridge")
-            if ops.healthy(bridge_url):
-                say_("The previous bridge binary was put back and the bridge is healthy again.")
-            else:
-                say_("The previous bridge binary was put back but the bridge did not become healthy.")
+            try:
+                ops.start(ctx, "bridge")
+                if ops.healthy(bridge_url):
+                    say_("The previous bridge binary was put back and the bridge is healthy again.")
+                else:
+                    say_("The previous bridge binary was put back but the bridge did not become healthy.")
+            except Exception as exc:
+                say_(f"The previous bridge binary was put back but starting it failed: {exc}")
         else:
             say_(f"The previous bridge was NOT restored. A copy is at {backup / ('whatsapp-bridge' + EXE)}.")
     elif stopped:
-        ops.start(ctx, "bridge")
-        say_("The bridge binary was not replaced; the old bridge was started again.")
+        try:
+            ops.start(ctx, "bridge")
+            say_("The bridge binary was not replaced; the old bridge was started again.")
+        except Exception as exc:
+            say_(f"The bridge binary was not replaced, but starting the old bridge failed: {exc}")
+    for c in touched:
+        try:
+            ops.stop(ctx, c)
+            ops.start(ctx, c)
+            say_(f"{c} was restarted.")
+        except Exception as exc:
+            say_(f"Could not restart {c}: {exc}. Start it with `wactl start {c}`.")
     say_(
         f"The backup in {backup} is the pre-update state of your databases. The new bridge may already "
         "have changed them; restore the backup by hand if the old bridge misbehaves."
