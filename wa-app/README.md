@@ -2,7 +2,7 @@
 
 A self-hosted, login-protected chat PWA that rides the whatsapp-mcp-pro bridge. Visual contract: [DESIGN.md](DESIGN.md).
 
-Status: M3a, read, reply, AI drafts, notifications, sending photos, files and voice notes, and private reply (chat list, chat view, media, live updates, read state, drafts you can use or ignore). Install and screenshots: see the repo [README](../README.md#app).
+Status: M3b, read, reply, AI drafts, notifications, sending photos, files and voice notes, private reply, search, lists, message and chat actions, quick replies (chat list, chat view, media, live updates, read state, drafts you can use or ignore). Install and screenshots: see the repo [README](../README.md#app).
 
 ## Layout
 
@@ -75,6 +75,48 @@ Every send, uploads included, goes through the bridge's send allowlists.
 ## Reply privately
 
 In a group, a message's menu has **Reply privately**. It opens the sender's own chat with the group message quoted. If the bridge cannot resolve the message, the send is refused rather than sent without the quote.
+
+## Search
+
+The search box on the chats list finds messages across every chat. Inside a chat, Search in the chat menu looks only in that chat and steps through the hits with the up and down arrows. Tapping a hit opens the chat at that message and highlights it; "Jump to latest" brings you back.
+
+- It searches message text, captions and stored voice note transcripts. Chats marked local only are searched too: the index lives in `app.db` on your server and never leaves it.
+- Accents are ignored, so "cesto" finds "često".
+- A query needs at least 2 characters. The last word matches as a prefix, so "dobr" finds "dobro". Operators are plain words.
+- Results are newest first, 30 per page.
+- On first start the index fills in the background, in small batches, and carries on where it stopped if the app restarts. Search works while it fills, with older messages appearing as it goes.
+- Edited messages show their new text and deleted messages disappear from results.
+
+## Lists
+
+Lists are your own groups of chats, shown as extra chips next to All, Unread, Favourites and Groups. Make them on the Lists screen, or put a chat in a list with Add to list in its menu. You can have up to 20 lists and a name can be up to 40 characters. Archived chats still show inside a list. A chat stays in its lists if WhatsApp changes how it identifies it.
+
+## Mentions and replies
+
+The Mentions and replies chip shows chats with an unread message that mentions you or replies to one of your messages. It only knows about messages stored after the bridge was updated to record mentions, so older messages do not count.
+
+## Message actions
+
+Press and hold a message (or right-click it) for:
+
+- **Edit:** your own text messages, up to 15 minutes after sending.
+- **Delete for everyone:** your own messages, up to 48 hours after sending.
+- **Star:** starred messages are listed on the Starred messages screen. Stars fill in from star events after the bridge update; earlier stars are not imported.
+- **Forward:** to at most 5 chats at once, at most 10 messages at once. Photos and files you have not opened yet are downloaded first. Voice notes are forwarded as audio files. Contact cards can't be forwarded. Each chat reports its own result, so a failure is never hidden.
+
+The server enforces the time limits as well, so an old message can't be edited by a stale screen.
+
+## Chat actions
+
+From the chat menu (the header menu in a chat, or a long press on a row in the list): pin (up to 3 chats), mute (8 hours, 1 week or always), archive, and mark as unread. They use the bridge, so they show on your phone too.
+
+## Quick replies
+
+Save short texts with a shortcut in Settings, under Quick replies (shortcut 1 to 24 characters of a to z, 0 to 9, `_` and `-`; text up to 4096 characters). In a chat, type `/` at the start of the box to see them, keep typing to narrow the list, then tap one or press Enter. It puts the text in the box and never sends. The picker is off while you edit a sent message.
+
+## AI mode sheet
+
+AI drafts in the chat menu opens a sheet with three modes: My reply (no drafts), Suggestions (AI drafts, you send) and Auto, which is shown as coming later and can't be chosen.
 
 ## AI drafts
 

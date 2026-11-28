@@ -36,6 +36,7 @@ type fakeSender struct {
 	played     []string          // chat_jid of each MarkMessagesPlayed call
 	readErr    error             // what MarkMessagesRead answers
 	normalized map[string]string // NormalizeChat mappings
+	sendOpts   []whatsapp.SendOptions
 }
 
 func (f *fakeSender) record(ctx context.Context, priorID string, beforeDispatch func(string)) types.SendResult {
@@ -71,6 +72,9 @@ func (f *fakeSender) record(ctx context.Context, priorID string, beforeDispatch 
 }
 
 func (f *fakeSender) SendMessageWithOptions(ctx context.Context, _ *database.MessageStore, o whatsapp.SendOptions) types.SendResult {
+	f.mu.Lock()
+	f.sendOpts = append(f.sendOpts, o)
+	f.mu.Unlock()
 	return f.record(ctx, o.MessageID, o.BeforeDispatch)
 }
 

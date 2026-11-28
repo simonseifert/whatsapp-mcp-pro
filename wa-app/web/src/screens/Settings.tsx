@@ -12,7 +12,9 @@ import {
 import type { BackendCfg, BackendInput, BackendTestResult, DraftContext } from '../api-types'
 import { HistorySection } from '../components/HistorySection'
 import { BackendForm } from '../components/BackendForm'
+import { QuickRepliesSection } from '../components/QuickRepliesSection'
 import { UpdateRow } from '../components/UpdateRow'
+import { Lists } from './Lists'
 import { disablePush, enablePush, pushState, pushSupport } from '../push'
 import { readTheme, saveTheme, THEMES, type ThemePref } from '../theme'
 
@@ -452,6 +454,7 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
   const [theme, setTheme] = useState<ThemePref>(readTheme)
   const [version, setVersion] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [showLists, setShowLists] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -468,12 +471,21 @@ export function Settings({ onLogout }: { onLogout: (everywhere: boolean) => void
     saveTheme(next)
   }
 
+  if (showLists) return <Lists onBack={() => setShowLists(false)} />
+
   return (
     <div className="pane-scroll">
       <header className="lhead">
         <h1 className="large-title">Settings</h1>
       </header>
       <div className="settings">
+        <div className="settings-group">
+          <div className="settings-label">Chats</div>
+          <button className="button-text neutral" type="button" onClick={() => setShowLists(true)}>
+            Lists
+          </button>
+        </div>
+        <QuickRepliesSection />
         <fieldset className="settings-group">
           <legend>Theme</legend>
           <div className="segmented">

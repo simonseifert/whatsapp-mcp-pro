@@ -98,3 +98,27 @@ describe('Bubble gestures', () => {
     expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeNull()
   })
 })
+
+describe('Bubble labels', () => {
+  afterEach(cleanup)
+
+  it('an own deleted message reads "You deleted this message", someone else\'s keeps "Message deleted"', () => {
+    const { unmount } = render(<Bubble message={{ ...message, from_me: true, deleted: true, text: null }} showSender={false} tail />)
+    expect(screen.getByText('You deleted this message')).toBeTruthy()
+    unmount()
+    render(<Bubble message={{ ...message, deleted: true, text: null }} showSender={false} tail />)
+    expect(screen.getByText('Message deleted')).toBeTruthy()
+  })
+
+  it('shows Edited, Forwarded and a star mark', () => {
+    render(<Bubble message={{ ...message, edited: true, forwarded: true, starred: true }} showSender={false} tail />)
+    expect(screen.getAllByText('Edited').length).toBeGreaterThan(0)
+    expect(screen.getByText('Forwarded')).toBeTruthy()
+    expect(screen.getAllByLabelText('Starred').length).toBeGreaterThan(0)
+  })
+
+  it('shows no star mark on an unstarred message', () => {
+    render(<Bubble message={message} showSender={false} tail />)
+    expect(screen.queryByLabelText('Starred')).toBeNull()
+  })
+})

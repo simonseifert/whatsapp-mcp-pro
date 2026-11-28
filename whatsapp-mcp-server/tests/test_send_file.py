@@ -10,6 +10,7 @@ import base64
 import os
 import stat
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -244,7 +245,7 @@ def test_cleanup_on_bridge_failure(captured_send, monkeypatch, tmp_path, failure
     monkeypatch.setattr(whatsapp.requests, "post", failing_post)
     existing = tmp_path / "caller-owned.txt"
     existing.write_bytes(PNG_BYTES)
-    inputs = (
+    inputs: dict[str, Any] = (
         {"media_path": str(existing)}
         if path_only
         else {"file_content_base64": base64.b64encode(PNG_BYTES).decode(), "filename": "upload.txt"}

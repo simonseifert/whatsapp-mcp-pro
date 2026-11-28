@@ -31,6 +31,7 @@ from whatsapp import MEDIA_UNAVAILABLE, validate_outgoing_media_path
 
 # Phase 2: Group Management
 from whatsapp import add_group_members as whatsapp_add_group_members
+from whatsapp import archive_chat as whatsapp_archive_chat
 from whatsapp import create_group as whatsapp_create_group
 from whatsapp import create_newsletter as whatsapp_create_newsletter
 
@@ -59,7 +60,10 @@ from whatsapp import list_all_contacts as whatsapp_list_all_contacts
 from whatsapp import list_chats as whatsapp_list_chats
 from whatsapp import list_contact_nicknames as whatsapp_list_contact_nicknames
 from whatsapp import list_messages as whatsapp_list_messages
+from whatsapp import mark_chat_unread as whatsapp_mark_chat_unread
 from whatsapp import mark_messages_read as whatsapp_mark_messages_read
+from whatsapp import mute_chat as whatsapp_mute_chat
+from whatsapp import pin_chat as whatsapp_pin_chat
 from whatsapp import promote_to_admin as whatsapp_promote_to_admin
 from whatsapp import remove_contact_nickname as whatsapp_remove_contact_nickname
 from whatsapp import remove_group_members as whatsapp_remove_group_members
@@ -101,9 +105,10 @@ ALL_TOOLSETS = {
     "recall",
     "inbox",
     "drafts",
+    "chats",
 }
 # Pro toolsets are opt-in: default surface matches upstream curated set.
-DEFAULT_TOOLSETS = set(ALL_TOOLSETS) - {"audio", "recall", "inbox", "drafts"}
+DEFAULT_TOOLSETS = set(ALL_TOOLSETS) - {"audio", "recall", "inbox", "drafts", "chats"}
 ENABLED_TOOLSETS = {
     part.strip().lower()
     for part in os.getenv("WHATSAPP_MCP_TOOLSETS", ",".join(sorted(DEFAULT_TOOLSETS))).split(",")
@@ -867,6 +872,63 @@ def mark_read(
         A dictionary containing success status, chat_jid, message_ids, and count
     """
     return whatsapp_mark_messages_read(chat_jid, message_ids, sender_jid, receipt_type)
+
+
+@tool("chats", "Pin Chat", read_only=False, idempotent=True)
+def pin_chat(chat_jid: str, pin: bool = True) -> dict[str, Any]:
+    """Pin or unpin a WhatsApp chat (WhatsApp allows up to 3 pinned chats).
+
+    Args:
+        chat_jid: The JID of the chat
+        pin: True to pin, False to unpin (default: True)
+
+    Returns:
+        A dictionary containing success, chat_jid and pin
+    """
+    return whatsapp_pin_chat(chat_jid, pin)
+
+
+@tool("chats", "Mute Chat", read_only=False, idempotent=True)
+def mute_chat(chat_jid: str, mute: bool = True, duration: str = "forever") -> dict[str, Any]:
+    """Mute or unmute a WhatsApp chat's notifications.
+
+    Args:
+        chat_jid: The JID of the chat
+        mute: True to mute, False to unmute (default: True)
+        duration: "forever", "15m", "1h", "8h" or "1w" (default: "forever"; ignored when unmuting)
+
+    Returns:
+        A dictionary containing success, chat_jid, mute and duration
+    """
+    return whatsapp_mute_chat(chat_jid, mute, duration)
+
+
+@tool("chats", "Archive Chat", read_only=False, idempotent=True)
+def archive_chat(chat_jid: str, archive: bool = True) -> dict[str, Any]:
+    """Archive or unarchive a WhatsApp chat. Archiving also unpins it.
+
+    Args:
+        chat_jid: The JID of the chat
+        archive: True to archive, False to unarchive (default: True)
+
+    Returns:
+        A dictionary containing success, chat_jid and archive
+    """
+    return whatsapp_archive_chat(chat_jid, archive)
+
+
+@tool("chats", "Mark Chat Unread", read_only=False, idempotent=True)
+def mark_chat_unread(chat_jid: str, unread: bool = True) -> dict[str, Any]:
+    """Mark a WhatsApp chat unread (shows the unread dot) or read again. Sends no read receipts.
+
+    Args:
+        chat_jid: The JID of the chat
+        unread: True to mark unread, False to mark read (default: True)
+
+    Returns:
+        A dictionary containing success, chat_jid and unread
+    """
+    return whatsapp_mark_chat_unread(chat_jid, unread)
 
 
 # Phase 2: Group Management

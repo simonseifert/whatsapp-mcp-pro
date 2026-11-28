@@ -8,6 +8,8 @@ type State = {
   detail: ChatDetail | null
   messages: MessageView[]
   hasMore: boolean
+  /** Opened on a window around one message: newer messages exist that are not loaded (live arrivals are not added). */
+  hasNewer: boolean
   status: 'loading' | 'ready' | 'missing' | 'error'
   loadingOlder: boolean
 }
@@ -19,11 +21,12 @@ const MAX_BUFFERED = 200
 export type OnArrival = (message: MessageView, newest: boolean) => void
 
 /** The chat header data plus the newest page of messages, and a way to page further back. Live events keep it current. */
-export function useChat(jid: string, onArrival?: OnArrival) {
+export function useChat(jid: string, onArrival?: OnArrival, around?: string | null) {
   const [state, setStateRaw] = useState<State>({
     detail: null,
     messages: [],
     hasMore: false,
+    hasNewer: false,
     status: 'loading',
     loadingOlder: false,
   })
@@ -47,10 +50,18 @@ export function useChat(jid: string, onArrival?: OnArrival) {
   useEffect(() => {
     let current = true
     buffered.current = []
-    Promise.all([apiFetch<ChatDetail>(path), apiFetch<MessagesResponse>(`${path}/messages`)])
+    const messagesPath = around ? `${path}/messages?around=${encodeURIComponent(around)}` : `${path}/messages`
+    Promise.all([apiFetch<ChatDetail>(path), apiFetch<MessagesResponse>(messagesPath)])
       .then(([detail, page]) => {
         if (!current) return
-        setState({ detail, messages: page.messages, hasMore: page.has_more, status: 'ready', loadingOlder: false })
+        setState({
+          detail,
+          messages: page.messages,
+          hasMore: page.has_more,
+          hasNewer: page.has_newer ?? false,
+          status: 'ready',
+          loadingOlder: false,
+        })
         const waiting = buffered.current
         buffered.current = []
         for (const event of waiting) handler.current(event) // a duplicate of a loaded message only replaces it
@@ -61,7 +72,7 @@ export function useChat(jid: string, onArrival?: OnArrival) {
     return () => {
       current = false
     }
-  }, [path, attempt, setState])
+  }, [path, attempt, around, setState])
 
   // Live events. The event's chat_jid is the one the chat list uses; the route may name another form of it.
   useEffect(() => {
@@ -87,7 +98,13 @@ export function useChat(jid: string, onArrival?: OnArrival) {
           apiFetch<MessagesResponse>(`${path}/messages`),
         ])
         if (!alive) return
-        setState((s) => ({ ...s, detail, messages: mergePage(s.messages, page.messages), status: 'ready' }))
+        // A window around an old message has no newest page to merge into: only the header is refreshed.
+        setState((s) => ({
+          ...s,
+          detail,
+          messages: s.hasNewer ? s.messages : mergePage(s.messages, page.messages),
+          status: 'ready',
+        }))
       } catch {
         // Offline still: the next visibility change or reconnect tries again.
       }
@@ -101,6 +118,7 @@ export function useChat(jid: string, onArrival?: OnArrival) {
       }
       if (latest.current.status !== 'ready') return
       if (event.name === 'message' && mine(event.data.chat_jid)) {
+        if (latest.current.hasNewer) return // the window does not reach the newest messages: it would grow a gap
         const placed = placeMessage(latest.current.messages, event.data.message, latest.current.hasMore)
         setState((s) => ({ ...s, messages: placed.messages }))
         if (placed.added) arrival.current?.(event.data.message, placed.newest)

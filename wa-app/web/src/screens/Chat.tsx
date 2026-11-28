@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
-import { apiFetch } from '../api'
+import { apiFetch, editMessage, revokeMessage, starMessage } from '../api'
 import { setOpenChat } from '../live'
 import type { ChatDetail, DraftView, MessageView, QuoteView } from '../api-types'
 import { Avatar } from '../components/Avatar'
 import { Bubble } from '../components/Bubble'
 import { ChatMenu } from '../components/ChatMenu'
+import { ListSheet } from '../components/ListSheet'
 import { ChatAiSheet } from '../components/ChatAiSheet'
+import { ChatSearchBar } from '../components/ChatSearchBar'
 import { AttachSheet } from '../components/AttachSheet'
 import { Composer, type ComposerHandle } from '../components/Composer'
 import { DraftCard } from '../components/DraftCard'
+import { ForwardSheet } from '../components/ForwardSheet'
 import { MessageMenu } from '../components/MessageMenu'
 import { Icon } from '../components/Icon'
 import { toItems } from '../chatItems'
@@ -30,12 +33,14 @@ import {
   withReactions,
 } from '../outbox'
 import { useChat } from '../useChat'
+import { useChatState } from '../useChatState'
 import { useDraft } from '../useDraft'
 import { useMarkRead } from '../useMarkRead'
 
 const GROUP_KINDS = ['group', 'community_group', 'announcement']
 const LOAD_OLDER_AT_PX = 160
 const AT_BOTTOM_PX = 80 // within this of the end counts as "at the bottom"
+const FLASH_MS = 1800 // how long a jumped-to message stays highlighted
 
 /** A quoted message as a minimal message, so a draft's quote can become the composer's reply-to. */
 function viewFromQuote(q: QuoteView, chatJid: string): MessageView {
@@ -81,7 +86,10 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
       setRiseKey(`${message.chat_jid}/${message.id}`)
     } else setUnseen(true)
   }, [])
-  const { detail, messages, hasMore, status, loadingOlder, loadOlder, retry: reload } = useChat(jid, onArrival)
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const around = params.get('around')
+  const { detail, messages, hasMore, hasNewer, status, loadingOlder, loadOlder, retry: reload } = useChat(jid, onArrival, around)
   const box = useOutbox(jid)
   useEffect(() => {
     aliases.current = box.aliases
@@ -93,10 +101,15 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     setReplyToState(m)
     setReplyChat(null)
   }, [])
-  const navigate = useNavigate()
-  const [params, setParams] = useSearchParams()
   const privateReply = params.get('reply') && params.get('from') ? { id: params.get('reply')!, from: params.get('from')! } : null
   const [menuId, setMenuId] = useState<string | null>(null)
+  // Message actions: the message being edited, the one about to be deleted for everyone, the ones being forwarded,
+  // my star taps not yet seen in the loaded messages, and the last failure.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [revoking, setRevoking] = useState<string | null>(null)
+  const [forwardIds, setForwardIds] = useState<string[] | null>(null)
+  const [starOverride, setStarOverride] = useState<Record<string, boolean>>({})
+  const [actionError, setActionError] = useState<string | null>(null)
   const chatJid = detail?.chat.jid ?? jid
   // Report the canonical jid, not the route's (a "Reply privately" link carries an LID), so this chat does not push.
   useEffect(() => {
@@ -112,22 +125,90 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   const [replacing, setReplacing] = useState<{ draft: DraftView; text: string } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
+  const [listsOpen, setListsOpen] = useState(false)
   const [attached, setAttached] = useState<File | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [flashId, setFlashId] = useState<string | null>(null)
+  const flashTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(flashTimer.current), [])
   const card = draft && draft.id !== hiddenDraft && ['pending', 'ready', 'failed'].includes(draft.status) ? draft : null
   useEffect(() => reconcile(jid, messages), [jid, messages])
   // The loaded messages with my optimistic reactions applied, then the texts still on their way out.
   const shown = useMemo(
     () => [
-      ...messages.map((m) => withReactions(m, box.reactions[m.id])),
+      ...messages.map((m) => {
+        const withStar = m.id in starOverride ? { ...m, starred: starOverride[m.id] } : m
+        return withReactions(withStar, box.reactions[m.id])
+      }),
       // Once the real message is loaded it takes the optimistic bubble's place: never both (same key, one frame).
       ...box.pending
         .filter((p) => !(p.messageId && messages.some((m) => m.id === p.messageId)))
         .map((p) => pendingView(p, chatJid)),
     ],
-    [messages, box.reactions, box.pending, chatJid],
+    [messages, box.reactions, box.pending, chatJid, starOverride],
   )
+  /** Scrolls a loaded message to the middle of the view and highlights it for a moment. False when it is not loaded. */
+  const reveal = useCallback((id: string): boolean => {
+    const nodes = Array.from(scroller.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])
+    const el = nodes.find((e) => e.dataset.messageId === id)
+    if (!el) return false
+    el.scrollIntoView?.({ block: 'center' })
+    window.clearTimeout(flashTimer.current)
+    setFlashId(id)
+    flashTimer.current = window.setTimeout(() => setFlashId(null), FLASH_MS)
+    return true
+  }, [])
+  /** Search hits: show the message here when it is loaded, else reopen the chat on a window around it. */
+  const jumpTo = useCallback(
+    (id: string) => {
+      if (!reveal(id)) setParams({ around: id }, { replace: true })
+    },
+    [reveal, setParams],
+  )
+  // Arriving with ?around=: once its window has loaded, bring that message into view (once per target).
+  const revealed = useRef<string | null>(null)
+  useEffect(() => {
+    if (!around) {
+      revealed.current = null
+      return
+    }
+    if (status === 'ready' && revealed.current !== around && reveal(around)) revealed.current = around
+  }, [around, status, messages, reveal])
+  // A star tap is shown at once; once the loaded message agrees (live event or refetch) the override is dropped.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- settles local overrides against the loaded messages
+    setStarOverride((o) => {
+      const keep = Object.entries(o).filter(([id, v]) => messages.find((m) => m.id === id)?.starred !== v)
+      return keep.length === Object.keys(o).length ? o : Object.fromEntries(keep)
+    })
+  }, [messages])
   const pendingByKey = new Map(box.pending.map((p) => [pendingId(p.key), p]))
   const menuMessage = menuId ? shown.find((m) => m.id === menuId) : undefined
+
+  async function toggleStar(m: MessageView) {
+    const next = !m.starred
+    setActionError(null)
+    setStarOverride((o) => ({ ...o, [m.id]: next }))
+    const result = await starMessage(jid, m.id, next)
+    if (!result.ok) {
+      setStarOverride((o) => Object.fromEntries(Object.entries(o).filter(([id]) => id !== m.id)))
+      setActionError(result.error)
+    }
+  }
+  async function saveEdit(m: MessageView, text: string) {
+    setActionError(null)
+    const result = await editMessage(jid, m.id, text, crypto.randomUUID())
+    if (result.ok) setEditingId(null) // the bubble updates from the live "changed" event
+    else setActionError(result.error)
+  }
+  async function revoke(m: MessageView) {
+    setRevoking(null)
+    setActionError(null)
+    const result = await revokeMessage(jid, m.id, crypto.randomUUID())
+    if (!result.ok) setActionError(result.error)
+  }
+  const editing = editingId ? (shown.find((m) => m.id === editingId) ?? null) : null
+  const revokingMessage = revoking ? shown.find((m) => m.id === revoking) : undefined
 
   function send(text: string) {
     const reply = replyTo
@@ -135,6 +216,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     const fromDraft = usedDraft
     usedNow.current = null
     setUsedDraft(null)
+    if (hasNewer) setParams({}, { replace: true }) // a window around an old message: land at the bottom, as WhatsApp does
     void sendText(jid, text, reply ? quoteOf(reply) : null, fromDraft, reply ? replyChat : null)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true
@@ -145,6 +227,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   function sendAttachment(file: File, caption: string, quote: QuoteView | null, kind: 'file' | 'voice' = 'file') {
     setAttached(null)
     setReplyTo(null)
+    if (hasNewer) setParams({}, { replace: true })
     void sendFile(jid, file, caption, quote, kind, quote ? replyChat : null)
     const key = pendingId(getBox(jid).pending.at(-1)?.key ?? '')
     stickToEnd.current = true
@@ -200,7 +283,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
   useMarkRead({
     active,
     jid,
-    ready: status === 'ready',
+    ready: status === 'ready' && !hasNewer, // a window around an old message is not the end of the chat
     newestKey: last ? `${last.chat_jid}/${last.id}` : undefined,
     upTo: last?.timestamp_iso,
     unread: detail?.chat.unread,
@@ -245,7 +328,8 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
     if (!(await loadOlder())) anchor.current = null
   }
 
-  const chat = detail?.chat
+  const state = useChatState(detail?.chat)
+  const chat = state.chat
   const inGroup = chat ? GROUP_KINDS.includes(chat.kind) : false
   return (
     <section className="chatpane" aria-label={chat?.name ?? 'Chat'}>
@@ -272,6 +356,16 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           </button>
         )}
       </header>
+      {searching && (
+        <ChatSearchBar
+          chat={chatJid}
+          onJump={jumpTo}
+          onClose={() => {
+            setSearching(false)
+            setFlashId(null)
+          }}
+        />
+      )}
       {loadingOlder && <p className="older">Loading older messages…</p>}
       {status === 'loading' && <p className="empty-state">Loading…</p>}
       {status === 'missing' && (
@@ -315,6 +409,7 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
                 groupAvatar={inGroup && !m.from_me}
                 tail={item.tail}
                 rise={key === riseKey}
+                flash={m.id === flashId}
                 delivery={
                   pending && {
                     state: pending.status,
@@ -346,13 +441,27 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
       )}
       {menuOpen && (
         <ChatMenu
+          state={chat}
+          onChange={(patch) => {
+            setMenuOpen(false)
+            void state.change(patch)
+          }}
           onClose={() => setMenuOpen(false)}
+          onSearch={() => {
+            setMenuOpen(false)
+            setSearching(true)
+          }}
+          onLists={() => {
+            setMenuOpen(false)
+            setListsOpen(true)
+          }}
           onAi={() => {
             setMenuOpen(false)
             setAiOpen(true)
           }}
         />
       )}
+      {listsOpen && <ListSheet jid={chatJid} onClose={() => setListsOpen(false)} />}
       {aiOpen && <ChatAiSheet jid={chatJid} onClose={() => setAiOpen(false)} />}
       {menuMessage && (
         <MessageMenu
@@ -381,7 +490,57 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
             setMenuId(null)
             void navigator.clipboard?.writeText(menuMessage.text ?? '')
           }}
+          onStar={() => {
+            setMenuId(null)
+            void toggleStar(menuMessage)
+          }}
+          onForward={() => {
+            setMenuId(null)
+            setForwardIds([menuMessage.id])
+          }}
+          onEdit={() => {
+            setMenuId(null)
+            setReplyTo(null)
+            setEditingId(menuMessage.id)
+          }}
+          onRevoke={() => {
+            setMenuId(null)
+            setRevoking(menuMessage.id)
+          }}
         />
+      )}
+      {forwardIds && <ForwardSheet fromChat={chatJid} messageIds={forwardIds} onClose={() => setForwardIds(null)} />}
+      {revokingMessage && (
+        <p className="draft-confirm" role="alertdialog" aria-label="Delete for everyone?">
+          <span>Delete this message for everyone?</span>
+          <button className="button-text" type="button" onClick={() => void revoke(revokingMessage)}>
+            Delete
+          </button>
+          <button className="button-text quiet" type="button" onClick={() => setRevoking(null)}>
+            Keep
+          </button>
+        </p>
+      )}
+      {state.error && (
+        <p className="notice" role="alert">
+          <span dir="auto">{state.error}</span>
+          <button className="button-text" type="button" onClick={state.dismissError}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      {actionError && (
+        <p className="notice" role="alert">
+          <span dir="auto">{actionError}</span>
+          <button className="button-text" type="button" onClick={() => setActionError(null)}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      {hasNewer && status === 'ready' && (
+        <button className="newpill" type="button" onClick={() => setParams({}, { replace: true })}>
+          Jump to latest
+        </button>
       )}
       {unseen && (
         <button
@@ -456,6 +615,12 @@ export function Chat({ jid, active = true }: { jid: string; active?: boolean }) 
           }}
           onDraft={() => void requestDraft()}
           drafting={card?.status === 'pending'}
+          editing={editing}
+          onSaveEdit={(text) => editing && void saveEdit(editing, text)}
+          onCancelEdit={() => {
+            setEditingId(null)
+            setActionError(null)
+          }}
         />
       )}
     </section>

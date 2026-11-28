@@ -36,6 +36,12 @@ App and MCP audit fixes (see DECISIONS.md D24):
 
 ### Added
 
+- wa-app M3b, find and organise: message search (SQLite FTS5 in `app.db`, accents ignored, text, captions and voice
+  transcripts, backfilled at startup and resumable), custom lists and a Mentions and replies filter, edit (15 minutes),
+  delete for everyone (48 hours), star and forward (5 chats, 10 messages), pin, mute, archive and mark unread, quick
+  replies with a `/` picker, and a per-chat AI mode sheet. Bridge migration 015 adds starred messages and message
+  mentions: deploy the bridge first, then the app. New opt-in MCP `chats` toolset (pin, mute, archive, mark unread),
+  enabled through `WHATSAPP_MCP_TOOLSETS`. See DECISIONS.md D27.
 - wa-app M3a: Web Push notifications for every incoming message (VAPID key made on first use, `WA_APP_PUSH_SUBJECT`
   required, iPhone needs the Home Screen app), sending photos and files (raw upload up to 64 MiB, streamed to a
   private temp folder, 2 at a time, captions and replies), recording and sending voice notes (15 minutes, sent as Ogg

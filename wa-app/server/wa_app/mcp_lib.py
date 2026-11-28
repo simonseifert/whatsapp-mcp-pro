@@ -70,19 +70,23 @@ def send_message(
     quoted_message_id: str | None = None,
     idempotency_key: str | None = None,
     quoted_chat_jid: str | None = None,
+    forwarded: bool = False,
 ) -> dict:
     """Send a text through the bridge (blocking HTTP: call from a worker thread). Every bridge cap and lock applies.
 
     `quoted_chat_jid` is the chat the quoted message lives in when it is not `recipient`'s (a private reply).
+    `forwarded` sends it with the Forwarded label.
     """
     import whatsapp
 
+    extra = {"forwarded": True} if forwarded else {}
     return whatsapp.send_message(
         recipient,
         message,
         quoted_message_id=quoted_message_id,
         idempotency_key=idempotency_key,
         quoted_chat_jid=quoted_chat_jid,
+        **extra,
     )
 
 
@@ -95,6 +99,7 @@ def send_file(
     quoted_message_id: str | None,
     quoted_chat_jid: str | None,
     idempotency_key: str,
+    forwarded: bool = False,
 ) -> dict:
     """Send a file through the bridge (blocking HTTP: call from a worker thread). Every bridge cap and lock applies.
 
@@ -103,6 +108,7 @@ def send_file(
     """
     import whatsapp
 
+    extra = {"forwarded": True} if forwarded else {}
     return whatsapp.send_file(
         recipient,
         media_path=file_path,
@@ -111,6 +117,7 @@ def send_file(
         caption=caption,
         quoted_message_id=quoted_message_id,
         quoted_chat_jid=quoted_chat_jid,
+        **extra,
     )
 
 
@@ -141,6 +148,57 @@ def send_reaction(chat_jid: str, message_id: str, emoji: str, idempotency_key: s
     return whatsapp.send_reaction(chat_jid, message_id, emoji, idempotency_key=idempotency_key)
 
 
+def edit_message(chat_jid: str, message_id: str, new_content: str) -> dict:
+    """Edit one of our own sent texts. Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.edit_message(chat_jid, message_id, new_content)
+
+
+def delete_message(chat_jid: str, message_id: str, sender_jid: str | None = None) -> dict:
+    """Delete a message for everyone. Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.delete_message(chat_jid, message_id, sender_jid=sender_jid)
+
+
+def star_message(
+    chat_jid: str, message_id: str, star: bool = True, sender_jid: str | None = None, from_me: bool = False
+) -> dict:
+    """Star or unstar a message. Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.star_message(chat_jid, message_id, star=star, sender_jid=sender_jid, from_me=from_me)
+
+
+def pin_chat(chat_jid: str, pin: bool = True) -> dict:
+    """Pin or unpin a chat (appstate, synced to the phone). Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.pin_chat(chat_jid, pin=pin)
+
+
+def mute_chat(chat_jid: str, mute: bool = True, duration: str = "forever") -> dict:
+    """Mute (`duration` "8h", "1w" or "forever") or unmute a chat. Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.mute_chat(chat_jid, mute=mute, duration=duration)
+
+
+def archive_chat(chat_jid: str, archive: bool = True) -> dict:
+    """Archive or unarchive a chat (the bridge unpins on archive). Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.archive_chat(chat_jid, archive=archive)
+
+
+def mark_chat_unread(chat_jid: str, unread: bool = True) -> dict:
+    """Mark a chat unread (the dot) or read again. Blocking HTTP: call from a worker thread."""
+    import whatsapp
+
+    return whatsapp.mark_chat_unread(chat_jid, unread=unread)
+
+
 def transcribe_file(path: str, language: str | None = None, *, local_only: bool = False) -> dict:
     """Transcribe with the MCP server's backends. `local_only` keeps the audio off every cloud backend."""
     from lib.transcribe import transcribe_file as transcribe
@@ -158,17 +216,24 @@ def is_local_only_chat(messages_conn, app_conn, chat_jid: str) -> bool:
 __all__ = [
     "canonical_chat_jid",
     "chat_forms",
+    "delete_message",
     "download_media",
+    "edit_message",
     "is_local_only_chat",
+    "archive_chat",
     "get_profile_picture",
     "history_backfill_status",
+    "mark_chat_unread",
     "mark_messages_read",
+    "mute_chat",
+    "pin_chat",
     "resolve_display_names",
     "send_audio_message",
     "send_file",
     "send_message",
     "send_reaction",
     "server_dir",
+    "star_message",
     "start_history_backfill",
     "transcribe_file",
 ]

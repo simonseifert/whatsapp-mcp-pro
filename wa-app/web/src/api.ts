@@ -4,11 +4,18 @@ import type {
   BackendsResponse,
   BackendTestResult,
   ChatAi,
+  ChatList,
+  QuickReply,
+  ChatSummary,
+  FilterChip,
+  ForwardResult,
   DraftContext,
   DraftView,
   HistoryCoverage,
   HistoryDepth,
   HistoryStatus,
+  SearchResponse,
+  StarredResponse,
 } from './api-types'
 
 export class ApiError extends Error {
@@ -191,6 +198,9 @@ async function postOutward(path: string, payload: object): Promise<SendResult> {
       }
     }
   }
+  if (response.status === 409 && body && typeof body === 'object' && 'error' in body && body.error === 'too_late') {
+    return { ok: false, error: TOO_LATE, retryable: false }
+  }
   const detail = body && typeof body === 'object' && 'error' in body ? String(body.error) : response.statusText
   return {
     ok: false,
@@ -198,6 +208,9 @@ async function postOutward(path: string, payload: object): Promise<SendResult> {
     retryable: response.status >= 500,
   }
 }
+
+/** The line shown when the server refuses an edit or a delete for everyone because the time is up. */
+export const TOO_LATE = 'Too late: WhatsApp no longer allows this'
 
 /** Sends a text (optionally quoting a message, optionally from a draft). `clientKey` is the idempotency key: reuse it on Retry. */
 export function sendMessage(
@@ -290,4 +303,131 @@ export function sendMedia(jid: string, up: MediaUpload): Promise<SendResult> {
     }
     xhr.send(up.file)
   })
+}
+
+/** Message search, newest first, 30 a page. `chat` narrows it to one chat; `before` is the previous page's `next`. */
+export function searchMessages(q: string, opts: { chat?: string; before?: string | null } = {}): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q })
+  if (opts.chat) params.set('chat', opts.chat)
+  if (opts.before) params.set('before', opts.before)
+  return apiFetch<SearchResponse>(`/api/search?${params.toString()}`)
+}
+
+/** The chips above the chat list. Null when the server's answer is not a chip list (the app then shows its built-ins). */
+export async function fetchChatFilters(): Promise<FilterChip[] | null> {
+  const body = await apiFetch<{ filters?: FilterChip[] }>('/api/chat-filters')
+  return Array.isArray(body?.filters) ? body.filters : null
+}
+
+/** The custom lists in saved order; with `chat`, each says whether that chat is in it. */
+export async function fetchLists(chat?: string): Promise<ChatList[]> {
+  const query = chat ? `?chat=${encodeURIComponent(chat)}` : ''
+  return (await apiFetch<{ lists: ChatList[] }>(`/api/lists${query}`)).lists
+}
+
+export function createList(name: string): Promise<ChatList> {
+  return apiFetch<ChatList>('/api/lists', { method: 'POST', body: JSON.stringify({ name }) })
+}
+
+export async function updateList(id: number, patch: { name?: string; position?: number }): Promise<void> {
+  await apiFetch(`/api/lists/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
+}
+
+export async function deleteList(id: number): Promise<void> {
+  await apiFetch(`/api/lists/${id}`, { method: 'DELETE' })
+}
+
+/** Saved replies, most used first. */
+export async function fetchQuickReplies(): Promise<QuickReply[]> {
+  return (await apiFetch<{ quick_replies: QuickReply[] }>('/api/quick-replies')).quick_replies
+}
+
+export async function createQuickReply(shortcut: string, text: string): Promise<void> {
+  await apiFetch('/api/quick-replies', { method: 'POST', body: JSON.stringify({ shortcut, text }) })
+}
+
+export async function updateQuickReply(shortcut: string, text: string): Promise<void> {
+  await apiFetch(`/api/quick-replies/${encodeURIComponent(shortcut)}`, { method: 'PUT', body: JSON.stringify({ text }) })
+}
+
+export async function deleteQuickReply(shortcut: string): Promise<void> {
+  await apiFetch(`/api/quick-replies/${encodeURIComponent(shortcut)}`, { method: 'DELETE' })
+}
+
+/** Counts one use; the picker calls it when a reply is chosen. */
+export async function markQuickReplyUsed(shortcut: string): Promise<void> {
+  await apiFetch(`/api/quick-replies/${encodeURIComponent(shortcut)}/use`, { method: 'POST' })
+}
+
+export async function changeListChats(id: number, change: { add: string[]; remove: string[] }): Promise<void> {
+  await apiFetch(`/api/lists/${id}/chats`, { method: 'PUT', body: JSON.stringify(change) })
+}
+
+const messagePath = (jid: string, id: string) => `/api/chats/${encodeURIComponent(jid)}/messages/${encodeURIComponent(id)}`
+
+/** Edits one of my texts (WhatsApp allows 15 minutes). `clientKey` makes a Retry safe. */
+export function editMessage(jid: string, id: string, text: string, clientKey: string): Promise<SendResult> {
+  return postOutward(`${messagePath(jid, id)}/edit`, { text, client_key: clientKey })
+}
+
+/** Deletes one of my messages for everyone (WhatsApp allows 48 hours). */
+export function revokeMessage(jid: string, id: string, clientKey: string): Promise<SendResult> {
+  return postOutward(`${messagePath(jid, id)}/revoke`, { client_key: clientKey })
+}
+
+/** Stars or unstars a message. */
+export function starMessage(jid: string, id: string, star: boolean): Promise<SendResult> {
+  return postOutward(`${messagePath(jid, id)}/star`, { star })
+}
+
+export type ForwardOutcome = { ok: true; results: ForwardResult[] } | { ok: false; error: string }
+
+/** Forwards messages of one chat to up to 5 chats. The answer lists every target, so a partial failure is visible. */
+export async function forwardMessages(
+  fromChat: string,
+  messageIds: string[],
+  to: string[],
+  clientKey: string,
+): Promise<ForwardOutcome> {
+  let response: Response
+  try {
+    response = await fetch('/api/forward', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_chat: fromChat, message_ids: messageIds, to, client_key: clientKey }),
+      credentials: 'same-origin',
+    })
+  } catch {
+    return { ok: false, error: "Not sent: server didn't answer" }
+  }
+  if (response.status === 401 && window.location.pathname !== '/login') navigation.toLogin()
+  const body: unknown = await response.json().catch(() => null)
+  if (response.ok && body && typeof body === 'object' && 'results' in body && Array.isArray(body.results)) {
+    return { ok: true, results: body.results as ForwardResult[] }
+  }
+  const detail = body && typeof body === 'object' && 'error' in body ? String(body.error) : response.statusText
+  return { ok: false, error: `Not sent: ${detail}` }
+}
+
+/** Starred messages, newest star first; `before` is the previous page's `next`. */
+export function fetchStarred(before?: string | null): Promise<StarredResponse> {
+  const query = before ? `?before=${encodeURIComponent(before)}` : ''
+  return apiFetch<StarredResponse>(`/api/starred${query}`)
+}
+
+/** What the chat menu can change. `mute` is how long ("8h", "1w", "forever") or false to unmute. */
+export type ChatStatePatch = { pin?: boolean; mute?: '8h' | '1w' | 'forever' | false; archive?: boolean; unread?: boolean }
+export type ChatStateResult = { ok: true; chat: ChatSummary } | { ok: false; error: string }
+
+/** Pins, mutes, archives or marks a chat unread. The answer is the chat as it will look once the phone echoes it. */
+export async function setChatState(jid: string, patch: ChatStatePatch): Promise<ChatStateResult> {
+  try {
+    const body = await apiFetch<{ chat: ChatSummary }>(`/api/chats/${encodeURIComponent(jid)}/state`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    })
+    return { ok: true, chat: body.chat }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error && error.message ? error.message : "Couldn't update the chat" }
+  }
 }

@@ -151,6 +151,11 @@ func runMigrations(db *sql.DB) error {
 			sql:  `ALTER TABLE identities ADD COLUMN i_am_admin INTEGER NOT NULL DEFAULT 0`,
 		},
 		{
+			// JSON array of bare user JIDs a message mentioned (migrations/015).
+			name: "mentioned_jids",
+			sql:  `ALTER TABLE messages ADD COLUMN mentioned_jids TEXT`,
+		},
+		{
 			// Phone-offline tracking; see PhoneStatus. CREATE IF NOT EXISTS is
 			// idempotent, so it never hits the duplicate-column check below.
 			name: "phone_status",
@@ -183,7 +188,11 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 	// Delivery and read receipts from other people (migrations/014).
-	return createMessageReceiptsTable(db)
+	if err := createMessageReceiptsTable(db); err != nil {
+		return err
+	}
+	// Starred messages (migrations/015).
+	return createStarredMessagesTable(db)
 }
 
 // createTables creates all necessary database tables

@@ -571,6 +571,10 @@ func (c *Client) sendWithOptions(ctx context.Context, messageStore *database.Mes
 		}
 	}
 
+	if opts.Forwarded {
+		applyForwarded(msg)
+	}
+
 	// Reachout timelock: while WhatsApp is refusing new conversations (error
 	// 463), only chats with history may be messaged. Checked before the typing
 	// indicator so a refused send leaves no trace on the recipient's side.

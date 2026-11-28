@@ -513,7 +513,7 @@ input {
   border-radius: var(--radius-full);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-weight: var(--font-weight-title);
   font-variant-numeric: tabular-nums;
 }
@@ -659,7 +659,7 @@ input {
   gap: var(--spacing-xxs);
   min-height: var(--spacing-touch);
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-weight: var(--font-weight-caption);
   text-decoration: none;
 }
@@ -715,7 +715,7 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
 }
 
 .iconbtn {
@@ -738,7 +738,7 @@ input {
   border-radius: var(--radius-full);
   background: var(--surface2);
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
 }
 
 .msgs {
@@ -759,7 +759,7 @@ input {
   max-width: 90%;
   margin: var(--spacing-lg) 0 var(--spacing-sm);
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-weight: var(--font-weight-meta);
   text-align: center;
   overflow-wrap: anywhere;
@@ -813,7 +813,7 @@ input {
 .sender {
   margin: 0 0 var(--spacing-xxs);
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-weight: var(--font-weight-title);
   overflow-wrap: anywhere;
 }
@@ -837,7 +837,7 @@ input {
   gap: 5px;
   margin-top: var(--spacing-xxs);
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -875,7 +875,7 @@ input {
   margin-left: 12px;
   visibility: hidden;
   white-space: nowrap;
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -968,7 +968,7 @@ input {
   border-radius: 12px;
   background: var(--surface2);
   box-shadow: 0 0 0 2px var(--bg);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -985,7 +985,7 @@ input {
   gap: var(--spacing-xs);
   margin-bottom: var(--spacing-xxs);
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-style: italic;
 }
 
@@ -1010,7 +1010,7 @@ input {
 .quote b {
   display: block;
   color: var(--accent-text);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   font-weight: var(--font-weight-title);
 }
 
@@ -1080,7 +1080,7 @@ input {
 }
 
 .ph-note {
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   opacity: 0.8;
 }
 
@@ -1161,7 +1161,7 @@ input {
 
 .docsize {
   flex: none;
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   opacity: 0.75;
 }
 
@@ -1342,7 +1342,7 @@ input {
 
 .poll .v {
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
 }
 
 .me .poll .v {
@@ -1510,7 +1510,7 @@ input {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
 }
 
 .replytxt b {
@@ -1532,7 +1532,7 @@ input {
   gap: var(--spacing-sm);
   margin: 0 var(--spacing-sm);
   color: var(--danger-ink);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
 }
 
 .micnote {
@@ -1541,7 +1541,7 @@ input {
   justify-content: space-between;
   gap: var(--spacing-sm);
   margin: 0 var(--spacing-sm);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
   color: var(--muted);
 }
 
@@ -1582,7 +1582,7 @@ input {
   justify-content: flex-end;
   gap: var(--spacing-xxs);
   color: var(--danger-ink);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
 }
 
 .button-text.quiet {
@@ -2273,7 +2273,7 @@ input {
 .upsize {
   flex: none;
   color: var(--muted);
-  font-size: var(--text-caption);
+  font-size: var(--text-body-sm);
 }
 
 .uprow {
@@ -2358,4 +2358,226 @@ input {
   flex: 1;
   margin: 0;
   font-size: var(--text-body);
+}
+
+/* --- message search -------------------------------------------------------------------------------------------- */
+
+.search-form {
+  margin: 0;
+}
+
+.sgroup {
+  padding-top: var(--spacing-md);
+}
+
+.shead {
+  margin: 0;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  color: var(--muted);
+  font-size: var(--text-body-sm);
+  font-weight: var(--font-weight-title);
+}
+
+.row.shit .prev {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.snip mark {
+  background: var(--accent-soft);
+  color: inherit;
+  border-radius: 2px;
+  font-weight: var(--font-weight-title);
+}
+
+.more-results {
+  display: block;
+  margin: var(--spacing-md) auto;
+}
+
+.csearch {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-bottom: 1px solid var(--surface2);
+  background: var(--bg);
+}
+
+.csearch-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.csearch-field input {
+  width: 100%;
+  min-height: var(--spacing-touch);
+  padding: 0 var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--text-body);
+}
+
+.csearch-count {
+  min-width: 4.5ch;
+  color: var(--muted);
+  font-size: var(--text-body-sm);
+  white-space: nowrap;
+}
+
+.msg.flash {
+  animation: flash-row 1.8s ease-out;
+}
+
+@keyframes flash-row {
+  0%,
+  60% {
+    background: var(--accent-soft);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg.flash {
+    animation: none;
+    background: var(--accent-soft);
+  }
+}
+
+/* Settings > Lists */
+.list-row {
+  border-bottom: 1px solid var(--hair);
+}
+
+.list-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-height: var(--spacing-row);
+  padding: var(--spacing-sm) var(--spacing-lg);
+}
+
+.list-name {
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Message actions: the destructive menu item, the forward sheet's chat list and results, the starred link. */
+.menu-item.danger {
+  color: var(--danger-ink);
+}
+
+.fwd-chats,
+.fwd-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fwd-chats {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.fwd-chats .sheet-row {
+  justify-content: flex-start;
+}
+
+.fwd-chats .sheet-row span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fwd-results li {
+  padding: var(--spacing-xs) 0;
+}
+
+.starred-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  min-height: var(--spacing-touch);
+}
+
+.meta svg {
+  vertical-align: -2px;
+}
+
+/* A long press on a chat row opens its menu: no browser callout or text selection on top of it. */
+.ls .row {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.row-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin: 0;
+  padding: var(--spacing-xs) var(--spacing-md);
+  color: var(--danger, #c0392b);
+  font-size: var(--text-caption, 13px);
+}
+
+.qr-picker,
+.qr-empty {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  max-height: 40vh;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--sep, rgba(128, 128, 128, 0.25));
+}
+.qr-empty {
+  padding: 12px 16px;
+  color: var(--text-2, inherit);
+}
+.qr-picker li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  min-height: 44px;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+.qr-picker li span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qr-form {
+  display: grid;
+  gap: 8px;
+}
+.mode-list {
+  display: grid;
+}
+.mode-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 0;
+}
+.mode-row span {
+  display: grid;
+}
+.mode-row small {
+  opacity: 0.7;
+}
+.mode-row.disabled {
+  opacity: 0.5;
 }

@@ -44,6 +44,8 @@ type Props = {
   groupAvatar?: boolean
   tail: boolean
   rise?: boolean
+  /** Briefly highlighted: the message a search result or jump brought into view. */
+  flash?: boolean
   delivery?: Delivery
   onRetry?: () => void
   onDismiss?: () => void
@@ -108,6 +110,7 @@ export function Bubble({
   groupAvatar = false,
   tail,
   rise = false,
+  flash = false,
   delivery,
   onRetry,
   onDismiss,
@@ -121,6 +124,7 @@ export function Bubble({
   const classes = ['bubble', m.deleted ? 'deleted' : '', hasMedia ? 'media' : '', inline ? 'inl' : ''].filter(Boolean).join(' ')
   const metaContent = (
     <>
+      {m.starred && !m.deleted && <Icon name="star" size={12} label="Starred" />}
       {m.edited && <span>Edited</span>}
       {delivery?.state === 'sending' ? (
         <span>Sending…</span>
@@ -139,7 +143,7 @@ export function Bubble({
   )
   return (
     <div
-      className={`msg ${side}${groupAvatar ? ' gav' : ''}${tail ? ' tail' : ' run'}${rise ? ' rise' : ''}${delivery ? ` ${delivery.state}` : ''}`}
+      className={`msg ${side}${groupAvatar ? ' gav' : ''}${tail ? ' tail' : ' run'}${rise ? ' rise' : ''}${flash ? ' flash' : ''}${delivery ? ` ${delivery.state}` : ''}`}
       data-message-id={m.id}
       {...gestures.handlers}
     >
@@ -154,7 +158,7 @@ export function Bubble({
         {m.deleted ? (
           <div className="del">
             <Icon name="ban" size={15} />
-            Message deleted
+            {m.from_me ? 'You deleted this message' : 'Message deleted'}
           </div>
         ) : (
           <>

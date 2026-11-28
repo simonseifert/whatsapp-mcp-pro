@@ -2211,3 +2211,81 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// handleStarMessage handles POST /api/star for starring/unstarring a message.
+//
+// Request body:
+//   - chat_jid: Chat the message is in (required)
+//   - message_id: Message to (un)star (required)
+//   - sender_jid: Author in a group, only needed for a message the bridge never stored
+//   - from_me: true when the message is the account's own
+//   - star: true to star, false to unstar
+//
+// Response: { success: bool, chat_jid, message_id, star: bool }
+func (s *Server) handleStarMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var req types.StarMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendJSONError(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+	if req.ChatJID == "" || req.MessageID == "" {
+		SendJSONError(w, "chat_jid and message_id are required", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.client.StarMessage(s.messageStore, req.ChatJID, req.MessageID, req.SenderJID, req.FromMe, req.Star); err != nil {
+		SendJSONError(w, fmt.Sprintf("Failed to star message: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"chat_jid":   req.ChatJID,
+		"message_id": req.MessageID,
+		"star":       req.Star,
+	})
+}
+
+// handleMarkUnread handles POST /api/mark-unread for marking a chat unread or read.
+//
+// Request body:
+//   - chat_jid: Target chat JID (required)
+//   - unread: true to mark unread, false to mark read
+//
+// Response: { success: bool, chat_jid, unread: bool }
+func (s *Server) handleMarkUnread(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		SendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var req types.MarkUnreadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendJSONError(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+	if req.ChatJID == "" {
+		SendJSONError(w, "chat_jid is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.client.MarkChatUnread(s.messageStore, req.ChatJID, req.Unread); err != nil {
+		SendJSONError(w, fmt.Sprintf("Failed to mark chat: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"chat_jid": req.ChatJID,
+		"unread":   req.Unread,
+	})
+}

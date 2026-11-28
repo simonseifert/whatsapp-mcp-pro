@@ -16,7 +16,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import agent_api, api, appdb, auth, config, history, live, mcp_lib, notify, sending
+from . import agent_api, api, appdb, auth, config, history, live, mcp_lib, notify, search, sending
 from .ai.drafts import DraftWorker
 from .auth import AuthMiddleware
 from .config import Settings
@@ -54,6 +54,19 @@ def _log_worker_end(task: "asyncio.Task[None]") -> None:
         )
 
 
+async def _index_backfill(indexer: search.Indexer) -> None:
+    """Index the store's existing messages one batch at a time (live events queue between batches), then catch up on
+    edits and revokes made while the app was down. A failure is logged and retried at the next start."""
+    try:
+        while await asyncio.to_thread(indexer.backfill_step):
+            pass
+        await asyncio.to_thread(indexer.reconcile_now)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # the type only: errors may quote chat text
+        logger.warning("search backfill stopped (%s)", type(exc).__name__)
+
+
 def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     conn = appdb.connect(settings)
 
@@ -71,6 +84,8 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
     poller.on_events.append(worker.on_events)
     notifier = notify.Notifier(settings, conn, hub)
     poller.on_events.append(notifier.on_events)
+    indexer = search.Indexer(settings, conn)
+    poller.on_events.append(indexer.on_events)
     backfill = history.BackfillQueue(mcp_lib.start_history_backfill, mcp_lib.history_backfill_status)
 
     @contextlib.asynccontextmanager
@@ -81,6 +96,8 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
         draft_task.add_done_callback(_log_worker_end)
         backfill_task = asyncio.create_task(queue.run(), name="history backfill queue")
         backfill_task.add_done_callback(_log_worker_end)
+        index_task = asyncio.create_task(_index_backfill(indexer), name="search backfill")
+        index_task.add_done_callback(_log_worker_end)
         try:
             async with live.running(poller, hub):
                 yield
@@ -89,17 +106,21 @@ def create_app(settings: Settings, dist: Path = DIST) -> Starlette:
             backfill_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await backfill_task
+            index_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await index_task
             draft_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await draft_task
             worker.close()
             notifier.close()
+            indexer.close()
         # Under uvicorn the real work is timeout_graceful_shutdown (it waits for streams before lifespan shutdown).
         hub.close()
 
     routes: list[Route | Mount] = [
         *live.routes(hub, _session_alive, auth.COOKIES),
-        *api.routes(conn, settings, worker),
+        *api.routes(conn, settings, worker, indexer),
         *agent_api.routes(conn, settings, worker),
     ]
     routes.append(Route("/api/{rest:path}", api_not_found))

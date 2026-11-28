@@ -274,10 +274,7 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 	if err != nil {
 		c.logger.Warnf("Failed to store message: %v", err)
 	} else {
-		rc := ExtractReplyContext(msg.Message)
-		if err := messageStore.StoreMessageContext(msg.Info.ID, chatJID, rc.QuotedID, rc.QuotedSender, rc.QuotedText, rc.IsForwarded); err != nil {
-			c.logger.Warnf("Failed to store reply context for %s: %v", msg.Info.ID, err)
-		}
+		c.storeReplyContext(messageStore, msg.Info.ID, chatJID, ExtractReplyContext(msg.Message))
 	}
 
 	// Auto-download media while CDN URL is still fresh
@@ -444,10 +441,7 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 					c.logger.Warnf("Failed to store history message: %v", err)
 				} else {
 					syncedCount++
-					rc := ExtractReplyContext(msg.Message.Message)
-					if err := messageStore.StoreMessageContext(msgID, chatJID, rc.QuotedID, rc.QuotedSender, rc.QuotedText, rc.IsForwarded); err != nil {
-						c.logger.Warnf("Failed to store reply context for %s: %v", msgID, err)
-					}
+					c.storeReplyContext(messageStore, msgID, chatJID, ExtractReplyContext(msg.Message.Message))
 					// Log successful message storage
 					if mediaType != "" {
 						c.logger.Debugf("Stored message: [%s] %s -> %s: [%s: %s] %s",
@@ -864,4 +858,14 @@ func chatSeedFromConversation(conv *waHistorySync.Conversation, latest time.Time
 		seed.UnreadCount = &v
 	}
 	return seed
+}
+
+// storeReplyContext persists the quote, forward flag and mentions of a stored message.
+func (c *Client) storeReplyContext(store *database.MessageStore, id, chatJID string, rc ReplyContext) {
+	if err := store.StoreMessageContext(id, chatJID, rc.QuotedID, rc.QuotedSender, rc.QuotedText, rc.IsForwarded); err != nil {
+		c.logger.Warnf("Failed to store reply context for %s: %v", id, err)
+	}
+	if err := store.StoreMentionedJIDs(id, chatJID, rc.MentionedJIDs); err != nil {
+		c.logger.Warnf("Failed to store mentions for %s: %v", id, err)
+	}
 }

@@ -31,7 +31,7 @@ CREATE TABLE messages (
     quoted_message_id TEXT, quoted_sender_name TEXT, quoted_text_preview TEXT, reply_to_message_id TEXT,
     edit_count INTEGER DEFAULT 0, is_edited BOOLEAN DEFAULT 0, is_forwarded BOOLEAN DEFAULT 0, forwarded_from TEXT,
     is_system_message BOOLEAN DEFAULT 0, system_message_type TEXT,
-    edited_at TIMESTAMP, deleted_at TIMESTAMP, deleted_by TEXT,
+    edited_at TIMESTAMP, deleted_at TIMESTAMP, deleted_by TEXT, mentioned_jids TEXT,
     PRIMARY KEY (id, chat_jid),
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );

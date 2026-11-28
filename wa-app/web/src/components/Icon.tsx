@@ -40,6 +40,19 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M10 12.5h4" />
     </>
   ),
+  star: <path d="M12 4l2.4 5 5.4.7-4 3.8 1 5.4L12 16.2 7.2 18.9l1-5.4-4-3.8 5.4-.7z" />,
+  edit: (
+    <>
+      <path d="M4 20l1-4L16.5 4.5a2 2 0 012.8 0l.2.2a2 2 0 010 2.8L8 19z" />
+      <path d="M14.5 6.5l3 3" />
+    </>
+  ),
+  trash: (
+    <>
+      <path d="M4 7h16M10 7V4.5h4V7" />
+      <path d="M6 7l1 12.5a1 1 0 001 .9h8a1 1 0 001-.9L18 7M10 11v5M14 11v5" />
+    </>
+  ),
   forward: <path d="M14 6l6 5.5-6 5.5v-3.5c-4.5 0-7.5 1-9.5 4.5.5-5 3.5-8.5 9.5-9z" />,
   image: (
     <>
@@ -98,6 +111,14 @@ const PATHS: Record<string, ReactNode> = {
   chart: <path d="M5 20V10M12 20V4M19 20v-7" />,
   phone: (
     <path d="M6.5 4h3l1.5 4-2 1.5a11 11 0 005.5 5.5L16 13l4 1.5v3a2 2 0 01-2 2C10.8 19.5 4.5 13.2 4.5 6a2 2 0 012-2z" />
+  ),
+  up: <path d="M5 15l7-7 7 7" />,
+  down: <path d="M5 9l7 7 7-7" />,
+  list: (
+    <>
+      <path d="M9 6h11M9 12h11M9 18h11" />
+      <path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" />
+    </>
   ),
   chevron: <path d="M9 5l7 7-7 7" />,
   back: <path d="M15 5l-7 7 7 7" />,

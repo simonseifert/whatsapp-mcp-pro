@@ -44,6 +44,20 @@ CREATE TABLE IF NOT EXISTS draft_outcomes (draft_id INTEGER PRIMARY KEY, chat_ji
     kind TEXT NOT NULL CHECK (kind IN ('used','edited','ignored')), thumb INTEGER, feedback TEXT, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
     session_hash TEXT NOT NULL, created_at INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS lists (id INTEGER PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS list_chats (
+    list_id INTEGER NOT NULL, chat_jid TEXT NOT NULL, PRIMARY KEY (list_id, chat_jid)
+);
+CREATE TABLE IF NOT EXISTS quick_replies (
+    shortcut TEXT PRIMARY KEY, text TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(
+    body, chat_jid UNINDEXED, message_id UNINDEXED, ts UNINDEXED, tokenize="unicode61 remove_diacritics 2"
+);
+-- msg_fts is keyed by rowid only; this maps a message to its row so an edit or revoke finds it without a scan.
+CREATE TABLE IF NOT EXISTS msg_fts_keys (
+    chat_jid TEXT NOT NULL, message_id TEXT NOT NULL, fts_rowid INTEGER NOT NULL, PRIMARY KEY (chat_jid, message_id)
+);
 """
 
 

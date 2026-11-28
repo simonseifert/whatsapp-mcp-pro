@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import appdb, auth, history, live, media, push, sending, store, transcripts
+from . import appdb, auth, history, lists, live, media, push, quick_replies, search, sending, store, transcripts
 from .ai import backends as ai_llm
 from .ai import config as ai_config
 from .ai import context as ai_context_store
@@ -54,7 +54,12 @@ def _too_long(passphrase: str) -> bool:
     return len(passphrase.encode()) > auth.MAX_PASSPHRASE_BYTES
 
 
-def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWorker | None = None) -> list[Route]:
+def routes(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    worker: drafts.DraftWorker | None = None,
+    indexer: search.Indexer | None = None,
+) -> list[Route]:
     def start_session(request: Request) -> Response:
         token = auth.new_session(conn, request.headers.get("user-agent"))
         response = JSONResponse({"ok": True})
@@ -190,7 +195,9 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
 
     async def chats(request: Request) -> Response:
         chat_filter = request.query_params.get("filter", "all")
-        if chat_filter not in store.FILTERS:
+        with appdb.db_lock:
+            known = lists.valid_filter(conn, chat_filter)
+        if not known:
             return _error(400, "Unknown filter")
         archived = request.query_params.get("archived", "").lower() in ("1", "true")
         query = request.query_params.get("q")
@@ -205,7 +212,7 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             listed, archived_count, has_more = store.list_chats_page(
                 ro,
                 conn,
-                filter=chat_filter,  # type: ignore[arg-type]
+                filter=chat_filter,
                 archived=archived,
                 query=query,
                 before=before,
@@ -218,6 +225,111 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
             return _error(503, "Message store unavailable")
         finally:
             ro.close()
+
+    async def chat_filters(request: Request) -> Response:
+        with appdb.db_lock:
+            return JSONResponse({"filters": lists.chips(conn)})
+
+    async def lists_index(request: Request) -> Response:
+        if request.method == "GET":
+            chat = request.query_params.get("chat")
+            with appdb.db_lock:
+                rows = lists.list_all(conn)
+            if chat:
+
+                def mark(ro: sqlite3.Connection) -> Response:
+                    with appdb.db_lock:
+                        mine = lists.lists_of(conn, ro, chat)
+                    return JSONResponse({"lists": [{**row, "member": row["id"] in mine} for row in rows]})
+
+                return await run_in_threadpool(with_store, mark)
+            return JSONResponse({"lists": rows})
+        body = await body_of(request)
+        try:
+            with appdb.db_lock:
+                made = lists.create(conn, body.get("name") if isinstance(body, dict) else None)
+        except lists.ListError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse(made)
+
+    def _list_id(request: Request) -> int | None:
+        raw = request.path_params["id"]
+        return int(raw) if raw.isdigit() else None
+
+    async def list_item(request: Request) -> Response:
+        list_id = _list_id(request)
+        if list_id is None:
+            return _error(404, "List not found")
+        body = await body_of(request) if request.method == "PUT" else None
+        if request.method == "PUT" and not isinstance(body, dict):
+            return _error(422, "A JSON object is required")
+        try:
+            with appdb.db_lock:
+                if isinstance(body, dict):
+                    lists.update(conn, list_id, name=body.get("name"), position=body.get("position"))
+                else:
+                    lists.delete(conn, list_id)
+        except lists.ListError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse({"ok": True})
+
+    async def list_chats(request: Request) -> Response:
+        list_id = _list_id(request)
+        body = await body_of(request)
+        add = body.get("add", []) if isinstance(body, dict) else None
+        remove = body.get("remove", []) if isinstance(body, dict) else None
+        for group in (add, remove):
+            if not isinstance(group, list) or not all(isinstance(j, str) and j for j in group) or len(group) > 500:
+                return _error(422, "'add' and 'remove' must be lists of chat JIDs")
+        if list_id is None:
+            return _error(404, "List not found")
+
+        def work(ro: sqlite3.Connection) -> Response:
+            try:
+                with appdb.db_lock:
+                    lists.change_chats(conn, ro, list_id, add, remove)  # type: ignore[arg-type]
+            except lists.ListError as exc:
+                return _error(exc.status, exc.message)
+            return JSONResponse({"ok": True})
+
+        return await run_in_threadpool(with_store, work)
+
+    async def quick_replies_index(request: Request) -> Response:
+        if request.method == "GET":
+            with appdb.db_lock:
+                return JSONResponse({"quick_replies": quick_replies.list_all(conn)})
+        body = await body_of(request)
+        if not isinstance(body, dict):
+            return _error(422, "A JSON object is required")
+        try:
+            with appdb.db_lock:
+                made = quick_replies.create(conn, body.get("shortcut"), body.get("text"))
+        except quick_replies.QuickReplyError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse(made)
+
+    async def quick_reply_item(request: Request) -> Response:
+        shortcut = request.path_params["shortcut"]
+        body = await body_of(request) if request.method == "PUT" else None
+        if request.method == "PUT" and not isinstance(body, dict):
+            return _error(422, "A JSON object is required")
+        try:
+            with appdb.db_lock:
+                if isinstance(body, dict):
+                    quick_replies.update(conn, shortcut, body.get("text"))
+                else:
+                    quick_replies.delete(conn, shortcut)
+        except quick_replies.QuickReplyError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse({"ok": True})
+
+    async def quick_reply_use(request: Request) -> Response:
+        try:
+            with appdb.db_lock:
+                quick_replies.mark_used(conn, request.path_params["shortcut"])
+        except quick_replies.QuickReplyError as exc:
+            return _error(exc.status, exc.message)
+        return JSONResponse({"ok": True})
 
     def with_store(work):  # noqa: ANN001, ANN202
         try:
@@ -307,11 +419,36 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         if before is not None and store.parse_ts(before) is None:
             return _error(400, "Bad 'before' timestamp")
 
+        around = request.query_params.get("around")
+
         def work(ro: sqlite3.Connection) -> Response:
+            if around:  # a window on both sides of one message, for jumping to a search hit
+                window = store.list_messages_around(ro, jid, around)
+                if window is None:
+                    return _error(404, "Message not found")
+                messages, has_more, has_newer = window
+                return JSONResponse(
+                    {"messages": [asdict(m) for m in messages], "has_more": has_more, "has_newer": has_newer}
+                )
             messages, has_more = store.list_messages_page(ro, jid, before_ts=before)
             return JSONResponse({"messages": [asdict(m) for m in messages], "has_more": has_more})
 
         return with_store(work)
+
+    async def message_search(request: Request) -> Response:
+        query = request.query_params.get("q", "")
+        chat = request.query_params.get("chat") or None
+        before = request.query_params.get("before")
+        try:
+            search.parse_cursor(before)
+        except ValueError:
+            return _error(400, "Bad 'before' cursor")
+
+        def work(ro: sqlite3.Connection) -> Response:
+            hits, nxt = search.search(conn, ro, query, chat_jid=chat, before=before)
+            return JSONResponse({"hits": [asdict(h) for h in hits], "next": nxt})
+
+        return await run_in_threadpool(with_store, work)
 
     async def chat_message(request: Request) -> Response:
         jid, mid = request.path_params["jid"], request.path_params["id"]
@@ -399,6 +536,8 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         if media_type not in ("audio", "ptt"):
             return _error(404, "Voice message not found")
         result = await run_in_threadpool(transcripts.get_or_make, conn, settings, mid, chat)
+        if indexer is not None and "error" not in result:
+            indexer.index_one(chat, mid)  # the transcript makes the voice message searchable
         if "error" in result:
             status = {
                 transcripts.NO_BACKEND: 503,
@@ -513,6 +652,61 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
 
     async def chat_react(request: Request) -> Response:
         return await outward(request, sending.send_reaction)
+
+    async def message_action(request: Request, work) -> Response:  # noqa: ANN001
+        body = await body_of(request)
+        jid, mid = request.path_params["jid"], request.path_params["id"]
+        try:
+            outcome = await run_in_threadpool(work, settings, conn, jid, mid, body)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
+    async def message_edit(request: Request) -> Response:
+        return await message_action(request, sending.edit_message)
+
+    async def message_revoke(request: Request) -> Response:
+        return await message_action(request, sending.revoke_message)
+
+    async def message_star(request: Request) -> Response:
+        return await message_action(request, sending.star_message)
+
+    async def chat_state(request: Request) -> Response:
+        body = await body_of(request)
+        try:
+            outcome = await run_in_threadpool(sending.set_chat_state, settings, conn, request.path_params["jid"], body)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
+    async def forward(request: Request) -> Response:
+        body = await body_of(request)
+        try:
+            outcome = await run_in_threadpool(sending.forward_messages, settings, conn, body)
+        except sqlite3.Error:
+            return _error(503, "Message store unavailable")
+        return JSONResponse(outcome.body, status_code=outcome.status)
+
+    async def starred(request: Request) -> Response:
+        before = request.query_params.get("before")
+        try:
+            store.parse_starred_cursor(before)
+            limit = int(request.query_params.get("limit", store.STARRED_PAGE))
+        except ValueError:
+            return _error(400, "Bad 'before' cursor")
+        limit = max(1, min(limit, store.STARRED_PAGE))
+
+        def work(ro: sqlite3.Connection) -> Response:
+            with appdb.db_lock:
+                items, nxt = store.list_starred(ro, conn, before=before, limit=limit)
+            return JSONResponse(
+                {
+                    "items": [{"message": asdict(m), "chat_name": name, "chat_jid": chat} for m, name, chat in items],
+                    "next": nxt,
+                }
+            )
+
+        return await run_in_threadpool(with_store, work)
 
     def ai_failure(exc: Exception) -> Response:
         return _error(404 if isinstance(exc, ai_config.NotFound) else 422, str(exc))
@@ -717,6 +911,13 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/push/test", push_test, methods=["POST"]),
         Route("/api/about", about, methods=["GET"]),
         Route("/api/chats", chats, methods=["GET"]),
+        Route("/api/chat-filters", chat_filters, methods=["GET"]),
+        Route("/api/lists", lists_index, methods=["GET", "POST"]),
+        Route("/api/lists/{id}/chats", list_chats, methods=["PUT"]),
+        Route("/api/lists/{id}", list_item, methods=["PUT", "DELETE"]),
+        Route("/api/quick-replies", quick_replies_index, methods=["GET", "POST"]),
+        Route("/api/quick-replies/{shortcut}/use", quick_reply_use, methods=["POST"]),
+        Route("/api/quick-replies/{shortcut}", quick_reply_item, methods=["PUT", "DELETE"]),
         Route("/api/history/coverage", history_coverage, methods=["GET"]),
         Route("/api/history/fill", history_fill, methods=["POST"]),
         Route("/api/history/status", history_status, methods=["GET"]),
@@ -727,12 +928,19 @@ def routes(conn: sqlite3.Connection, settings: Settings, worker: drafts.DraftWor
         Route("/api/chats/{jid}/send", chat_send, methods=["POST"]),
         Route("/api/chats/{jid}/media", chat_media, methods=["POST"]),
         Route("/api/chats/{jid}/react", chat_react, methods=["POST"]),
+        Route("/api/chats/{jid}/messages/{id}/edit", message_edit, methods=["POST"]),
+        Route("/api/chats/{jid}/messages/{id}/revoke", message_revoke, methods=["POST"]),
+        Route("/api/chats/{jid}/state", chat_state, methods=["POST"]),
+        Route("/api/chats/{jid}/messages/{id}/star", message_star, methods=["POST"]),
+        Route("/api/forward", forward, methods=["POST"]),
+        Route("/api/starred", starred, methods=["GET"]),
         Route("/api/ai/backends", ai_backends, methods=["GET", "PUT"]),
         Route("/api/ai/backends/{id}", ai_backend_delete, methods=["DELETE"]),
         Route("/api/ai/backends/{id}/test", ai_backend_test, methods=["POST"]),
         Route("/api/ai/default", ai_default, methods=["PUT"]),
         Route("/api/ai/context", ai_context, methods=["GET", "PUT"]),
         Route("/api/chats/{jid}/ai", chat_ai_settings, methods=["GET", "PUT"]),
+        Route("/api/search", message_search, methods=["GET"]),
         Route("/api/chats/{jid}/messages", chat_messages, methods=["GET"]),
         Route("/api/chats/{jid}/messages/{id}", chat_message, methods=["GET"]),
     ]

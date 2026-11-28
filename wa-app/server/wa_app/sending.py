@@ -16,11 +16,11 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Literal
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
+from typing import Any, Literal
 
-from . import appdb, mcp_lib, store, unread
+from . import appdb, live, mcp_lib, media, store, unread
 from .ai import learning
 from .config import Settings
 from .logsafe import log_safe
@@ -509,3 +509,313 @@ def send_media(
     if not result.get("success"):
         return map_failure(result, private_reply=quoted_chat is not None)
     return Outcome(200, {"ok": True, "message_id": result.get("message_id")})
+
+
+# --- message actions: edit, delete for everyone, star, forward -----------------------------------------------------
+
+EDIT_WINDOW = 15 * 60  # WhatsApp lets you edit a sent text for 15 minutes
+REVOKE_WINDOW = 48 * 3600  # and delete it for everyone for 48 hours
+MAX_FORWARD_TARGETS = 5
+MAX_FORWARD_MESSAGES = 10
+TOO_LATE = Outcome(409, {"error": "too_late"})
+MSG_NO_DOWNLOAD = "Couldn't download the file to forward"
+
+
+def _age_seconds(message: store.MessageView) -> float | None:
+    stamp = store.parse_ts(message.timestamp_iso)
+    if stamp is None:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.astimezone()
+    return (datetime.now(UTC) - stamp).total_seconds()
+
+
+def _lookup(
+    settings: Settings, appconn: sqlite3.Connection, jid: str, message_id: str
+) -> tuple[store.ChatSummary, store.MessageView] | Outcome:
+    """The chat and the message in whichever JID form it is stored under (the form the bridge must be given)."""
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            chat = store.get_chat(ro, appconn, jid)
+            if chat is None:
+                return _bad("Chat not found", 404)
+            message = store.get_message(ro, chat.jid, message_id)
+    finally:
+        ro.close()
+    if message is None:
+        return _bad("Message not found", 404)
+    return chat, message
+
+
+def _announce_change(message: store.MessageView, chat: store.ChatSummary) -> None:
+    live.current_hub().publish("message_changed", {"chat_jid": chat.jid, "id": message.id})
+
+
+def edit_message(settings: Settings, appconn: sqlite3.Connection, jid: str, message_id: str, body: object) -> Outcome:
+    """Blocking: edit one of our own plain texts, at most EDIT_WINDOW seconds after it was sent."""
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    if valid_key(body.get("client_key")) is None:
+        return _bad("client_key must be a UUID")
+    text = body.get("text")
+    if isinstance(text, str):
+        text = text.strip()
+    if not isinstance(text, str) or not text:
+        return _bad("Message is empty")
+    if len(text) > MAX_TEXT:
+        return _bad("Message too long")
+    found = _lookup(settings, appconn, jid, message_id)
+    if isinstance(found, Outcome):
+        return found
+    chat, message = found
+    plain = message.text and not (message.media or message.poll or message.contact_cards)
+    if not (message.from_me and message.actionable and not message.system and not message.deleted and plain):
+        return _bad("That message can't be edited")
+    age = _age_seconds(message)
+    if age is None or age > EDIT_WINDOW:
+        return TOO_LATE
+    result = _call(mcp_lib.edit_message, message.chat_jid, message.id, text)
+    if not result.get("success"):
+        return map_failure(result)
+    _announce_change(message, chat)
+    return Outcome(200, {"ok": True})
+
+
+def revoke_message(settings: Settings, appconn: sqlite3.Connection, jid: str, message_id: str, body: object) -> Outcome:
+    """Blocking: delete one of our own messages for everyone, at most REVOKE_WINDOW seconds after it was sent."""
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    if valid_key(body.get("client_key")) is None:
+        return _bad("client_key must be a UUID")
+    found = _lookup(settings, appconn, jid, message_id)
+    if isinstance(found, Outcome):
+        return found
+    chat, message = found
+    if message.from_me and message.actionable and not message.system and message.deleted:
+        return Outcome(200, {"ok": True})  # a retry after a lost answer: already gone, nothing to send
+    if not (message.from_me and message.actionable and not message.system and not message.deleted):
+        return _bad("That message can't be deleted for everyone")
+    age = _age_seconds(message)
+    if age is None or age > REVOKE_WINDOW:
+        return TOO_LATE
+    result = _call(mcp_lib.delete_message, message.chat_jid, message.id)
+    if not result.get("success"):
+        return map_failure(result)
+    _announce_change(message, chat)
+    return Outcome(200, {"ok": True})
+
+
+def star_message(settings: Settings, appconn: sqlite3.Connection, jid: str, message_id: str, body: object) -> Outcome:
+    """Blocking: star or unstar a message of this chat. The bridge gets the chat and sender forms as stored."""
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    starred = body.get("star")
+    if not isinstance(starred, bool):
+        return _bad("star must be true or false")
+    found = _lookup(settings, appconn, jid, message_id)
+    if isinstance(found, Outcome):
+        return found
+    chat, message = found
+    if not message.actionable or message.system or message.deleted:
+        return _bad("That message can't be starred")
+    result = _call(
+        mcp_lib.star_message,
+        message.chat_jid,
+        message.id,
+        star=starred,
+        sender_jid=None if message.from_me else message.sender_jid,
+        from_me=message.from_me,
+    )
+    if not result.get("success"):
+        return map_failure(result)
+    _announce_change(message, chat)
+    return Outcome(200, {"ok": True})
+
+
+def _forward_key(client_key: str, target: str, message_id: str) -> str:
+    """One stable idempotency key per (client key, target chat, message): a retry of the whole forward dedupes."""
+    return str(uuid.uuid5(uuid.UUID(client_key), f"{target}|{message_id}"))
+
+
+def _forward_one(
+    settings: Settings,
+    appconn: sqlite3.Connection,
+    target: store.ChatSummary,
+    message: store.MessageView,
+    key: str,
+    path: str | None,
+) -> str | None:
+    """Send one message to one chat forwarded; the error line, or None when it went out."""
+    recipient = _recipient_for(appconn, key, target.jid)
+    if message.media is not None:
+        if path is None:
+            return MSG_NO_DOWNLOAD
+        result = _call(
+            mcp_lib.send_file,
+            recipient,
+            file_path=path,
+            filename=os.path.basename(path),
+            caption=message.text or None,
+            quoted_message_id=None,
+            quoted_chat_jid=None,
+            idempotency_key=key,
+            forwarded=True,
+        )
+    else:
+        result = _call(mcp_lib.send_message, recipient, message.text or "", idempotency_key=key, forwarded=True)
+    if result.get("success"):
+        return None
+    return str(map_failure(result).body["error"])
+
+
+def forward_messages(settings: Settings, appconn: sqlite3.Connection, body: object) -> Outcome:
+    """Blocking: forward messages of one chat to up to MAX_FORWARD_TARGETS chats; one result per target chat.
+
+    Media is downloaded first, once, through the same path as viewing (it never asks the sender's phone). A target
+    stops at its first failure so the order is never scrambled, and the error says how far it got.
+    """
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    key = valid_key(body.get("client_key"))
+    if key is None:
+        return _bad("client_key must be a UUID")
+    from_chat, ids, targets = body.get("from_chat"), body.get("message_ids"), body.get("to")
+    if not isinstance(from_chat, str) or not from_chat:
+        return _bad("from_chat required")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i for i in ids):
+        return _bad("message_ids required")
+    if not isinstance(targets, list) or not targets or not all(isinstance(t, str) and t for t in targets):
+        return _bad("to required")
+    ids, targets = list(dict.fromkeys(ids)), list(dict.fromkeys(targets))
+    if len(ids) > MAX_FORWARD_MESSAGES:
+        return _bad(f"At most {MAX_FORWARD_MESSAGES} messages at once")
+    if len(targets) > MAX_FORWARD_TARGETS:
+        return _bad(f"At most {MAX_FORWARD_TARGETS} chats at once")
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            source = store.get_chat(ro, appconn, from_chat)
+            if source is None:
+                return _bad("Chat not found", 404)
+            messages = [store.get_message(ro, source.jid, mid) for mid in ids]
+            chats = {t: store.get_chat(ro, appconn, t) for t in targets}
+    finally:
+        ro.close()
+    if any(m is None for m in messages):
+        return _bad("Message not found", 404)
+    found = [m for m in messages if m is not None]
+    found.sort(key=lambda m: store.parse_ts(m.timestamp_iso) or datetime.min.replace(tzinfo=UTC))
+    refused = {
+        m.id for m in found if not m.actionable or m.system or m.deleted or m.poll is not None or m.contact_cards
+    }
+    paths: dict[str, str | None] = {}
+    for m in found:  # one download per message, before anything goes out
+        if m.id not in refused and m.media is not None:
+            try:
+                path = media.file_for(settings, m.id, m.chat_jid)
+            except Exception:
+                logger.exception("download for a forward failed")
+                path = None
+            paths[m.id] = str(path) if path else None
+    results: list[dict] = []
+    for to in targets:
+        chat = chats[to]
+        if chat is None:
+            results.append({"to": to, "ok": False, "error": "Chat not found"})
+            continue
+        error: str | None = None
+        sent = 0
+        for m in found:
+            if m.id in refused:
+                error = "This message can't be forwarded"
+            else:
+                error = _forward_one(settings, appconn, chat, m, _forward_key(key, chat.jid, m.id), paths.get(m.id))
+            if error:
+                break
+            sent += 1
+        if error is None:
+            results.append({"to": to, "ok": True})
+        else:
+            if sent:
+                error = f"Sent {sent} of {len(found)}, then: {error}"
+            results.append({"to": to, "ok": False, "error": error})
+    return Outcome(200, {"results": results})
+
+
+# --- chat state: pin, mute, archive, mark unread ---------------------------------------------------------------------
+
+MAX_PINNED = 3  # WhatsApp's limit
+MUTE_CHOICES = ("8h", "1w", "forever")  # the bridge's duration strings; "15m" and "1h" are not offered
+MSG_STATE_FAILED = "Couldn't update the chat"
+
+
+def _state_fail(result: dict) -> Outcome:
+    detail = _short(result)
+    if result.get("retryable") or result.get("code") in ("timeout", "not_connected"):
+        return _fail(502, f"{MSG_STATE_FAILED}: the bridge didn't answer", True)
+    return _fail(502, f"{MSG_STATE_FAILED}: {detail}")
+
+
+def set_chat_state(settings: Settings, appconn: sqlite3.Connection, jid: str, body: object) -> Outcome:
+    """Blocking: pin, mute, archive and/or mark a chat unread through the bridge.
+
+    The reply is the chat as it will look: the summary from the store with the requested flags laid over it. The
+    store itself only changes when the bridge's chat_state echo lands, and the list picks that up from there.
+    """
+    if not isinstance(body, dict):
+        return _bad("Bad request", 400)
+    wanted = {k: body[k] for k in ("pin", "mute", "archive", "unread") if k in body}
+    if not wanted:
+        return _bad("Nothing to change")
+    for key in ("pin", "archive", "unread"):
+        if key in wanted and not isinstance(wanted[key], bool):
+            return _bad(f"{key} must be true or false")
+    mute = wanted.get("mute")
+    if "mute" in wanted and mute is not False and mute not in MUTE_CHOICES:
+        return _bad("mute must be 8h, 1w, forever or false")
+    if wanted.get("pin") is True and wanted.get("archive") is True:
+        return _bad("A chat can't be pinned and archived at once")
+
+    ro = store.open_ro(settings)
+    try:
+        with appdb.db_lock:
+            chat = store.get_chat(ro, appconn, jid)
+            if chat is None:
+                return _bad("Chat not found", 404)
+            if wanted.get("pin") is True and not chat.pinned:
+                pinned = [
+                    c for c in store.list_chats_with_count(ro, appconn, archived=None, limit=10_000)[0] if c.pinned
+                ]
+                if len(pinned) >= MAX_PINNED:
+                    return Outcome(409, {"error": f"You can pin up to {MAX_PINNED} chats"})
+    finally:
+        ro.close()
+
+    updates: dict[str, Any] = {}
+    # Archive first: it unpins, so a following unpin or pin ends in the state that was asked for.
+    if "archive" in wanted:
+        result = _call(mcp_lib.archive_chat, chat.jid, archive=wanted["archive"])
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["archived"] = bool(wanted["archive"])
+        if wanted["archive"]:
+            updates["pinned"] = False
+    if "pin" in wanted:
+        result = _call(mcp_lib.pin_chat, chat.jid, pin=wanted["pin"])
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["pinned"] = bool(wanted["pin"])
+    if "mute" in wanted:
+        result = _call(
+            mcp_lib.mute_chat, chat.jid, mute=mute is not False, duration=mute if isinstance(mute, str) else "forever"
+        )
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["muted"] = mute is not False
+    if "unread" in wanted:
+        result = _call(mcp_lib.mark_chat_unread, chat.jid, unread=wanted["unread"])
+        if not result.get("success"):
+            return _state_fail(result)
+        updates["marked_unread"] = bool(wanted["unread"])
+    return Outcome(200, {"chat": asdict(replace(chat, **updates))})
