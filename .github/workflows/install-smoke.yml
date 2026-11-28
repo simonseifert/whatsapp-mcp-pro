@@ -126,7 +126,7 @@ jobs:
           W="$RUNNER_TEMP/wactl-run.sh"
           pids=""
           for f in "$RUNNER_TEMP"/wa/run/app.pid "$RUNNER_TEMP"/wa/run/app.child; do
-            [ -f "$f" ] && pids="$pids $(tr -dc '0-9' < "$f")"
+            [ -f "$f" ] && pids="$pids $(head -n 1 "$f" | tr -dc '0-9')"
           done
           echo "pids before stop:$pids"
           "$W" stop app --data "$RUNNER_TEMP/wa"
@@ -154,7 +154,7 @@ jobs:
           case "$RUNNER_OS" in
             Linux)   expect='systemctl' ;;
             macOS)   expect='launchctl' ;;
-            Windows) expect='schtasks' ;;
+            Windows) expect='Register-ScheduledTask' ;;
           esac
           # Keep generated paths inside the runner temp dir; nothing is installed.
           export XDG_CONFIG_HOME="$RUNNER_TEMP/xdg"
