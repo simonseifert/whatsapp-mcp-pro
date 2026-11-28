@@ -67,7 +67,8 @@ jobs:
           {
             echo '#!/usr/bin/env bash'
             if [ "$RUNNER_OS" = "Windows" ]; then
-              echo 'exec cmd //c wactl.cmd "$@"'
+              # Single slash: MSYS path conversion is off, so "//c" would reach cmd.exe literally.
+              echo 'exec cmd.exe /c .\\wactl.cmd "$@"'
             else
               echo 'exec ./wactl "$@"'
             fi
@@ -140,7 +141,7 @@ jobs:
           for p in $pids; do
             [ -n "$p" ] || continue
             if [ "$RUNNER_OS" = "Windows" ]; then
-              if tasklist //FI "PID eq $p" //NH | grep -qw "$p"; then
+              if tasklist /FI "PID eq $p" /NH | grep -qw "$p"; then
                 echo "process $p still running"; exit 1
               fi
             elif kill -0 "$p" 2>/dev/null; then
